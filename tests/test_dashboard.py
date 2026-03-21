@@ -114,7 +114,11 @@ class DashboardTests(unittest.TestCase):
                         "phase": "benchmark_pivot",
                         "latest_report_path": "runtime/catalog/program.md",
                         "last_error": None,
-                        "state": {"final_decision": None},
+                        "state": {
+                            "control_row": {"run_name": "control-run"},
+                            "shortlisted": [{"run_name": "candidate-run"}],
+                            "final_decision": None,
+                        },
                     },
                     "events": [
                         {
@@ -143,6 +147,149 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("benchmark_pivot", body)
         self.assertIn("Processed focused_operability", body)
         self.assertIn("Stop Campaign", body)
+        self.assertIn("Handoff", body)
+        self.assertIn("Compare", body)
+
+    def test_campaign_handoff_page_renders_plain_english_summary(self) -> None:
+        root = self._workspace_root("handoff")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch(
+                "trotters_trader.dashboard.campaign_status",
+                return_value={
+                    "campaign": {
+                        "campaign_id": "campaign-1",
+                        "campaign_name": "broad-operability",
+                        "config_path": "configs/eodhd_momentum.toml",
+                        "status": "completed",
+                        "phase": "stress_pack",
+                        "latest_report_path": "runtime/catalog/program.md",
+                        "last_error": None,
+                        "state": {
+                            "control_row": {
+                                "run_name": "control-run",
+                                "profile_name": "control-profile",
+                                "validation_excess_return": -0.03,
+                                "holdout_excess_return": -0.12,
+                                "walkforward_pass_windows": 0,
+                                "rebalance_frequency_days": 63,
+                            },
+                            "shortlisted": [
+                                {
+                                    "run_name": "candidate-run",
+                                    "profile_name": "candidate-profile",
+                                    "eligible": True,
+                                    "validation_excess_return": 0.04,
+                                    "holdout_excess_return": 0.02,
+                                    "walkforward_pass_windows": 2,
+                                    "rebalance_frequency_days": 84,
+                                    "max_rebalance_turnover_pct": 0.08,
+                                    "target_gross_exposure": 0.65,
+                                    "top_n": 8,
+                                    "sector_cap": 3,
+                                }
+                            ],
+                            "stress_results": [
+                                {
+                                    "candidate_run_name": "candidate-run",
+                                    "stress_ok": True,
+                                    "non_broken_count": 4,
+                                    "scenario_count": 4,
+                                    "broken_count": 0,
+                                }
+                            ],
+                            "final_decision": {
+                                "recommended_action": "freeze_candidate",
+                                "reason": "candidate_passed_promotion_and_stress_pack",
+                                "selected_run_name": "candidate-run",
+                                "selected_profile_name": "candidate-profile",
+                                "selected_candidate_eligible": True,
+                                "selected_stress_ok": True,
+                                "pivot_used": False,
+                            },
+                        },
+                    },
+                    "events": [],
+                    "jobs": [],
+                },
+            ):
+                status, _, body = self._invoke(app, "GET", "/campaigns/campaign-1/handoff")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Promotion Handoff", body)
+        self.assertIn("What The Strategy Does", body)
+        self.assertIn("Why It Passed", body)
+        self.assertIn("Where It Is Weak", body)
+        self.assertIn("What Should Happen Next", body)
+        self.assertIn("candidate-run", body)
+        self.assertIn("Compare Candidates", body)
+
+    def test_campaign_comparison_page_renders_control_and_shortlist(self) -> None:
+        root = self._workspace_root("comparison")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch(
+                "trotters_trader.dashboard.campaign_status",
+                return_value={
+                    "campaign": {
+                        "campaign_id": "campaign-1",
+                        "campaign_name": "broad-operability",
+                        "status": "completed",
+                        "phase": "stress_pack",
+                        "state": {
+                            "control_row": {
+                                "run_name": "control-run",
+                                "profile_name": "control-profile",
+                                "validation_excess_return": -0.03,
+                                "holdout_excess_return": -0.12,
+                                "walkforward_pass_windows": 0,
+                                "rebalance_frequency_days": 63,
+                                "max_rebalance_turnover_pct": 0.09,
+                            },
+                            "shortlisted": [
+                                {
+                                    "run_name": "candidate-run",
+                                    "profile_name": "candidate-profile",
+                                    "eligible": True,
+                                    "validation_excess_return": 0.04,
+                                    "holdout_excess_return": 0.02,
+                                    "walkforward_pass_windows": 2,
+                                    "rebalance_frequency_days": 84,
+                                    "max_rebalance_turnover_pct": 0.08,
+                                }
+                            ],
+                            "stress_results": [
+                                {
+                                    "candidate_run_name": "candidate-run",
+                                    "stress_ok": True,
+                                    "non_broken_count": 4,
+                                    "scenario_count": 4,
+                                }
+                            ],
+                            "final_decision": {
+                                "recommended_action": "freeze_candidate",
+                                "selected_run_name": "candidate-run",
+                            },
+                        },
+                    },
+                    "events": [],
+                    "jobs": [],
+                },
+            ):
+                status, _, body = self._invoke(app, "GET", "/campaigns/campaign-1/comparison")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Candidate Comparison", body)
+        self.assertIn("control-run", body)
+        self.assertIn("candidate-run", body)
+        self.assertIn("Selected candidate", body)
+        self.assertIn("Baseline for comparison", body)
 
     def test_guide_page_renders_plain_english_application_help(self) -> None:
         root = self._workspace_root("guide")

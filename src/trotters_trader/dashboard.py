@@ -106,6 +106,28 @@ class DashboardApp:
             html = _render_overview(payload, refresh_seconds=self._refresh_seconds, flash=_query_value(query, "flash"))
             return self._html_response("200 OK", html)
         if method == "GET" and path.startswith("/campaigns/"):
+            if path.endswith("/handoff"):
+                campaign_id = path.removeprefix("/campaigns/").removesuffix("/handoff").strip("/")
+                if not campaign_id:
+                    raise ValueError("Campaign id is required")
+                payload = self._controller.campaign_detail(campaign_id)
+                html = _render_campaign_handoff(
+                    payload,
+                    refresh_seconds=self._refresh_seconds,
+                    flash=_query_value(query, "flash"),
+                )
+                return self._html_response("200 OK", html)
+            if path.endswith("/comparison"):
+                campaign_id = path.removeprefix("/campaigns/").removesuffix("/comparison").strip("/")
+                if not campaign_id:
+                    raise ValueError("Campaign id is required")
+                payload = self._controller.campaign_detail(campaign_id)
+                html = _render_campaign_comparison(
+                    payload,
+                    refresh_seconds=self._refresh_seconds,
+                    flash=_query_value(query, "flash"),
+                )
+                return self._html_response("200 OK", html)
             campaign_id = path.removeprefix("/campaigns/").strip("/")
             if not campaign_id:
                 raise ValueError("Campaign id is required")
@@ -299,6 +321,8 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
     )
     can_stop = str(campaign.get("status", "")) in {"queued", "running"}
     report_path = escape(str(campaign.get("latest_report_path") or ""))
+    campaign_id = str(campaign.get("campaign_id", ""))
+    handoff_links = _campaign_handoff_links(campaign, state)
 
     body = f"""
     {_flash_banner(flash)}
@@ -306,11 +330,12 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
       <div>
         <p><a href="/">Back to overview</a></p>
         <h1>{escape(str(campaign.get("campaign_name", "Unknown campaign")))}</h1>
-        <p>Campaign id: <code>{escape(str(campaign.get('campaign_id', '')))}</code></p>
+        <p>Campaign id: <code>{escape(campaign_id)}</code></p>
       </div>
       <div class="hero-links">
         <a class="button secondary" href="/guide">Guide</a>
-        <a class="button secondary" href="/api/campaigns/{quote(str(campaign.get('campaign_id', '')))}">JSON</a>
+        {handoff_links}
+        <a class="button secondary" href="/api/campaigns/{quote(campaign_id)}">JSON</a>
       </div>
     </section>
     <section class="summary-grid">
@@ -350,6 +375,134 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
     </section>
     """
     return _render_layout(str(campaign.get("campaign_name", "Campaign")), body, refresh_seconds=refresh_seconds)
+
+
+def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
+    campaign = payload.get("campaign", {}) if isinstance(payload.get("campaign"), dict) else {}
+    state = campaign.get("state", {}) if isinstance(campaign.get("state"), dict) else {}
+    campaign_id = str(campaign.get("campaign_id", ""))
+    control_row = state.get("control_row") if isinstance(state.get("control_row"), dict) else {}
+    shortlisted = [row for row in state.get("shortlisted", []) if isinstance(row, dict)]
+    stress_results = [row for row in state.get("stress_results", []) if isinstance(row, dict)]
+    final_decision = state.get("final_decision") if isinstance(state.get("final_decision"), dict) else {}
+    selected_candidate = _selected_candidate(shortlisted, final_decision)
+    selected_stress = _selected_stress_result(stress_results, final_decision, selected_candidate)
+
+    body = f"""
+    {_flash_banner(flash)}
+    <section class="hero">
+      <div>
+        <p><a href="/campaigns/{quote(campaign_id)}">Back to campaign</a></p>
+        <h1>Promotion Handoff</h1>
+        <p>Plain-English summary for {escape(str(campaign.get("campaign_name", "unknown campaign")))}.</p>
+      </div>
+      <div class="hero-links">
+        <a class="button secondary" href="/campaigns/{quote(campaign_id)}/comparison">Compare Candidates</a>
+        <a class="button secondary" href="/api/campaigns/{quote(campaign_id)}">JSON</a>
+      </div>
+    </section>
+    <section class="summary-grid">
+      {_summary_card("campaign status", str(campaign.get("status", "unknown")))}
+      {_summary_card("phase", str(campaign.get("phase", "unknown")))}
+      {_summary_card("shortlist", str(len(shortlisted)))}
+      {_summary_card("decision", str(final_decision.get("recommended_action", "pending")))}
+    </section>
+    <section class="panel">
+      <h2>What The Strategy Does</h2>
+      {_handoff_strategy_description(control_row, selected_candidate)}
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Why It Passed</h2>
+        {_handoff_why_it_passed(control_row, selected_candidate, selected_stress, final_decision)}
+      </section>
+      <section class="panel">
+        <h2>Where It Is Weak</h2>
+        {_handoff_where_it_is_weak(control_row, selected_candidate, selected_stress, final_decision)}
+      </section>
+    </section>
+    <section class="panel">
+      <h2>What Should Happen Next</h2>
+      {_handoff_next_steps(final_decision)}
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Selected Candidate Snapshot</h2>
+        {_candidate_snapshot(selected_candidate, selected_stress, empty_message="No shortlisted candidate has been selected yet.")}
+      </section>
+      <section class="panel">
+        <h2>Control Snapshot</h2>
+        {_candidate_snapshot(control_row, None, empty_message="Control metrics are not available yet.", is_control=True)}
+      </section>
+    </section>
+    """
+    return _render_layout("Promotion Handoff", body, refresh_seconds=refresh_seconds)
+
+
+def _render_campaign_comparison(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
+    campaign = payload.get("campaign", {}) if isinstance(payload.get("campaign"), dict) else {}
+    state = campaign.get("state", {}) if isinstance(campaign.get("state"), dict) else {}
+    campaign_id = str(campaign.get("campaign_id", ""))
+    control_row = state.get("control_row") if isinstance(state.get("control_row"), dict) else {}
+    shortlisted = [row for row in state.get("shortlisted", []) if isinstance(row, dict)]
+    stress_results = [row for row in state.get("stress_results", []) if isinstance(row, dict)]
+    stress_by_run = {
+        str(row.get("candidate_run_name", "")): row
+        for row in stress_results
+        if isinstance(row, dict)
+    }
+    final_decision = state.get("final_decision") if isinstance(state.get("final_decision"), dict) else {}
+    selected_run_name = str(final_decision.get("selected_run_name") or "")
+
+    comparison_rows = []
+    if control_row:
+        comparison_rows.append(_comparison_row(control_row, is_control=True, is_selected=False, stress_result=None))
+    comparison_rows.extend(
+        _comparison_row(
+            row,
+            is_control=False,
+            is_selected=str(row.get("run_name", "")) == selected_run_name,
+            stress_result=stress_by_run.get(str(row.get("run_name", ""))),
+        )
+        for row in shortlisted
+    )
+    rows_html = "".join(comparison_rows) or "<tr><td colspan='10'>No comparison data is available yet.</td></tr>"
+
+    body = f"""
+    {_flash_banner(flash)}
+    <section class="hero">
+      <div>
+        <p><a href="/campaigns/{quote(campaign_id)}/handoff">Back to handoff</a></p>
+        <h1>Candidate Comparison</h1>
+        <p>Side-by-side metrics for the control strategy and the campaign shortlist.</p>
+      </div>
+      <div class="hero-links">
+        <a class="button secondary" href="/campaigns/{quote(campaign_id)}">Campaign</a>
+        <a class="button secondary" href="/api/campaigns/{quote(campaign_id)}">JSON</a>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Comparison Table</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Run</th>
+            <th>Profile</th>
+            <th>Validation Excess</th>
+            <th>Holdout Excess</th>
+            <th>Walk-Forward</th>
+            <th>Turnover Limit</th>
+            <th>Rebalance Days</th>
+            <th>Stress</th>
+            <th>Operator Note</th>
+          </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+    </section>
+    """
+    return _render_layout("Candidate Comparison", body, refresh_seconds=refresh_seconds)
 
 
 def _render_guide(*, refresh_seconds: int) -> str:
@@ -618,9 +771,10 @@ def _campaign_row(campaign: object) -> str:
         f"<td><a href='/campaigns/{quote(campaign_id)}'>{escape(str(campaign.get('campaign_name', campaign_id)))}</a></td>"
         f"<td>{_status_pill(str(campaign.get('status', 'unknown')))}</td>"
         f"<td>{escape(str(campaign.get('phase', 'unknown')))}</td>"
-        f"<td>{escape(str(campaign.get('updated_at', '')))}</td>"
+        f"<td>{_timestamp_with_age(campaign.get('updated_at'))}</td>"
         f"<td><code>{report or 'None'}</code></td>"
-        f"<td><a class='button secondary' href='/campaigns/{quote(campaign_id)}'>View</a></td>"
+        f"<td><a class='button secondary' href='/campaigns/{quote(campaign_id)}'>View</a> "
+        f"<a class='button secondary' href='/campaigns/{quote(campaign_id)}/handoff'>Handoff</a></td>"
         "</tr>"
     )
 
@@ -732,9 +886,259 @@ def _campaign_job_row(job: object) -> str:
         f"<td>{escape(str(job.get('command', '')))}</td>"
         f"<td>{_status_pill(str(job.get('status', 'unknown')))}</td>"
         f"<td>{escape(str(job.get('priority', '')))}</td>"
-        f"<td>{escape(str(job.get('updated_at', '')))}</td>"
+        f"<td>{_timestamp_with_age(job.get('updated_at'))}</td>"
         "</tr>"
     )
+
+
+def _campaign_handoff_links(campaign: dict[str, object], state: dict[str, object]) -> str:
+    campaign_id = str(campaign.get("campaign_id", ""))
+    if not campaign_id:
+        return ""
+    has_candidate_context = bool(state.get("control_row")) or bool(state.get("shortlisted")) or bool(state.get("final_decision"))
+    if not has_candidate_context:
+        return ""
+    return (
+        f"<a class='button secondary' href='/campaigns/{quote(campaign_id)}/handoff'>Handoff</a>"
+        f"<a class='button secondary' href='/campaigns/{quote(campaign_id)}/comparison'>Compare</a>"
+    )
+
+
+def _selected_candidate(shortlisted: list[dict[str, object]], final_decision: dict[str, object]) -> dict[str, object] | None:
+    selected_run_name = str(final_decision.get("selected_run_name") or "")
+    if selected_run_name:
+        for row in shortlisted:
+            if str(row.get("run_name", "")) == selected_run_name:
+                return row
+    return shortlisted[0] if shortlisted else None
+
+
+def _selected_stress_result(
+    stress_results: list[dict[str, object]],
+    final_decision: dict[str, object],
+    selected_candidate: dict[str, object] | None,
+) -> dict[str, object] | None:
+    selected_run_name = str(final_decision.get("selected_run_name") or "")
+    if not selected_run_name and selected_candidate is not None:
+        selected_run_name = str(selected_candidate.get("run_name", ""))
+    for row in stress_results:
+        if str(row.get("candidate_run_name", "")) == selected_run_name:
+            return row
+    return None
+
+
+def _handoff_strategy_description(control_row: dict[str, object], selected_candidate: dict[str, object] | None) -> str:
+    if selected_candidate is None:
+        return (
+            "<p>No shortlisted candidate is ready to describe yet. The campaign is still searching or has not produced a viable candidate.</p>"
+        )
+    rebalance_days = int(selected_candidate.get("rebalance_frequency_days", 0) or 0)
+    top_n = int(selected_candidate.get("top_n", 0) or 0)
+    gross = float(selected_candidate.get("target_gross_exposure", 0.0) or 0.0)
+    turnover_limit = float(selected_candidate.get("max_rebalance_turnover_pct", 0.0) or 0.0)
+    sector_cap = selected_candidate.get("sector_cap")
+    comparison = ""
+    control_rebalance_days = int(control_row.get("rebalance_frequency_days", 0) or 0)
+    if control_rebalance_days and rebalance_days:
+        if rebalance_days > control_rebalance_days:
+            comparison = " It rebalances more slowly than the control strategy."
+        elif rebalance_days < control_rebalance_days:
+            comparison = " It rebalances more often than the control strategy."
+    sector_text = "no explicit sector cap"
+    if sector_cap not in {None, ""}:
+        sector_text = f"a sector cap of {int(sector_cap)} names"
+    return (
+        f"<p>This candidate is a long-only UK equity basket that typically holds about {top_n} names and "
+        f"targets roughly {gross:.0%} gross exposure.</p>"
+        f"<p>It is designed to rebalance every {rebalance_days} trading days with a turnover cap of {turnover_limit:.0%} "
+        f"and {sector_text}.{comparison}</p>"
+    )
+
+
+def _handoff_why_it_passed(
+    control_row: dict[str, object],
+    selected_candidate: dict[str, object] | None,
+    selected_stress: dict[str, object] | None,
+    final_decision: dict[str, object],
+) -> str:
+    if selected_candidate is None:
+        return "<p>No candidate has earned a pass-style explanation yet.</p>"
+    reasons: list[str] = []
+    if bool(selected_candidate.get("eligible", False)):
+        reasons.append("It passed the promotion eligibility checks.")
+    validation = float(selected_candidate.get("validation_excess_return", 0.0) or 0.0)
+    holdout = float(selected_candidate.get("holdout_excess_return", 0.0) or 0.0)
+    if validation > 0:
+        reasons.append(f"It beat the benchmark in validation by {validation:.2%}.")
+    if holdout > 0:
+        reasons.append(f"It kept positive holdout excess return at {holdout:.2%}.")
+    candidate_windows = int(selected_candidate.get("walkforward_pass_windows", 0) or 0)
+    control_windows = int(control_row.get("walkforward_pass_windows", 0) or 0)
+    if candidate_windows > 0:
+        if control_windows:
+            reasons.append(
+                f"It achieved {candidate_windows} walk-forward pass windows compared with {control_windows} for the control."
+            )
+        else:
+            reasons.append(f"It achieved {candidate_windows} walk-forward pass windows.")
+    if selected_stress is not None and bool(selected_stress.get("stress_ok", False)):
+        reasons.append("It stayed non-broken across the configured stress scenarios.")
+    if final_decision.get("recommended_action") == "freeze_candidate":
+        reasons.append("The campaign judged it strong enough to freeze for human review.")
+    if not reasons:
+        reasons.append("The campaign has not produced a fully positive pass case yet.")
+    return _paragraph_list(reasons)
+
+
+def _handoff_where_it_is_weak(
+    control_row: dict[str, object],
+    selected_candidate: dict[str, object] | None,
+    selected_stress: dict[str, object] | None,
+    final_decision: dict[str, object],
+) -> str:
+    weaknesses: list[str] = []
+    if selected_candidate is None:
+        weaknesses.append("There is no selected candidate yet, so the campaign is still in search mode.")
+    else:
+        validation = float(selected_candidate.get("validation_excess_return", 0.0) or 0.0)
+        holdout = float(selected_candidate.get("holdout_excess_return", 0.0) or 0.0)
+        if validation <= 0:
+            weaknesses.append("Validation excess return is not positive.")
+        if holdout <= 0:
+            weaknesses.append("Holdout excess return is not positive.")
+        candidate_windows = int(selected_candidate.get("walkforward_pass_windows", 0) or 0)
+        control_windows = int(control_row.get("walkforward_pass_windows", 0) or 0)
+        if candidate_windows <= control_windows:
+            weaknesses.append("Walk-forward robustness did not clearly improve over the control.")
+        rejection_reason = str(selected_candidate.get("rejection_reason", "") or "")
+        if rejection_reason:
+            weaknesses.append(f"The candidate still carries a rejection warning: {rejection_reason}.")
+        if selected_stress is not None and not bool(selected_stress.get("stress_ok", False)):
+            broken_count = int(selected_stress.get("broken_count", 0) or 0)
+            weaknesses.append(f"It broke under {broken_count} stress scenarios.")
+    if final_decision.get("recommended_action") in {"continue_research", "exhausted"}:
+        weaknesses.append("The campaign did not find evidence strong enough to freeze a candidate.")
+    if final_decision.get("pivot_used"):
+        weaknesses.append("The campaign needed a pivot, which suggests the original family was not sufficient on its own.")
+    if not weaknesses:
+        weaknesses.append("No major weakness was recorded at this stage, but human review is still required.")
+    return _paragraph_list(weaknesses)
+
+
+def _handoff_next_steps(final_decision: dict[str, object]) -> str:
+    action = str(final_decision.get("recommended_action", "pending"))
+    reason = str(final_decision.get("reason", "unknown"))
+    if action == "freeze_candidate":
+        lines = [
+            "The next step is operator review, not live trading.",
+            "Review the frozen evidence pack, decide whether the candidate should move into paper trading, and only then plan operational hardening.",
+        ]
+    elif action in {"continue_research", "continue_benchmark_pivot", "continue_focused_research", "continue_operability_validation"}:
+        lines = [
+            "The system should keep researching this area rather than treating the current candidate as deployable.",
+            f"Current reason: {reason}.",
+        ]
+    elif action == "stopped":
+        lines = [
+            "The campaign was stopped by the operator.",
+            f"Recorded reason: {reason}.",
+        ]
+    elif action in {"failed", "exhausted"}:
+        lines = [
+            "This branch should be treated as exhausted unless a new research idea justifies reopening it.",
+            f"Recorded reason: {reason}.",
+        ]
+    else:
+        lines = [f"The current campaign decision is {action}.", f"Recorded reason: {reason}."]
+    return _paragraph_list(lines)
+
+
+def _candidate_snapshot(
+    row: dict[str, object] | None,
+    stress_result: dict[str, object] | None,
+    *,
+    empty_message: str,
+    is_control: bool = False,
+) -> str:
+    if not row:
+        return f"<p>{escape(empty_message)}</p>"
+    lines = [
+        f"<p><strong>Run:</strong> <code>{escape(str(row.get('run_name', 'unknown')))}</code></p>",
+        f"<p><strong>Profile:</strong> <code>{escape(str(row.get('profile_name', 'unknown')))}</code></p>",
+        f"<p><strong>Validation excess return:</strong> {_percent(row.get('validation_excess_return'))}</p>",
+        f"<p><strong>Holdout excess return:</strong> {_percent(row.get('holdout_excess_return'))}</p>",
+        f"<p><strong>Walk-forward pass windows:</strong> {int(row.get('walkforward_pass_windows', 0) or 0)}</p>",
+    ]
+    if not is_control:
+        lines.extend(
+            [
+                f"<p><strong>Eligible:</strong> {bool(row.get('eligible', False))}</p>",
+                f"<p><strong>Rebalance days:</strong> {int(row.get('rebalance_frequency_days', 0) or 0)}</p>",
+                f"<p><strong>Turnover limit:</strong> {_percent(row.get('max_rebalance_turnover_pct'))}</p>",
+            ]
+        )
+    if stress_result is not None:
+        lines.extend(
+            [
+                f"<p><strong>Stress ok:</strong> {bool(stress_result.get('stress_ok', False))}</p>",
+                f"<p><strong>Stress scenarios non-broken:</strong> {int(stress_result.get('non_broken_count', 0) or 0)}/{int(stress_result.get('scenario_count', 0) or 0)}</p>",
+            ]
+        )
+    return "".join(lines)
+
+
+def _comparison_row(
+    row: dict[str, object],
+    *,
+    is_control: bool,
+    is_selected: bool,
+    stress_result: dict[str, object] | None,
+) -> str:
+    role = "Control" if is_control else ("Selected candidate" if is_selected else "Shortlisted candidate")
+    stress_text = "-"
+    if stress_result is not None:
+        stress_text = (
+            f"{bool(stress_result.get('stress_ok', False))} "
+            f"({int(stress_result.get('non_broken_count', 0) or 0)}/{int(stress_result.get('scenario_count', 0) or 0)})"
+        )
+    note = "Baseline for comparison" if is_control else _operator_note(row, stress_result, is_selected=is_selected)
+    return (
+        "<tr>"
+        f"<td>{escape(role)}</td>"
+        f"<td><code>{escape(str(row.get('run_name', 'unknown')))}</code></td>"
+        f"<td><code>{escape(str(row.get('profile_name', 'unknown')))}</code></td>"
+        f"<td>{_percent(row.get('validation_excess_return'))}</td>"
+        f"<td>{_percent(row.get('holdout_excess_return'))}</td>"
+        f"<td>{int(row.get('walkforward_pass_windows', 0) or 0)}</td>"
+        f"<td>{_percent(row.get('max_rebalance_turnover_pct'))}</td>"
+        f"<td>{int(row.get('rebalance_frequency_days', 0) or 0)}</td>"
+        f"<td>{escape(stress_text)}</td>"
+        f"<td>{escape(note)}</td>"
+        "</tr>"
+    )
+
+
+def _operator_note(row: dict[str, object], stress_result: dict[str, object] | None, *, is_selected: bool) -> str:
+    if is_selected and bool(row.get("eligible", False)) and stress_result is not None and bool(stress_result.get("stress_ok", False)):
+        return "Best current candidate for review."
+    if bool(row.get("eligible", False)):
+        return "Passed promotion gates but still needs operator review."
+    rejection_reason = str(row.get("rejection_reason", "") or "")
+    if rejection_reason:
+        return rejection_reason
+    return "Shortlisted, but not yet strong enough to freeze."
+
+
+def _paragraph_list(lines: list[str]) -> str:
+    return "".join(f"<p>{escape(line)}</p>" for line in lines)
+
+
+def _percent(value: object) -> str:
+    try:
+        numeric = float(value or 0.0)
+    except (TypeError, ValueError):
+        numeric = 0.0
+    return f"{numeric:.2%}"
 
 
 def _status_pill(value: str) -> str:
