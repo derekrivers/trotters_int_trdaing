@@ -7,7 +7,7 @@ from pathlib import Path
 from trotters_trader.catalog import register_catalog_entry
 from trotters_trader.config import EvaluationConfig
 from trotters_trader.domain import ClosedTrade, Fill, PortfolioSnapshot
-from trotters_trader.reports import write_report_artifacts
+from trotters_trader.reports import safe_artifact_dirname, write_report_artifacts
 
 
 def summarize(
@@ -360,7 +360,7 @@ def write_run_artifacts(
     fills: list[Fill],
     performance: list[PortfolioSnapshot],
 ) -> Path:
-    run_dir = output_dir / run_name
+    run_dir = output_dir / safe_artifact_dirname(run_name)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {

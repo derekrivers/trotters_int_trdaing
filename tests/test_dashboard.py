@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 import json
@@ -142,6 +143,358 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Recent Director Outcomes", body)
         self.assertIn("completed-operability", body)
         self.assertIn("archived-director", body)
+
+    def test_overview_ignores_stale_stopped_banner_when_replacement_campaign_is_running(self) -> None:
+        root = self._workspace_root("overview_stale_stop")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
+            notifications_path.parent.mkdir(parents=True, exist_ok=True)
+            notifications_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "recorded_at_utc": "2026-03-21T16:05:00+00:00",
+                                "campaign_id": "campaign-old",
+                                "campaign_name": "broad-operability-primary",
+                                "event_type": "campaign_stopped",
+                                "severity": "warning",
+                                "message": "Campaign was stopped and will not advance.",
+                                "notification_requested": False,
+                                "hook": {"success": None},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "recorded_at_utc": "2026-03-21T16:00:00+00:00",
+                                "campaign_id": "campaign-old",
+                                "campaign_name": "broad-operability-primary",
+                                "event_type": "campaign_finished",
+                                "severity": "warning",
+                                "message": "Campaign exhausted.",
+                                "notification_requested": False,
+                                "hook": {"success": None},
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            app = DashboardApp(DashboardController(paths), refresh_seconds=5)
+            with (
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 2, "running": 1, "completed": 9},
+                        "workers": [],
+                        "jobs": [],
+                        "campaigns": [
+                            {
+                                "campaign_id": "campaign-new",
+                                "campaign_name": "broad-operability-replacement",
+                                "status": "running",
+                                "phase": "focused_operability",
+                                "updated_at": "2026-03-21T16:06:00+00:00",
+                            },
+                            {
+                                "campaign_id": "campaign-old",
+                                "campaign_name": "broad-operability-primary",
+                                "status": "stopped",
+                                "phase": "focused_operability",
+                                "updated_at": "2026-03-21T16:05:00+00:00",
+                            },
+                        ],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "director_name": "broad-operability-director",
+                                "status": "running",
+                            }
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.campaign_status",
+                    return_value={
+                        "campaign": {
+                            "campaign_id": "campaign-new",
+                            "campaign_name": "broad-operability-replacement",
+                            "status": "running",
+                            "phase": "focused_operability",
+                            "updated_at": "2026-03-21T16:06:00+00:00",
+                        }
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.director_status",
+                    return_value={
+                        "director": {
+                            "director_id": "director-1",
+                            "director_name": "broad-operability-director",
+                            "status": "running",
+                            "current_campaign_id": "campaign-new",
+                            "successful_campaign_id": None,
+                            "spec": {"plan_name": "broad-operability-plan"},
+                            "state": {"campaign_queue": [{"status": "running"}]},
+                        }
+                    },
+                ),
+            ):
+                status, headers, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn(("Content-Type", "text/html; charset=utf-8"), headers)
+        self.assertIn("broad-operability-replacement", body)
+        self.assertNotIn(
+            "Campaign stopped: broad-operability-primary will not advance until you restart or replace it.",
+            body,
+        )
+
+    def test_overview_renders_healthy_system_health_panel(self) -> None:
+        root = self._workspace_root("overview_health_ok")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=5)
+            now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
+            with (
+                patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 2, "running": 3, "completed": 9},
+                        "workers": [
+                            {
+                                "worker_id": "worker-01",
+                                "status": "running",
+                                "current_job_id": "job-1",
+                                "heartbeat_at": "2026-03-21T21:39:30+00:00",
+                            }
+                        ],
+                        "jobs": [
+                            {
+                                "job_id": "job-1",
+                                "campaign_id": "campaign-1",
+                                "command": "promotion-check",
+                                "status": "running",
+                                "leased_by": "worker-01",
+                                "created_at": "2026-03-21T21:35:00+00:00",
+                                "updated_at": "2026-03-21T21:39:20+00:00",
+                            }
+                        ],
+                        "campaigns": [
+                            {
+                                "campaign_id": "campaign-1",
+                                "campaign_name": "broad-operability",
+                                "status": "running",
+                                "phase": "focused_operability",
+                                "updated_at": "2026-03-21T21:39:00+00:00",
+                            }
+                        ],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "status": "running",
+                            }
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.campaign_status",
+                    return_value={
+                        "campaign": {
+                            "campaign_id": "campaign-1",
+                            "campaign_name": "broad-operability",
+                            "status": "running",
+                            "phase": "focused_operability",
+                            "updated_at": "2026-03-21T21:39:00+00:00",
+                        }
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.director_status",
+                    return_value={
+                        "director": {
+                            "director_id": "director-1",
+                            "director_name": "broad-operability-director",
+                            "status": "running",
+                            "current_campaign_id": "campaign-1",
+                            "successful_campaign_id": None,
+                            "spec": {"plan_name": "broad-operability-plan"},
+                            "state": {"campaign_queue": [{"status": "running"}]},
+                        }
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("System Health", body)
+        self.assertIn("Research runtime is healthy and actively progressing.", body)
+        self.assertIn("worker pool", body)
+        self.assertIn("job activity", body)
+
+    def test_overview_warns_when_system_is_quiet_with_stale_signals(self) -> None:
+        root = self._workspace_root("overview_health_warn")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=5)
+            now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
+            with (
+                patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 0, "running": 0, "completed": 9},
+                        "workers": [
+                            {
+                                "worker_id": "worker-01",
+                                "status": "idle",
+                                "current_job_id": None,
+                                "heartbeat_at": "2026-03-21T21:30:00+00:00",
+                            }
+                        ],
+                        "jobs": [],
+                        "campaigns": [
+                            {
+                                "campaign_id": "campaign-1",
+                                "campaign_name": "broad-operability",
+                                "status": "running",
+                                "phase": "focused_operability",
+                                "updated_at": "2026-03-21T21:20:00+00:00",
+                            }
+                        ],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "status": "running",
+                            }
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.campaign_status",
+                    return_value={
+                        "campaign": {
+                            "campaign_id": "campaign-1",
+                            "campaign_name": "broad-operability",
+                            "status": "running",
+                            "phase": "focused_operability",
+                            "updated_at": "2026-03-21T21:20:00+00:00",
+                        }
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.director_status",
+                    return_value={
+                        "director": {
+                            "director_id": "director-1",
+                            "director_name": "broad-operability-director",
+                            "status": "running",
+                            "current_campaign_id": "campaign-1",
+                            "successful_campaign_id": None,
+                            "spec": {"plan_name": "broad-operability-plan"},
+                            "state": {"campaign_queue": [{"status": "running"}]},
+                        }
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("System Health", body)
+        self.assertIn("Research runtime is degraded: activity exists, but some signals look stale.", body)
+        self.assertIn("stale heartbeats older than 3 minutes", body)
+
+    def test_overview_marks_stalled_when_running_jobs_are_stale(self) -> None:
+        root = self._workspace_root("overview_health_stalled")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=5)
+            now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
+            with (
+                patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 0, "running": 2, "completed": 9},
+                        "workers": [
+                            {
+                                "worker_id": "worker-01",
+                                "status": "idle",
+                                "current_job_id": None,
+                                "heartbeat_at": "2026-03-21T21:39:50+00:00",
+                            }
+                        ],
+                        "jobs": [
+                            {
+                                "job_id": "job-1",
+                                "campaign_id": "campaign-1",
+                                "command": "promotion-check",
+                                "status": "running",
+                                "leased_by": "worker-old",
+                                "created_at": "2026-03-21T21:00:00+00:00",
+                                "updated_at": "2026-03-21T21:20:00+00:00",
+                            }
+                        ],
+                        "campaigns": [
+                            {
+                                "campaign_id": "campaign-1",
+                                "campaign_name": "broad-operability",
+                                "status": "running",
+                                "phase": "focused_operability",
+                                "updated_at": "2026-03-21T21:23:00+00:00",
+                            }
+                        ],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "status": "running",
+                            }
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.campaign_status",
+                    return_value={
+                        "campaign": {
+                            "campaign_id": "campaign-1",
+                            "campaign_name": "broad-operability",
+                            "status": "running",
+                            "phase": "focused_operability",
+                            "updated_at": "2026-03-21T21:23:00+00:00",
+                        }
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.director_status",
+                    return_value={
+                        "director": {
+                            "director_id": "director-1",
+                            "director_name": "broad-operability-director",
+                            "status": "running",
+                            "current_campaign_id": "campaign-1",
+                            "successful_campaign_id": None,
+                            "spec": {"plan_name": "broad-operability-plan"},
+                            "state": {"campaign_queue": [{"status": "running"}]},
+                        }
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Research runtime looks stalled: jobs are marked running, but their progress signals are stale.", body)
+        self.assertIn("running job(s) have not updated for more than 15 minutes", body)
 
     def test_director_detail_page_renders_plan_queue(self) -> None:
         root = self._workspace_root("director")

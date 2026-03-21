@@ -9,6 +9,7 @@ from trotters_trader.config import load_config
 from trotters_trader.experiments import run_promotion_check, run_universe_slice_sweep
 from trotters_trader.reports import (
     build_operability_scorecard,
+    safe_artifact_dirname,
     write_operability_program_report,
     write_paper_trade_decision_artifacts,
     write_promotion_artifacts,
@@ -88,6 +89,36 @@ class ReportTests(IsolatedWorkspaceTestCase):
         self.assertIn("## Walk-Forward", summary_text)
         self.assertIn("## Split Summary", summary_text)
         self.assertIn("## Decision", summary_text)
+
+    def test_promotion_artifacts_ignore_malformed_last_history_line(self) -> None:
+        output_dir = self.temp_root / "runs"
+        history_dir = output_dir / "profile_history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        history_path = history_dir / "test_profile.jsonl"
+        history_path.write_text(
+            '{"recorded_at_utc":"2026-03-21T00:00:00+00:00","profile":{"profile_name":"test_profile"}}\n{"broken": "line"\n',
+            encoding="utf-8",
+        )
+
+        artifacts = write_promotion_artifacts(
+            output_dir=output_dir,
+            report_name="promotion_test_report",
+            promotion_decision={
+                "eligible": False,
+                "recommended_action": "retain",
+                "profile": {"profile_name": "test_profile", "profile_version": "2026-03-21.1"},
+            },
+            config_path="configs/backtest.toml",
+        )
+
+        self.assertTrue(Path(artifacts["promotion_md"]).exists())
+
+    def test_safe_artifact_dirname_shortens_long_names(self) -> None:
+        original = "very_long_name_" * 20
+        shortened = safe_artifact_dirname(original)
+
+        self.assertLessEqual(len(shortened), 96)
+        self.assertNotEqual(shortened, "")
 
     def test_tranche_report_is_written(self) -> None:
         base_config = self.isolated_config(Path("configs/backtest.toml"))
@@ -207,6 +238,7 @@ class ReportTests(IsolatedWorkspaceTestCase):
         self.assertIn("## Weaknesses", scorecard_text)
         self.assertIn("## Next Steps", scorecard_text)
         self.assertIn("## Deltas", comparison_text)
+        self.assertLessEqual(Path(artifacts["summary_md"]).parent.name.__len__(), 96)
 
     def test_operability_scorecard_maps_exhausted_campaign_to_reject(self) -> None:
         scorecard = build_operability_scorecard(

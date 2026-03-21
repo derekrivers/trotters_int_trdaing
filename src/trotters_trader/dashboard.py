@@ -294,6 +294,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     directors = payload.get("active_directors", []) if isinstance(payload.get("active_directors"), list) else []
     campaigns = payload.get("active_campaigns", []) if isinstance(payload.get("active_campaigns"), list) else []
     notifications = payload.get("notifications", []) if isinstance(payload.get("notifications"), list) else []
+    health = _runtime_health(status=status, campaigns=campaigns, directors=directors)
 
     summary_cards = "".join(
         _summary_card(label, str(counts.get(label, 0)))
@@ -348,7 +349,8 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         <a class="button secondary" href="/api/overview.json">JSON</a>
       </div>
     </section>
-    {_notification_banner(notifications)}
+    {_notification_banner(notifications, campaigns=campaigns, directors=directors)}
+    {_health_panel(health)}
     <section class="summary-grid">{summary_cards}</section>
     <section class="panel">
       <h2>Outcome Summary</h2>
@@ -1035,6 +1037,44 @@ def _summary_card(label: str, value: str) -> str:
     return f"<section class='card'><h2>{escape(label)}</h2><div class='metric'>{escape(value)}</div></section>"
 
 
+def _health_panel(health: dict[str, object]) -> str:
+    status = str(health.get("status", "unknown"))
+    summary = str(health.get("summary", "No health summary available."))
+    checks = health.get("checks", [])
+    rows = "".join(_health_check_row(check) for check in checks if isinstance(check, dict))
+    if not rows:
+        rows = "<tr><td colspan='3'>No health checks available.</td></tr>"
+    return f"""
+    <section class="panel">
+      <h2>System Health</h2>
+      {_alert_banner(summary, _health_severity(status))}
+      <table>
+        <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
+
+
+def _health_check_row(check: dict[str, object]) -> str:
+    return (
+        "<tr>"
+        f"<td>{escape(str(check.get('name', 'check')))}</td>"
+        f"<td>{_status_pill(str(check.get('status', 'unknown')))}</td>"
+        f"<td>{escape(str(check.get('detail', '')))}</td>"
+        "</tr>"
+    )
+
+
+def _health_severity(status: str) -> str:
+    lowered = status.lower()
+    if lowered in {"critical", "error", "stalled"}:
+        return "error"
+    if lowered in {"warning", "degraded", "idle"}:
+        return "warning"
+    return "success"
+
+
 def _status_count(items: object, status: str) -> int:
     if not isinstance(items, list):
         return 0
@@ -1622,6 +1662,132 @@ def _recent_changes(
     return sorted(items, key=lambda item: _timestamp_sort_key(item.get("timestamp")), reverse=True)[:limit]
 
 
+def _runtime_health(
+    *,
+    status: dict[str, object],
+    campaigns: list[dict[str, object]],
+    directors: list[dict[str, object]],
+) -> dict[str, object]:
+    counts = status.get("counts", {}) if isinstance(status.get("counts"), dict) else {}
+    workers = [worker for worker in status.get("workers", []) if isinstance(worker, dict)] if isinstance(status.get("workers"), list) else []
+    jobs = [job for job in status.get("jobs", []) if isinstance(job, dict)] if isinstance(status.get("jobs"), list) else []
+    queued = int(counts.get("queued", 0) or 0)
+    running = int(counts.get("running", 0) or 0)
+    active_worker_count = sum(
+        1
+        for worker in workers
+        if str(worker.get("status", "")).lower() in {"running", "idle"}
+    )
+    stale_worker_count = sum(
+        1
+        for worker in workers
+        if _age_seconds(worker.get("heartbeat_at") or worker.get("updated_at")) is not None
+        and _age_seconds(worker.get("heartbeat_at") or worker.get("updated_at")) > 180
+    )
+    stale_running_job_count = sum(
+        1
+        for job in jobs
+        if str(job.get("status", "")).lower() == "running"
+        and (_age_seconds(job.get("updated_at")) or 0) > 900
+    )
+    oldest_running_job_age = max(
+        (
+            _age_seconds(job.get("updated_at")) or 0
+            for job in jobs
+            if str(job.get("status", "")).lower() == "running"
+        ),
+        default=0,
+    )
+    freshest_campaign_age = min(
+        (
+            _age_seconds(campaign.get("updated_at")) or 0
+            for campaign in campaigns
+        ),
+        default=None,
+    )
+
+    checks: list[dict[str, str]] = []
+    checks.append(
+        {
+            "name": "worker pool",
+            "status": "ok" if active_worker_count > 0 else "error",
+            "detail": (
+                f"{active_worker_count} workers active."
+                if active_worker_count > 0
+                else "No active workers are reporting. Research cannot progress."
+            ),
+        }
+    )
+    checks.append(
+        {
+            "name": "worker heartbeats",
+            "status": "ok" if stale_worker_count == 0 else "warning",
+            "detail": (
+                "All worker heartbeats are fresh."
+                if stale_worker_count == 0
+                else f"{stale_worker_count} worker records have stale heartbeats older than 3 minutes."
+            ),
+        }
+    )
+    checks.append(
+        {
+            "name": "job activity",
+            "status": "ok" if running > 0 or queued > 0 else "warning",
+            "detail": (
+                f"{running} running and {queued} queued jobs."
+                if running > 0 or queued > 0
+                else "No queued or running jobs. The system is waiting for the next campaign decision or is idle."
+            ),
+        }
+    )
+    checks.append(
+        {
+            "name": "campaign activity",
+            "status": (
+                "ok"
+                if campaigns and (freshest_campaign_age is None or freshest_campaign_age <= 900)
+                else "warning"
+            ),
+            "detail": (
+                f"{len(campaigns)} active campaign(s); most recent update {_format_age_seconds(freshest_campaign_age)}."
+                if campaigns
+                else "No active campaigns. The director may be idle, paused, or complete."
+            ),
+        }
+    )
+    if running > 0:
+        checks.append(
+            {
+                "name": "running job freshness",
+                "status": "ok" if stale_running_job_count == 0 else "warning",
+                "detail": (
+                    f"{stale_running_job_count} running job(s) have not updated for more than 15 minutes; oldest update {_format_age_seconds(oldest_running_job_age)}."
+                    if stale_running_job_count > 0
+                    else "Running jobs are updating normally."
+                ),
+            }
+        )
+
+    overall = "healthy"
+    summary = "Research runtime is healthy and actively progressing."
+    if active_worker_count == 0:
+        overall = "critical"
+        summary = "Research runtime is unhealthy: no workers are active."
+    elif stale_running_job_count > 0:
+        overall = "stalled"
+        summary = "Research runtime looks stalled: jobs are marked running, but their progress signals are stale."
+    elif stale_worker_count > 0 or oldest_running_job_age > 1800:
+        overall = "warning"
+        summary = "Research runtime is degraded: activity exists, but some signals look stale."
+    elif running == 0 and queued == 0 and campaigns:
+        overall = "warning"
+        summary = "Research runtime is quiet: campaigns are active but no jobs are currently queued or running."
+    elif running == 0 and queued == 0 and not campaigns and not directors:
+        overall = "idle"
+        summary = "Research runtime is idle: there is no active campaign or queued work."
+    return {"status": overall, "summary": summary, "checks": checks}
+
+
 def _timestamp_sort_key(value: object) -> float:
     text = str(value or "").strip()
     if not text:
@@ -1661,22 +1827,48 @@ def _timestamp_with_age(value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return "-"
+    age = _format_age_label(value)
+    if age is None:
+        return escape(text)
+    return f"{escape(text)} <span class='subtle'>({escape(age)})</span>"
+
+
+def _format_age_label(value: object) -> str | None:
+    delta_seconds = _age_seconds(value)
+    return _format_age_label_from_seconds(delta_seconds)
+
+
+def _format_age_label_from_seconds(delta_seconds: int | None) -> str | None:
+    if delta_seconds is None:
+        return None
+    if delta_seconds < 60:
+        return f"{delta_seconds}s ago"
+    if delta_seconds < 3600:
+        return f"{delta_seconds // 60}m ago"
+    if delta_seconds < 86400:
+        return f"{delta_seconds // 3600}h ago"
+    return f"{delta_seconds // 86400}d ago"
+
+
+def _format_age_seconds(delta_seconds: int | None) -> str:
+    return _format_age_label_from_seconds(delta_seconds) or "at an unknown time"
+
+
+def _age_seconds(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
     try:
         timestamp = datetime.fromisoformat(text)
     except ValueError:
-        return escape(text)
+        return None
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
-    delta_seconds = max(int((datetime.now(UTC) - timestamp.astimezone(UTC)).total_seconds()), 0)
-    if delta_seconds < 60:
-        age = f"{delta_seconds}s ago"
-    elif delta_seconds < 3600:
-        age = f"{delta_seconds // 60}m ago"
-    elif delta_seconds < 86400:
-        age = f"{delta_seconds // 3600}h ago"
-    else:
-        age = f"{delta_seconds // 86400}d ago"
-    return f"{escape(text)} <span class='subtle'>({escape(age)})</span>"
+    return max(int((_utc_now() - timestamp.astimezone(UTC)).total_seconds()), 0)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _stop_form(campaign_id: str) -> str:
@@ -1736,14 +1928,32 @@ def _flash_banner(message: str | None) -> str:
     return f"<div class='flash'>{escape(message)}</div>"
 
 
-def _notification_banner(notifications: object) -> str:
+def _notification_banner(
+    notifications: object,
+    *,
+    campaigns: object | None = None,
+    directors: object | None = None,
+) -> str:
     if not isinstance(notifications, list):
         return ""
+    active_campaign_ids = {
+        str(campaign.get("campaign_id", ""))
+        for campaign in campaigns
+        if isinstance(campaign, dict) and str(campaign.get("campaign_id", ""))
+    } if isinstance(campaigns, list) else set()
+    has_active_work = bool(active_campaign_ids) or any(
+        isinstance(director, dict) and str(director.get("status", "")).lower() in {"queued", "running", "paused"}
+        for director in directors
+    ) if isinstance(directors, list) else bool(active_campaign_ids)
     record = next(
         (
             entry
             for entry in notifications
-            if isinstance(entry, dict) and str(entry.get("severity", "info")).lower() in {"success", "warning", "error"}
+            if _should_show_notification_banner(
+                entry,
+                active_campaign_ids=active_campaign_ids,
+                has_active_work=has_active_work,
+            )
         ),
         None,
     )
@@ -1766,6 +1976,28 @@ def _notification_banner(notifications: object) -> str:
     else:
         message = str(record.get("message", "") or event_type)
     return _alert_banner(message, severity)
+
+
+def _should_show_notification_banner(
+    record: object,
+    *,
+    active_campaign_ids: set[str],
+    has_active_work: bool,
+) -> bool:
+    if not isinstance(record, dict):
+        return False
+    severity = str(record.get("severity", "info")).lower()
+    if severity not in {"success", "warning", "error"}:
+        return False
+    event_type = str(record.get("event_type", "notification")).lower()
+    campaign_id = str(record.get("campaign_id", ""))
+    if not has_active_work:
+        return True
+    if event_type in {"campaign_stopped", "campaign_failed"}:
+        return campaign_id in active_campaign_ids
+    if event_type == "campaign_finished" and severity == "warning":
+        return campaign_id in active_campaign_ids
+    return True
 
 
 def _campaign_state_banner(campaign: dict[str, object], state: dict[str, object]) -> str:

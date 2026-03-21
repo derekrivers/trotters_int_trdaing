@@ -74,6 +74,14 @@ SQLITE_BUSY_TIMEOUT_MS = 30000
 SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 SQLITE_INIT_MAX_ATTEMPTS = 5
 SQLITE_INIT_RETRY_SECONDS = 0.25
+CAMPAIGN_RUNTIME_RETRY_LIMIT = 2
+RETRYABLE_RUNTIME_ERROR_MARKERS = (
+    "disk i/o error",
+    "database is locked",
+    "unable to open database file",
+    "unterminated string",
+    "jsondecodeerror",
+)
 
 
 @dataclass(frozen=True)
@@ -366,6 +374,7 @@ def coordinator_cycle(paths: ResearchRuntimePaths, lease_timeout_seconds: int = 
     now_dt = _parse_timestamp(_utcnow())
     cutoff = _isoformat(now_dt - timedelta(seconds=max(lease_timeout_seconds, 1)))
     worker_cutoff = _isoformat(now_dt - timedelta(seconds=min(max(lease_timeout_seconds, 1), 30)))
+    stale_running_cutoff = _isoformat(now_dt - timedelta(seconds=max(60, min(max(lease_timeout_seconds, 1), 180))))
     requeued = 0
     failed = 0
     with _connect(paths) as connection:
@@ -394,6 +403,9 @@ def coordinator_cycle(paths: ResearchRuntimePaths, lease_timeout_seconds: int = 
                 requeued += 1
             else:
                 failed += 1
+        recovered = _recover_stale_running_jobs(connection, stale_running_cutoff)
+        requeued += recovered["requeued"]
+        failed += recovered["failed"]
         _prune_stale_workers(connection, worker_cutoff)
         snapshot = _build_status_snapshot(connection)
     exports = export_runtime_catalog(paths)
@@ -422,6 +434,21 @@ def heartbeat_worker(paths: ResearchRuntimePaths, worker_id: str, current_job_id
             ON CONFLICT(worker_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at
             """,
             (worker_id, now),
+        )
+
+
+def renew_job_lease(paths: ResearchRuntimePaths, job_id: str, worker_id: str, lease_timeout_seconds: int) -> None:
+    initialize_runtime(paths)
+    now = _utcnow()
+    lease_expires_at = _isoformat(_parse_timestamp(now) + timedelta(seconds=max(lease_timeout_seconds, 1)))
+    with _connect(paths) as connection:
+        connection.execute(
+            """
+            UPDATE jobs
+            SET lease_expires_at = ?, updated_at = ?
+            WHERE job_id = ? AND status = 'running' AND leased_by = ?
+            """,
+            (lease_expires_at, now, job_id, worker_id),
         )
 
 
@@ -488,7 +515,7 @@ def worker_loop(
             time.sleep(max(poll_seconds, 0.1))
             continue
         heartbeat_worker(paths, worker_id, current_job_id=job.job_id, status="running")
-        if execute_leased_job(paths, worker_id, job):
+        if execute_leased_job(paths, worker_id, job, lease_timeout_seconds=lease_timeout_seconds):
             completed_jobs += 1
         else:
             failed_jobs += 1
@@ -498,7 +525,13 @@ def worker_loop(
     return {"worker_id": worker_id, "completed_jobs": completed_jobs, "failed_jobs": failed_jobs}
 
 
-def execute_leased_job(paths: ResearchRuntimePaths, worker_id: str, job: ResearchJob) -> bool:
+def execute_leased_job(
+    paths: ResearchRuntimePaths,
+    worker_id: str,
+    job: ResearchJob,
+    *,
+    lease_timeout_seconds: int,
+) -> bool:
     attempt_number = job.attempt_count
     log_dir = paths.logs_dir / job.job_id
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -519,21 +552,33 @@ def execute_leased_job(paths: ResearchRuntimePaths, worker_id: str, job: Researc
         "--job-id",
         job.job_id,
     ]
+    heartbeat_interval = max(5.0, min(30.0, 15.0))
     with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open("w", encoding="utf-8") as stderr_handle:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             stdout=stdout_handle,
             stderr=stderr_handle,
             cwd=Path.cwd(),
             env=env,
-            check=False,
         )
-    if completed.returncode == 0:
+        last_heartbeat = time.monotonic()
+        while True:
+            returncode = process.poll()
+            now = time.monotonic()
+            if returncode is not None:
+                completed_returncode = returncode
+                break
+            if now - last_heartbeat >= heartbeat_interval:
+                heartbeat_worker(paths, worker_id, current_job_id=job.job_id, status="running")
+                renew_job_lease(paths, job.job_id, worker_id, lease_timeout_seconds)
+                last_heartbeat = now
+            time.sleep(1.0)
+    if completed_returncode == 0:
         payload = json.loads(stdout_path.read_text(encoding="utf-8"))
-        complete_job(paths, job.job_id, worker_id, completed.returncode, payload, stdout_path, stderr_path)
+        complete_job(paths, job.job_id, worker_id, completed_returncode, payload, stdout_path, stderr_path)
         return True
     error_message = stderr_path.read_text(encoding="utf-8").strip() or stdout_path.read_text(encoding="utf-8").strip()
-    fail_job(paths, job.job_id, worker_id, completed.returncode, error_message, stdout_path, stderr_path)
+    fail_job(paths, job.job_id, worker_id, completed_returncode, error_message, stdout_path, stderr_path)
     return False
 
 
@@ -2771,6 +2816,8 @@ def _notification_severity(event_type: str, payload: dict[str, object]) -> str:
     normalized = event_type.lower()
     if normalized == "strategy_promoted":
         return "success"
+    if normalized == "campaign_retry_scheduled":
+        return "warning"
     if normalized in {"campaign_failed"}:
         return "error"
     if normalized in {"campaign_stopped"}:
@@ -2787,6 +2834,13 @@ def _notification_severity(event_type: str, payload: dict[str, object]) -> str:
     return "info"
 
 
+def _is_retryable_runtime_error(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in RETRYABLE_RUNTIME_ERROR_MARKERS)
+
+
 def _handle_campaign_runtime_error(
     paths: ResearchRuntimePaths,
     campaign_id: str,
@@ -2798,36 +2852,81 @@ def _handle_campaign_runtime_error(
         if campaign.status not in ACTIVE_CAMPAIGN_STATUSES:
             return
         state = campaign.state
-        state["pending_stage"] = None
-        final_decision = {
-            "recommended_action": "failed",
-            "reason": "campaign_runtime_error",
-            "selected_run_name": None,
-            "selected_profile_name": None,
-            "selected_candidate_eligible": False,
-            "selected_stress_ok": False,
-            "pivot_used": bool(state.get("pivot_result")),
-            "error": str(exc),
-        }
-        state["final_decision"] = final_decision
-        now = _utcnow()
-        connection.execute(
-            """
-            UPDATE campaigns
-            SET status = 'failed', state_json = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?), last_error = ?
-            WHERE campaign_id = ?
-            """,
-            (json.dumps(state, indent=2), now, now, str(exc), campaign_id),
+        retry_count = int(state.get("runtime_retry_count", 0) or 0)
+        retryable = _is_retryable_runtime_error(exc) and retry_count < CAMPAIGN_RUNTIME_RETRY_LIMIT
+        if retryable:
+            retry_count += 1
+            state["runtime_retry_count"] = retry_count
+            state["last_runtime_error"] = str(exc)
+            state.setdefault("runtime_retry_errors", []).append(str(exc))
+            now = _utcnow()
+            connection.execute(
+                """
+                UPDATE campaigns
+                SET status = 'running', state_json = ?, updated_at = ?, last_error = ?
+                WHERE campaign_id = ?
+                """,
+                (json.dumps(state, indent=2), now, str(exc), campaign_id),
+            )
+            _record_campaign_event(
+                connection,
+                campaign_id,
+                "campaign_retry_scheduled",
+                f"Retrying campaign after runtime error: {exc}",
+                {
+                    "retry_count": retry_count,
+                    "retry_limit": CAMPAIGN_RUNTIME_RETRY_LIMIT,
+                    "error": str(exc),
+                },
+            )
+            campaign_name = campaign.campaign_name
+            spec = campaign.spec
+        else:
+            state["pending_stage"] = None
+            final_decision = {
+                "recommended_action": "failed",
+                "reason": "campaign_runtime_error",
+                "selected_run_name": None,
+                "selected_profile_name": None,
+                "selected_candidate_eligible": False,
+                "selected_stress_ok": False,
+                "pivot_used": bool(state.get("pivot_result")),
+                "error": str(exc),
+            }
+            state["final_decision"] = final_decision
+            now = _utcnow()
+            connection.execute(
+                """
+                UPDATE campaigns
+                SET status = 'failed', state_json = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?), last_error = ?
+                WHERE campaign_id = ?
+                """,
+                (json.dumps(state, indent=2), now, now, str(exc), campaign_id),
+            )
+            _record_campaign_event(
+                connection,
+                campaign_id,
+                "campaign_failed",
+                f"Campaign failed due to runtime error: {exc}",
+                final_decision,
+            )
+            campaign_name = campaign.campaign_name
+            spec = campaign.spec
+    if retryable:
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            event_type="campaign_retry_scheduled",
+            message=f"Retrying campaign after runtime error ({retry_count}/{CAMPAIGN_RUNTIME_RETRY_LIMIT}): {exc}",
+            payload={
+                "retry_count": retry_count,
+                "retry_limit": CAMPAIGN_RUNTIME_RETRY_LIMIT,
+                "error": str(exc),
+            },
+            spec=spec,
         )
-        _record_campaign_event(
-            connection,
-            campaign_id,
-            "campaign_failed",
-            f"Campaign failed due to runtime error: {exc}",
-            final_decision,
-        )
-        campaign_name = campaign.campaign_name
-        spec = campaign.spec
+        return
     _emit_campaign_notification(
         paths,
         campaign_id=campaign_id,
@@ -2993,6 +3092,50 @@ def _prune_stale_workers(connection: sqlite3.Connection, cutoff: str) -> None:
     for row in stale_workers:
         connection.execute("DELETE FROM workers WHERE worker_id = ?", (row["worker_id"],))
         connection.execute("DELETE FROM worker_heartbeats WHERE worker_id = ?", (row["worker_id"],))
+
+
+def _recover_stale_running_jobs(connection: sqlite3.Connection, cutoff: str) -> dict[str, int]:
+    stale_jobs = connection.execute(
+        """
+        SELECT jobs.job_id, jobs.attempt_count, jobs.max_attempts, jobs.leased_by
+        FROM jobs
+        LEFT JOIN workers ON workers.worker_id = jobs.leased_by
+        LEFT JOIN worker_heartbeats ON worker_heartbeats.worker_id = jobs.leased_by
+        WHERE jobs.status = 'running'
+          AND (
+              jobs.leased_by IS NULL
+              OR workers.worker_id IS NULL
+              OR COALESCE(worker_heartbeats.heartbeat_at, workers.updated_at, jobs.updated_at) < ?
+          )
+        """,
+        (cutoff,),
+    ).fetchall()
+    now = _utcnow()
+    requeued = 0
+    failed = 0
+    for row in stale_jobs:
+        next_status = "queued" if int(row["attempt_count"]) < int(row["max_attempts"]) else "failed"
+        error_message = "worker_heartbeat_stale" if next_status == "failed" else "worker_recovered"
+        connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?, leased_by = NULL, lease_expires_at = NULL, updated_at = ?,
+                finished_at = CASE WHEN ? = 'failed' THEN ? ELSE finished_at END,
+                error_message = CASE WHEN ? = 'failed' THEN ? ELSE error_message END
+            WHERE job_id = ?
+            """,
+            (next_status, now, next_status, now, next_status, error_message, row["job_id"]),
+        )
+        if row["leased_by"]:
+            connection.execute(
+                "UPDATE workers SET status = 'idle', current_job_id = NULL, updated_at = ? WHERE worker_id = ?",
+                (now, row["leased_by"]),
+            )
+        if next_status == "queued":
+            requeued += 1
+        else:
+            failed += 1
+    return {"requeued": requeued, "failed": failed}
 
 
 def _write_runtime_status_exports(paths: ResearchRuntimePaths) -> None:

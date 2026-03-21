@@ -23,6 +23,7 @@ from trotters_trader.research_runtime import (
     start_director,
     runtime_paths,
     runtime_status,
+    renew_job_lease,
     step_director,
     start_campaign,
     stop_director,
@@ -168,6 +169,72 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         snapshot = coordinator_cycle(paths, lease_timeout_seconds=300)
         worker_ids = [worker["worker_id"] for worker in snapshot["workers"]]
         self.assertNotIn("worker-stale", worker_ids)
+
+    def test_coordinator_recovers_running_job_from_stale_worker(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        submit_jobs(
+            paths,
+            {
+                "job_id": "job-1",
+                "command": "backtest",
+                "config_path": "configs/backtest.toml",
+            },
+        )
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'running', leased_by = 'worker-stale', attempt_count = 1,
+                    lease_expires_at = '2999-01-01T00:00:00+00:00', updated_at = '2000-01-01T00:00:00+00:00'
+                WHERE job_id = 'job-1'
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO workers (worker_id, status, current_job_id, updated_at)
+                VALUES ('worker-stale', 'running', 'job-1', '2000-01-01T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO worker_heartbeats (worker_id, heartbeat_at)
+                VALUES ('worker-stale', '2000-01-01T00:00:00+00:00')
+                """
+            )
+
+        snapshot = coordinator_cycle(paths, lease_timeout_seconds=300)
+        self.assertEqual(snapshot["counts"].get("queued"), 1)
+        recovered_job = next(job for job in snapshot["jobs"] if job["job_id"] == "job-1")
+        self.assertEqual(recovered_job["status"], "queued")
+        self.assertIsNone(recovered_job["leased_by"])
+
+    def test_renew_job_lease_extends_running_job_expiry(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        submit_jobs(
+            paths,
+            {
+                "job_id": "job-1",
+                "command": "backtest",
+                "config_path": "configs/backtest.toml",
+            },
+        )
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'running', leased_by = 'worker-1', lease_expires_at = '2000-01-01T00:00:00+00:00'
+                WHERE job_id = 'job-1'
+                """
+            )
+
+        renew_job_lease(paths, "job-1", "worker-1", 300)
+
+        with sqlite3.connect(paths.database_path) as connection:
+            lease_expires_at = connection.execute(
+                "SELECT lease_expires_at FROM jobs WHERE job_id = 'job-1'"
+            ).fetchone()[0]
+
+        self.assertGreater(lease_expires_at, "2000-01-01T00:00:00+00:00")
 
     def test_cli_submit_accepts_spec_file(self) -> None:
         canonical_dir = self._prepared_dataset()
@@ -855,6 +922,77 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         failed = next(record for record in records if record["event_type"] == "campaign_failed")
         self.assertIn("boom", failed["message"])
         self.assertEqual(failed["severity"], "error")
+
+    def test_campaign_manager_retries_retryable_runtime_error(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO campaigns (
+                    campaign_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                    created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "campaign-retry",
+                    "campaign-retry",
+                    "configs/backtest.toml",
+                    "running",
+                    "focused_operability",
+                    json.dumps(
+                        {
+                            "config_path": "configs/backtest.toml",
+                            "quality_gate": "all",
+                            "input_dataset_ref": "datasets/test/canonical",
+                            "input_dataset_ref_mode": "runtime_relative",
+                            "feature_set_ref": None,
+                            "feature_set_ref_mode": "raw",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "seed_overrides": {},
+                            "control_row": None,
+                            "candidate_pool": [],
+                            "focused_result": None,
+                            "pivot_result": None,
+                            "stability_result": None,
+                            "shortlisted": [],
+                            "stress_results": [],
+                            "final_decision": None,
+                            "pending_stage": {"phase": "focused_operability", "stage_id": "stage-1", "job_ids": ["job-1"]},
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        with patch(
+            "trotters_trader.research_runtime.step_campaign",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            payload = campaign_manager_loop(paths, once=True)
+
+        self.assertEqual(payload["active_campaigns"], 1)
+        status = campaign_status(paths, "campaign-retry")
+        self.assertEqual(status["campaign"]["status"], "running")
+        self.assertIn("disk I/O error", status["campaign"]["last_error"])
+        self.assertEqual(status["campaign"]["state"]["runtime_retry_count"], 1)
+        self.assertEqual(status["campaign"]["state"]["last_runtime_error"], "disk I/O error")
+        self.assertIsNone(status["campaign"]["state"]["final_decision"])
+        notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
+        records = [
+            json.loads(line)
+            for line in notifications_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        retry = next(record for record in records if record["event_type"] == "campaign_retry_scheduled")
+        self.assertIn("disk I/O error", retry["message"])
+        self.assertEqual(retry["severity"], "warning")
 
     def test_step_campaign_submits_focused_operability_jobs(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")

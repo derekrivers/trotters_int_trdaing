@@ -7,7 +7,8 @@ x-runtime-service: &runtime-service
     - ./configs:/app/configs:ro
     - ./data:/app/data:ro
     - ./src:/app/src:ro
-    - ./runtime:/runtime
+    - ./runtime/catalog:/runtime/catalog
+    - research_runtime:/runtime/research_runtime
 
 services:
   dashboard:
@@ -79,3 +80,6 @@ services:
       - "900"
     depends_on:
       - coordinator
+
+volumes:
+  research_runtime:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime, UTC
+import hashlib
 import json
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def write_comparison_report(
     rows: list[dict[str, object]],
     quality_gate: str = "all",
 ) -> dict[str, str]:
-    report_dir = output_dir / report_name
+    report_dir = output_dir / safe_artifact_dirname(report_name)
     report_dir.mkdir(parents=True, exist_ok=True)
 
     summary_path = report_dir / "comparison_summary.md"
@@ -116,7 +117,7 @@ def write_experiment_index(
     rows: list[dict[str, object]],
     quality_gate: str = "all",
 ) -> str:
-    index_path = output_dir / report_name / "experiment_index.md"
+    index_path = output_dir / safe_artifact_dirname(report_name) / "experiment_index.md"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     filtered_rows = _filter_comparison_rows(rows, quality_gate)
     index_path.write_text(
@@ -137,7 +138,7 @@ def write_promotion_artifacts(
     promotion_decision: dict[str, object],
     config_path: str,
 ) -> dict[str, str]:
-    report_dir = output_dir / report_name
+    report_dir = output_dir / safe_artifact_dirname(report_name)
     report_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = report_dir / "promotion_decision.json"
@@ -193,7 +194,7 @@ def write_tranche_report(
     candidate_rows: list[dict[str, object] | None],
     decision: dict[str, object],
 ) -> dict[str, str]:
-    report_dir = output_dir / report_name
+    report_dir = output_dir / safe_artifact_dirname(report_name)
     report_dir.mkdir(parents=True, exist_ok=True)
 
     summary_path = report_dir / "tranche_summary.md"
@@ -262,7 +263,7 @@ def write_operability_program_report(
     stress_results: list[dict[str, object]],
     final_decision: dict[str, object],
 ) -> dict[str, str]:
-    report_dir = output_dir / report_name
+    report_dir = output_dir / safe_artifact_dirname(report_name)
     report_dir.mkdir(parents=True, exist_ok=True)
 
     summary_path = report_dir / "operability_program.md"
@@ -374,7 +375,7 @@ def write_paper_trade_decision_artifacts(
     report_name: str,
     decision_package: dict[str, object],
 ) -> dict[str, str]:
-    report_dir = output_dir / report_name
+    report_dir = output_dir / safe_artifact_dirname(report_name)
     report_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = report_dir / "paper_trade_decision.json"
@@ -1428,13 +1429,28 @@ def _decision_profile_name(
     return str(source[0].get("evaluation_profile", "default"))
 
 
+def safe_artifact_dirname(name: str, *, max_length: int = 96) -> str:
+    cleaned = "".join(character if character.isalnum() or character in {"-", "_", "."} else "_" for character in name)
+    cleaned = cleaned.strip("._") or "artifact"
+    if len(cleaned) <= max_length:
+        return cleaned
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
+    keep = max(8, max_length - len(digest) - 1)
+    return f"{cleaned[:keep]}-{digest}"
+
+
 def _last_history_entry(path: Path) -> dict[str, object] | None:
     if not path.exists():
         return None
     lines = path.read_text(encoding="utf-8").splitlines()
     for line in reversed(lines):
         if line.strip():
-            return json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
     return None
 
 
