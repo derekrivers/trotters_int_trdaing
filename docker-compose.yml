@@ -1,0 +1,50 @@
+x-runtime-service: &runtime-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+  working_dir: /app
+  volumes:
+    - ./configs:/app/configs:ro
+    - ./data:/app/data:ro
+    - ./src:/app/src:ro
+    - ./runtime:/runtime
+
+services:
+  coordinator:
+    <<: *runtime-service
+    command:
+      - research-coordinator
+      - --runtime-root
+      - /runtime/research_runtime
+      - --catalog-output-dir
+      - /runtime/catalog
+      - --poll-seconds
+      - "2"
+      - --lease-timeout-seconds
+      - "900"
+  campaign-manager:
+    <<: *runtime-service
+    command:
+      - research-campaign-manager
+      - --runtime-root
+      - /runtime/research_runtime
+      - --catalog-output-dir
+      - /runtime/catalog
+      - --poll-seconds
+      - "15"
+    depends_on:
+      - coordinator
+  worker:
+    <<: *runtime-service
+    command:
+      - research-worker
+      - --runtime-root
+      - /runtime/research_runtime
+      - --catalog-output-dir
+      - /runtime/catalog
+      - --poll-seconds
+      - "2"
+      - --lease-timeout-seconds
+      - "900"
+    depends_on:
+      - coordinator

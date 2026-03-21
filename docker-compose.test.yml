@@ -1,0 +1,21 @@
+name: trottersindependanttraders-tests
+
+services:
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    entrypoint:
+      - python
+      - -m
+      - unittest
+      - discover
+      - -s
+      - tests
+      - -v
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+      - ./src:/app/src:ro
+      - ./tests:/app/tests

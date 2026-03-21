@@ -1,0 +1,2241 @@
+from __future__ import annotations
+
+import csv
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+import json
+import os
+from pathlib import Path, PurePosixPath
+import sqlite3
+import subprocess
+import sys
+import time
+import uuid
+
+from trotters_trader.catalog import write_catalog_snapshot
+from trotters_trader.canonical import materialize_canonical_data
+from trotters_trader.config import RuntimeOverrides, apply_runtime_overrides, load_config
+from trotters_trader.experiments import (
+    apply_research_variant,
+    _batch_preset_definition,
+    _benchmark_pivot_scenarios,
+    _candidate_config,
+    _candidate_decision_score,
+    _candidate_row_config,
+    _candidate_row_from_promotion,
+    _operability_shortlist,
+    _select_operability_candidate,
+    _stability_pivot_scenarios,
+    _stress_config,
+    _stress_row_non_broken,
+    _stress_scenarios,
+)
+from trotters_trader.features import materialize_feature_set
+from trotters_trader.reports import write_operability_program_report, write_promotion_artifacts, write_tranche_report
+
+SUPPORTED_RESEARCH_COMMANDS = {
+    "backtest",
+    "report",
+    "experiment",
+    "compare-strategies",
+    "compare-profiles",
+    "compare-benchmarks",
+    "sensitivity",
+    "thresholds",
+    "momentum-sweep",
+    "momentum-refine",
+    "compare-momentum-profiles",
+    "validate-split",
+    "risk-sweep",
+    "regime-sweep",
+    "sector-sweep",
+    "walk-forward",
+    "promotion-check",
+    "universe-slice-sweep",
+    "ranking-sweep",
+    "construction-sweep",
+    "starter-tranche",
+    "operability-program",
+}
+
+PATH_SUFFIXES = {".json", ".jsonl", ".md", ".csv"}
+ACTIVE_CAMPAIGN_STATUSES = {"queued", "running"}
+DEFAULT_NOTIFICATION_EVENTS = ("campaign_finished", "campaign_stopped", "campaign_failed")
+CAMPAIGN_NOTIFICATION_JSONL = "campaign_notifications.jsonl"
+
+
+@dataclass(frozen=True)
+class ResearchRuntimePaths:
+    runtime_root: Path
+    state_dir: Path
+    database_path: Path
+    job_outputs_dir: Path
+    logs_dir: Path
+    catalog_output_dir: Path
+
+
+@dataclass(frozen=True)
+class ResearchJob:
+    job_id: str
+    campaign_id: str | None
+    command: str
+    config_path: str
+    spec_json: str
+    priority: int
+    status: str
+    attempt_count: int
+    max_attempts: int
+    output_root: str
+    input_dataset_ref: str | None
+    feature_set_ref: str | None
+    control_profile: str | None
+    quality_gate: str
+    evaluation_profile: str | None
+
+    @property
+    def spec(self) -> dict[str, object]:
+        return json.loads(self.spec_json)
+
+
+@dataclass(frozen=True)
+class ResearchCampaign:
+    campaign_id: str
+    campaign_name: str
+    config_path: str
+    status: str
+    phase: str
+    spec_json: str
+    state_json: str
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    finished_at: str | None
+    latest_report_path: str | None
+    last_error: str | None
+
+    @property
+    def spec(self) -> dict[str, object]:
+        payload = json.loads(self.spec_json)
+        return payload if isinstance(payload, dict) else {}
+
+    @property
+    def state(self) -> dict[str, object]:
+        payload = json.loads(self.state_json)
+        return payload if isinstance(payload, dict) else {}
+
+
+def runtime_paths(runtime_root: Path | str, catalog_output_dir: Path | str = "runs") -> ResearchRuntimePaths:
+    root = Path(runtime_root)
+    return ResearchRuntimePaths(
+        runtime_root=root,
+        state_dir=root / "state",
+        database_path=root / "state" / "research_runtime.sqlite3",
+        job_outputs_dir=root / "job_outputs",
+        logs_dir=root / "logs",
+        catalog_output_dir=Path(catalog_output_dir),
+    )
+
+
+def initialize_runtime(paths: ResearchRuntimePaths) -> None:
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    paths.job_outputs_dir.mkdir(parents=True, exist_ok=True)
+    paths.logs_dir.mkdir(parents=True, exist_ok=True)
+    paths.catalog_output_dir.mkdir(parents=True, exist_ok=True)
+    with _connect(paths) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                campaign_id TEXT,
+                command TEXT NOT NULL,
+                config_path TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                lease_expires_at TEXT,
+                leased_by TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                exit_code INTEGER,
+                output_root TEXT NOT NULL,
+                stdout_path TEXT,
+                stderr_path TEXT,
+                error_message TEXT,
+                input_dataset_ref TEXT,
+                feature_set_ref TEXT,
+                control_profile TEXT,
+                quality_gate TEXT NOT NULL DEFAULT 'all',
+                evaluation_profile TEXT,
+                result_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS job_attempts (
+                attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                worker_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                exit_code INTEGER,
+                stdout_path TEXT,
+                stderr_path TEXT,
+                error_message TEXT
+            );
+            CREATE TABLE IF NOT EXISTS workers (
+                worker_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                current_job_id TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS worker_heartbeats (
+                worker_id TEXT PRIMARY KEY,
+                heartbeat_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS artifacts (
+                artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                recorded_at_utc TEXT NOT NULL,
+                artifact_key TEXT NOT NULL,
+                artifact_type TEXT NOT NULL,
+                artifact_name TEXT NOT NULL,
+                primary_path TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS campaigns (
+                campaign_id TEXT PRIMARY KEY,
+                campaign_name TEXT NOT NULL,
+                config_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                latest_report_path TEXT,
+                last_error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS campaign_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id TEXT NOT NULL,
+                recorded_at_utc TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            """
+        )
+        _ensure_column(connection, "jobs", "campaign_id", "TEXT")
+
+
+def submit_jobs(paths: ResearchRuntimePaths, payload: object) -> dict[str, object]:
+    initialize_runtime(paths)
+    specs = _normalize_job_specs(payload)
+    now = _utcnow()
+    job_ids: list[str] = []
+    with _connect(paths) as connection:
+        for raw_spec in specs:
+            spec = dict(raw_spec)
+            command = str(spec["command"])
+            if command not in SUPPORTED_RESEARCH_COMMANDS:
+                raise ValueError(f"Unsupported research command '{command}'")
+            job_id = str(spec.get("job_id") or uuid.uuid4().hex)
+            output_root, output_root_mode = _normalize_output_root(spec.get("output_root"), job_id)
+            normalized_spec = {
+                **spec,
+                "job_id": job_id,
+                "output_root": output_root,
+                "output_root_mode": output_root_mode,
+            }
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, campaign_id, command, config_path, spec_json, priority, status, attempt_count, max_attempts,
+                    created_at, updated_at, output_root, input_dataset_ref, feature_set_ref, control_profile,
+                    quality_gate, evaluation_profile
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    _optional_text(spec.get("campaign_id")),
+                    command,
+                    str(spec["config_path"]),
+                    json.dumps(normalized_spec, indent=2),
+                    int(spec.get("priority", 100)),
+                    int(spec.get("max_attempts", 3)),
+                    now,
+                    now,
+                    output_root,
+                    _optional_text(spec.get("input_dataset_ref")),
+                    _optional_text(spec.get("feature_set_ref")),
+                    _optional_text(spec.get("control_profile")),
+                    str(spec.get("quality_gate", "all")),
+                    _optional_text(spec.get("evaluation_profile")),
+                ),
+            )
+            job_ids.append(job_id)
+    return {"submitted": len(job_ids), "job_ids": job_ids, "database_path": str(paths.database_path)}
+
+
+def coordinator_cycle(paths: ResearchRuntimePaths, lease_timeout_seconds: int = 900) -> dict[str, object]:
+    initialize_runtime(paths)
+    now_dt = _parse_timestamp(_utcnow())
+    cutoff = _isoformat(now_dt - timedelta(seconds=max(lease_timeout_seconds, 1)))
+    worker_cutoff = _isoformat(now_dt - timedelta(seconds=min(max(lease_timeout_seconds, 1), 30)))
+    requeued = 0
+    failed = 0
+    with _connect(paths) as connection:
+        expired = connection.execute(
+            """
+            SELECT job_id, attempt_count, max_attempts
+            FROM jobs
+            WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
+            """,
+            (cutoff,),
+        ).fetchall()
+        now = _utcnow()
+        for row in expired:
+            next_status = "queued" if int(row["attempt_count"]) < int(row["max_attempts"]) else "failed"
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?, leased_by = NULL, lease_expires_at = NULL, updated_at = ?,
+                    finished_at = CASE WHEN ? = 'failed' THEN ? ELSE finished_at END,
+                    error_message = CASE WHEN ? = 'failed' THEN 'lease_expired' ELSE error_message END
+                WHERE job_id = ?
+                """,
+                (next_status, now, next_status, now, next_status, row["job_id"]),
+            )
+            if next_status == "queued":
+                requeued += 1
+            else:
+                failed += 1
+        _prune_stale_workers(connection, worker_cutoff)
+        snapshot = _build_status_snapshot(connection)
+    exports = export_runtime_catalog(paths)
+    return {**snapshot, "requeued_jobs": requeued, "failed_expired_jobs": failed, "catalog_exports": exports}
+
+
+def heartbeat_worker(paths: ResearchRuntimePaths, worker_id: str, current_job_id: str | None, status: str) -> None:
+    initialize_runtime(paths)
+    now = _utcnow()
+    with _connect(paths) as connection:
+        connection.execute(
+            """
+            INSERT INTO workers (worker_id, status, current_job_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(worker_id) DO UPDATE SET
+                status = excluded.status,
+                current_job_id = excluded.current_job_id,
+                updated_at = excluded.updated_at
+            """,
+            (worker_id, status, current_job_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO worker_heartbeats (worker_id, heartbeat_at)
+            VALUES (?, ?)
+            ON CONFLICT(worker_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at
+            """,
+            (worker_id, now),
+        )
+
+
+def lease_next_job(paths: ResearchRuntimePaths, worker_id: str, lease_timeout_seconds: int) -> ResearchJob | None:
+    initialize_runtime(paths)
+    now = _utcnow()
+    lease_expires_at = _isoformat(_parse_timestamp(now) + timedelta(seconds=max(lease_timeout_seconds, 1)))
+    with _connect(paths) as connection:
+        for _ in range(5):
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority ASC, created_at ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            attempt_number = int(row["attempt_count"]) + 1
+            updated = connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'running', leased_by = ?, lease_expires_at = ?, attempt_count = ?,
+                    started_at = COALESCE(started_at, ?), updated_at = ?
+                WHERE job_id = ? AND status = 'queued'
+                """,
+                (worker_id, lease_expires_at, attempt_number, now, now, row["job_id"]),
+            )
+            if updated.rowcount == 0:
+                continue
+            connection.execute(
+                """
+                INSERT INTO job_attempts (job_id, attempt_number, worker_id, status, started_at)
+                VALUES (?, ?, ?, 'running', ?)
+                """,
+                (row["job_id"], attempt_number, worker_id, now),
+            )
+            leased = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (row["job_id"],)).fetchone()
+            return _row_to_job(leased)
+        return None
+
+
+def get_job(paths: ResearchRuntimePaths, job_id: str) -> ResearchJob:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown job '{job_id}'")
+        return _row_to_job(row)
+
+
+def worker_loop(
+    paths: ResearchRuntimePaths,
+    worker_id: str,
+    poll_seconds: float = 2.0,
+    lease_timeout_seconds: int = 900,
+    once: bool = False,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    completed_jobs = 0
+    failed_jobs = 0
+    while True:
+        heartbeat_worker(paths, worker_id, current_job_id=None, status="idle")
+        job = lease_next_job(paths, worker_id, lease_timeout_seconds)
+        if job is None:
+            if once:
+                break
+            time.sleep(max(poll_seconds, 0.1))
+            continue
+        heartbeat_worker(paths, worker_id, current_job_id=job.job_id, status="running")
+        if execute_leased_job(paths, worker_id, job):
+            completed_jobs += 1
+        else:
+            failed_jobs += 1
+        heartbeat_worker(paths, worker_id, current_job_id=None, status="idle")
+        if once:
+            break
+    return {"worker_id": worker_id, "completed_jobs": completed_jobs, "failed_jobs": failed_jobs}
+
+
+def execute_leased_job(paths: ResearchRuntimePaths, worker_id: str, job: ResearchJob) -> bool:
+    attempt_number = job.attempt_count
+    log_dir = paths.logs_dir / job.job_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = log_dir / f"attempt_{attempt_number:02d}.stdout.json"
+    stderr_path = log_dir / f"attempt_{attempt_number:02d}.stderr.log"
+    env = os.environ.copy()
+    pythonpath_entries = [str(Path.cwd() / "src")]
+    if env.get("PYTHONPATH"):
+        pythonpath_entries.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    command = [
+        sys.executable,
+        "-m",
+        "trotters_trader.cli",
+        "research-run-job",
+        "--runtime-root",
+        str(paths.runtime_root),
+        "--job-id",
+        job.job_id,
+    ]
+    with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open("w", encoding="utf-8") as stderr_handle:
+        completed = subprocess.run(
+            command,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            cwd=Path.cwd(),
+            env=env,
+            check=False,
+        )
+    if completed.returncode == 0:
+        payload = json.loads(stdout_path.read_text(encoding="utf-8"))
+        complete_job(paths, job.job_id, worker_id, completed.returncode, payload, stdout_path, stderr_path)
+        return True
+    error_message = stderr_path.read_text(encoding="utf-8").strip() or stdout_path.read_text(encoding="utf-8").strip()
+    fail_job(paths, job.job_id, worker_id, completed.returncode, error_message, stdout_path, stderr_path)
+    return False
+
+
+def complete_job(
+    paths: ResearchRuntimePaths,
+    job_id: str,
+    worker_id: str,
+    exit_code: int,
+    payload: dict[str, object],
+    stdout_path: Path,
+    stderr_path: Path,
+) -> None:
+    initialize_runtime(paths)
+    now = _utcnow()
+    with _connect(paths) as connection:
+        connection.execute(
+            """
+            UPDATE jobs
+            SET status = 'completed', leased_by = NULL, lease_expires_at = NULL,
+                finished_at = ?, updated_at = ?, exit_code = ?, stdout_path = ?, stderr_path = ?,
+                error_message = NULL, result_json = ?
+            WHERE job_id = ?
+            """,
+            (now, now, exit_code, str(stdout_path), str(stderr_path), json.dumps(payload, indent=2), job_id),
+        )
+        _finish_attempt(connection, job_id, worker_id, "completed", now, exit_code, stdout_path, stderr_path, None)
+        connection.execute(
+            "UPDATE workers SET status = 'idle', current_job_id = NULL, updated_at = ? WHERE worker_id = ?",
+            (now, worker_id),
+        )
+        connection.execute("DELETE FROM artifacts WHERE job_id = ?", (job_id,))
+        for artifact in payload.get("artifacts", []):
+            if not isinstance(artifact, dict):
+                continue
+            connection.execute(
+                """
+                INSERT INTO artifacts (
+                    job_id, recorded_at_utc, artifact_key, artifact_type, artifact_name, primary_path, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    now,
+                    str(artifact.get("artifact_key", "artifact")),
+                    str(artifact.get("artifact_type", "artifact")),
+                    str(artifact.get("artifact_name", Path(str(artifact.get("path", ""))).name or "artifact")),
+                    str(artifact.get("path", "")),
+                    json.dumps(artifact, indent=2),
+                ),
+            )
+
+
+def fail_job(
+    paths: ResearchRuntimePaths,
+    job_id: str,
+    worker_id: str,
+    exit_code: int,
+    error_message: str,
+    stdout_path: Path,
+    stderr_path: Path,
+) -> None:
+    initialize_runtime(paths)
+    now = _utcnow()
+    with _connect(paths) as connection:
+        row = connection.execute("SELECT attempt_count, max_attempts FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if row is None:
+            return
+        status = "queued" if int(row["attempt_count"]) < int(row["max_attempts"]) else "failed"
+        connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?, leased_by = NULL, lease_expires_at = NULL, updated_at = ?, exit_code = ?,
+                stdout_path = ?, stderr_path = ?, error_message = ?,
+                finished_at = CASE WHEN ? = 'failed' THEN ? ELSE finished_at END
+            WHERE job_id = ?
+            """,
+            (status, now, exit_code, str(stdout_path), str(stderr_path), error_message[:4000], status, now, job_id),
+        )
+        _finish_attempt(connection, job_id, worker_id, "failed", now, exit_code, stdout_path, stderr_path, error_message[:4000])
+        connection.execute(
+            "UPDATE workers SET status = 'idle', current_job_id = NULL, updated_at = ? WHERE worker_id = ?",
+            (now, worker_id),
+        )
+
+
+def runtime_status(paths: ResearchRuntimePaths) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        return _build_status_snapshot(connection)
+
+
+def start_campaign(
+    paths: ResearchRuntimePaths,
+    config_path: str,
+    *,
+    campaign_name: str | None = None,
+    evaluation_profile: str | None = None,
+    quality_gate: str = "all",
+    max_hours: float = 24.0,
+    max_jobs: int = 0,
+    stage_candidate_limit: int = 0,
+    shortlist_size: int = 3,
+    notification_command: str | None = None,
+    notify_events: tuple[str, ...] = DEFAULT_NOTIFICATION_EVENTS,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    campaign_id = uuid.uuid4().hex
+    now = _utcnow()
+    config = load_config(config_path, evaluation_profile=evaluation_profile)
+    dataset_ref, feature_set_ref = _prepare_campaign_inputs(paths, config, campaign_id)
+    resolved_campaign_name = campaign_name or f"{Path(config_path).stem}-{campaign_id[:8]}"
+    spec = {
+        "config_path": config_path,
+        "evaluation_profile": evaluation_profile,
+        "quality_gate": quality_gate,
+        "input_dataset_ref": dataset_ref,
+        "input_dataset_ref_mode": "runtime_relative",
+        "feature_set_ref": feature_set_ref,
+        "feature_set_ref_mode": "runtime_relative" if feature_set_ref else "raw",
+        "max_hours": max_hours,
+        "max_jobs": max_jobs,
+        "stage_candidate_limit": stage_candidate_limit,
+        "shortlist_size": shortlist_size,
+        "notification_command": notification_command,
+        "notify_events": list(notify_events),
+    }
+    state = {
+        "seed_overrides": {},
+        "control_row": None,
+        "candidate_pool": [],
+        "focused_result": None,
+        "pivot_result": None,
+        "stability_result": None,
+        "shortlisted": [],
+        "stress_results": [],
+        "final_decision": None,
+        "pending_stage": None,
+    }
+    with _connect(paths) as connection:
+        connection.execute(
+            """
+            INSERT INTO campaigns (
+                campaign_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                created_at, updated_at, started_at
+            ) VALUES (?, ?, ?, 'running', 'focused_operability', ?, ?, ?, ?, ?)
+            """,
+            (
+                campaign_id,
+                resolved_campaign_name,
+                config_path,
+                json.dumps(spec, indent=2),
+                json.dumps(state, indent=2),
+                now,
+                now,
+                now,
+            ),
+        )
+        _record_campaign_event(
+            connection,
+            campaign_id,
+            "campaign_started",
+            f"Campaign '{resolved_campaign_name}' started",
+            {"phase": "focused_operability", "config_path": config_path},
+        )
+    _emit_campaign_notification(
+        paths,
+        campaign_id=campaign_id,
+        campaign_name=resolved_campaign_name,
+        event_type="campaign_started",
+        message=f"Campaign '{resolved_campaign_name}' started",
+        payload={"phase": "focused_operability", "config_path": config_path},
+        spec=spec,
+    )
+    step = step_campaign(paths, campaign_id)
+    return {"campaign_id": campaign_id, "campaign_name": resolved_campaign_name, **step}
+
+
+def campaign_status(paths: ResearchRuntimePaths, campaign_id: str | None = None) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        if campaign_id is None:
+            campaigns = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT campaign_id, campaign_name, status, phase, created_at, updated_at, latest_report_path, last_error
+                    FROM campaigns
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
+            ]
+            return {"campaigns": campaigns}
+        campaign = _get_campaign(connection, campaign_id)
+        events = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT recorded_at_utc, event_type, message, payload_json
+                FROM campaign_events
+                WHERE campaign_id = ?
+                ORDER BY event_id ASC
+                """,
+                (campaign_id,),
+            ).fetchall()
+        ]
+        jobs = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT job_id, status, priority, created_at, updated_at, command
+                FROM jobs
+                WHERE campaign_id = ?
+                ORDER BY created_at ASC
+                """,
+                (campaign_id,),
+            ).fetchall()
+        ]
+        return {
+            "campaign": {
+                "campaign_id": campaign.campaign_id,
+                "campaign_name": campaign.campaign_name,
+                "config_path": campaign.config_path,
+                "status": campaign.status,
+                "phase": campaign.phase,
+                "latest_report_path": campaign.latest_report_path,
+                "last_error": campaign.last_error,
+                "state": campaign.state,
+                "spec": campaign.spec,
+            },
+            "events": events,
+            "jobs": jobs,
+        }
+
+
+def stop_campaign(
+    paths: ResearchRuntimePaths,
+    campaign_id: str,
+    *,
+    cancel_queued: bool = True,
+    reason: str = "operator_stop",
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        campaign = _get_campaign(connection, campaign_id)
+        if campaign.status not in ACTIVE_CAMPAIGN_STATUSES:
+            return {
+                "campaign_id": campaign.campaign_id,
+                "campaign_name": campaign.campaign_name,
+                "status": campaign.status,
+                "phase": campaign.phase,
+                "outcome": "campaign_not_active",
+            }
+        now = _utcnow()
+        queued_cancelled = 0
+        if cancel_queued:
+            updated = connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'cancelled', updated_at = ?, error_message = ?
+                WHERE campaign_id = ? AND status = 'queued'
+                """,
+                (now, reason, campaign_id),
+            )
+            queued_cancelled = int(updated.rowcount or 0)
+        running_jobs = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM jobs WHERE campaign_id = ? AND status = 'running'",
+                (campaign_id,),
+            ).fetchone()["count"]
+        )
+        state = campaign.state
+        state["pending_stage"] = None
+        state["final_decision"] = {
+            "recommended_action": "stopped",
+            "reason": reason,
+            "selected_run_name": None,
+            "selected_profile_name": None,
+            "selected_candidate_eligible": False,
+            "selected_stress_ok": False,
+            "pivot_used": bool(state.get("pivot_result")),
+        }
+        connection.execute(
+            """
+            UPDATE campaigns
+            SET status = 'stopped', state_json = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?)
+            WHERE campaign_id = ?
+            """,
+            (json.dumps(state, indent=2), now, now, campaign_id),
+        )
+        payload = {
+            "reason": reason,
+            "queued_jobs_cancelled": queued_cancelled,
+            "running_jobs_remaining": running_jobs,
+        }
+        _record_campaign_event(
+            connection,
+            campaign_id,
+            "campaign_stopped",
+            f"Campaign stopped: {reason}",
+            payload,
+        )
+        spec = campaign.spec
+        campaign_name = campaign.campaign_name
+    _emit_campaign_notification(
+        paths,
+        campaign_id=campaign_id,
+        campaign_name=campaign_name,
+        event_type="campaign_stopped",
+        message=f"Campaign stopped: {reason}",
+        payload=payload,
+        spec=spec,
+    )
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name,
+        "status": "stopped",
+        "outcome": "campaign_stopped",
+        "queued_jobs_cancelled": queued_cancelled,
+        "running_jobs_remaining": running_jobs,
+    }
+
+
+def step_campaign(paths: ResearchRuntimePaths, campaign_id: str) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        campaign = _get_campaign(connection, campaign_id)
+        if campaign.status not in {"queued", "running"}:
+            return _campaign_step_payload(campaign, "campaign_not_active")
+        state = campaign.state
+        final_decision = state.get("final_decision")
+        if isinstance(final_decision, dict):
+            _mark_campaign_finished(connection, campaign, status="completed")
+            return _campaign_step_payload(_get_campaign(connection, campaign_id), "campaign_completed")
+        if _campaign_budget_exhausted(connection, campaign):
+            final_decision = {
+                "recommended_action": "exhausted",
+                "reason": "campaign_budget_exhausted",
+                "selected_run_name": None,
+                "selected_profile_name": None,
+                "selected_candidate_eligible": False,
+                "selected_stress_ok": False,
+                "pivot_used": bool(state.get("pivot_result")),
+            }
+            _set_campaign_final_decision(
+                connection,
+                campaign,
+                final_decision,
+                status="exhausted",
+            )
+            _emit_campaign_notification(
+                paths,
+                campaign_id=campaign.campaign_id,
+                campaign_name=campaign.campaign_name,
+                event_type="campaign_finished",
+                message="Campaign finished with status exhausted",
+                payload=final_decision,
+                spec=campaign.spec,
+            )
+            return _campaign_step_payload(_get_campaign(connection, campaign_id), "campaign_budget_exhausted")
+
+        pending_stage = state.get("pending_stage")
+        if isinstance(pending_stage, dict) and pending_stage.get("job_ids"):
+            stage_rows = _campaign_stage_jobs(connection, pending_stage["job_ids"])
+            statuses = {str(row["status"]) for row in stage_rows}
+            if statuses & ACTIVE_CAMPAIGN_STATUSES:
+                return _campaign_step_payload(campaign, "waiting_for_stage_jobs")
+            outcome = _process_campaign_stage(paths, connection, campaign, pending_stage, stage_rows)
+            return _campaign_step_payload(_get_campaign(connection, campaign_id), outcome)
+
+        submission = _submit_campaign_phase_jobs(paths, connection, campaign)
+        return _campaign_step_payload(_get_campaign(connection, campaign_id), submission)
+
+
+def campaign_manager_loop(
+    paths: ResearchRuntimePaths,
+    *,
+    poll_seconds: float = 15.0,
+    once: bool = False,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    stepped = 0
+    while True:
+        with _connect(paths) as connection:
+            campaign_ids = [
+                row["campaign_id"]
+                for row in connection.execute(
+                    """
+                    SELECT campaign_id
+                    FROM campaigns
+                    WHERE status IN ('queued', 'running')
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
+            ]
+        for campaign_id in campaign_ids:
+            try:
+                step_campaign(paths, campaign_id)
+            except Exception as exc:
+                _handle_campaign_runtime_error(paths, campaign_id, exc)
+            stepped += 1
+        if once:
+            return {"stepped_campaigns": stepped, "active_campaigns": len(campaign_ids)}
+        time.sleep(max(poll_seconds, 0.1))
+
+
+def export_runtime_catalog(paths: ResearchRuntimePaths) -> dict[str, str]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                artifacts.recorded_at_utc,
+                artifacts.artifact_key,
+                artifacts.artifact_type,
+                artifacts.artifact_name,
+                artifacts.primary_path,
+                jobs.job_id,
+                jobs.command,
+                jobs.config_path,
+                jobs.control_profile,
+                jobs.result_json
+            FROM artifacts
+            INNER JOIN jobs ON jobs.job_id = artifacts.job_id
+            ORDER BY artifacts.recorded_at_utc ASC, artifacts.artifact_id ASC
+            """
+        ).fetchall()
+    entries: list[dict[str, object]] = []
+    for row in rows:
+        payload = _load_result_payload(row["result_json"])
+        profile = payload.get("profile", {}) if isinstance(payload, dict) else {}
+        summary = payload.get("result_summary", {}) if isinstance(payload, dict) else {}
+        entries.append(
+            {
+                "recorded_at_utc": row["recorded_at_utc"],
+                "artifact_type": row["artifact_type"],
+                "artifact_name": row["artifact_name"],
+                "profile_name": str(profile.get("profile_name", "")),
+                "profile_version": str(profile.get("profile_version", "")),
+                "strategy_family": str(profile.get("strategy_family", "unknown")),
+                "sweep_type": str(row["command"]),
+                "research_tranche": str(profile.get("research_tranche", "")),
+                "control_profile": str(profile.get("control_profile", row["control_profile"] or "")),
+                "evaluation_status": str(summary.get("evaluation_status", "unknown")),
+                "primary_path": row["primary_path"],
+                "config_path": row["config_path"],
+                "job_id": row["job_id"],
+                "artifact_key": row["artifact_key"],
+            }
+        )
+    outputs = write_catalog_snapshot(paths.catalog_output_dir, entries)
+    _write_runtime_status_exports(paths)
+    _write_profile_history_snapshot(paths)
+    return outputs
+
+
+def _prepare_campaign_inputs(
+    paths: ResearchRuntimePaths,
+    config,
+    campaign_id: str,
+) -> tuple[str, str | None]:
+    dataset_root = paths.runtime_root / "datasets" / campaign_id
+    campaign_config = apply_runtime_overrides(
+        config,
+        RuntimeOverrides(
+            staging_dir=dataset_root / "staging",
+            canonical_dir=dataset_root / "canonical",
+            raw_dir=dataset_root / "raw",
+            feature_dir=dataset_root / "features",
+            feature_set_name=config.features.set_name,
+        ),
+    )
+    materialize_canonical_data(campaign_config.data)
+    feature_set_ref = None
+    if campaign_config.features.enabled:
+        materialize_feature_set(campaign_config)
+        feature_set_ref = str(PurePosixPath("datasets") / campaign_id / "features" / campaign_config.features.set_name)
+    dataset_ref = str(PurePosixPath("datasets") / campaign_id / "canonical")
+    return dataset_ref, feature_set_ref
+
+
+def _campaign_budget_exhausted(connection: sqlite3.Connection, campaign: ResearchCampaign) -> bool:
+    spec = campaign.spec
+    max_jobs = int(spec.get("max_jobs", 0) or 0)
+    if max_jobs > 0:
+        job_count = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM jobs WHERE campaign_id = ?",
+                (campaign.campaign_id,),
+            ).fetchone()["count"]
+        )
+        if job_count >= max_jobs:
+            return True
+    max_hours = float(spec.get("max_hours", 0.0) or 0.0)
+    if max_hours > 0 and campaign.started_at:
+        elapsed_hours = (
+            _parse_timestamp(_utcnow()) - _parse_timestamp(campaign.started_at)
+        ).total_seconds() / 3600.0
+        if elapsed_hours >= max_hours:
+            return True
+    return False
+
+
+def _submit_campaign_phase_jobs(
+    paths: ResearchRuntimePaths,
+    connection: sqlite3.Connection,
+    campaign: ResearchCampaign,
+) -> str:
+    spec = campaign.spec
+    state = campaign.state
+    phase = campaign.phase
+    base_config = load_config(campaign.config_path, evaluation_profile=spec.get("evaluation_profile"))
+    seed_overrides = state.get("seed_overrides") if isinstance(state.get("seed_overrides"), dict) else {}
+    seed_config = _candidate_config(base_config, phase, "seed", seed_overrides) if seed_overrides else base_config
+    stage_label = _campaign_phase_label(phase)
+    stage_id = uuid.uuid4().hex
+    priority_start = _campaign_priority_seed(connection, campaign.campaign_id)
+
+    if phase == "focused_operability":
+        _, _, scenarios = _batch_preset_definition(seed_config, "operability")
+        stage_specs = _campaign_phase_specs(
+            campaign,
+            phase,
+            stage_id,
+            stage_label,
+            scenarios,
+            seed_overrides,
+            include_control=True,
+            priority_start=priority_start,
+        )
+    elif phase == "benchmark_pivot":
+        scenarios = _benchmark_pivot_scenarios(seed_config)
+        stage_specs = _campaign_phase_specs(
+            campaign,
+            phase,
+            stage_id,
+            stage_label,
+            scenarios,
+            seed_overrides,
+            include_control=True,
+            priority_start=priority_start,
+        )
+    elif phase == "stability_pivot":
+        scenarios = _stability_pivot_scenarios(seed_config)
+        stage_specs = _campaign_phase_specs(
+            campaign,
+            phase,
+            stage_id,
+            stage_label,
+            scenarios,
+            seed_overrides,
+            include_control=True,
+            priority_start=priority_start,
+        )
+    elif phase == "stress_pack":
+        shortlisted = [row for row in state.get("shortlisted", []) if isinstance(row, dict)]
+        stage_specs = _campaign_stress_specs(campaign, phase, stage_id, shortlisted, priority_start)
+    else:
+        final_decision = {
+            "recommended_action": "exhausted",
+            "reason": f"no_stage_handler_for_{phase}",
+            "selected_run_name": None,
+            "selected_profile_name": None,
+            "selected_candidate_eligible": False,
+            "selected_stress_ok": False,
+            "pivot_used": bool(state.get("pivot_result")),
+        }
+        _set_campaign_final_decision(
+            connection,
+            campaign,
+            final_decision,
+            status="exhausted",
+        )
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign.campaign_id,
+            campaign_name=campaign.campaign_name,
+            event_type="campaign_finished",
+            message="Campaign finished with status exhausted",
+            payload=final_decision,
+            spec=campaign.spec,
+        )
+        return "campaign_exhausted"
+
+    if not stage_specs:
+        final_decision = {
+            "recommended_action": "exhausted",
+            "reason": f"no_jobs_generated_for_{phase}",
+            "selected_run_name": None,
+            "selected_profile_name": None,
+            "selected_candidate_eligible": False,
+            "selected_stress_ok": False,
+            "pivot_used": bool(state.get("pivot_result")),
+        }
+        _set_campaign_final_decision(
+            connection,
+            campaign,
+            final_decision,
+            status="exhausted",
+        )
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign.campaign_id,
+            campaign_name=campaign.campaign_name,
+            event_type="campaign_finished",
+            message="Campaign finished with status exhausted",
+            payload=final_decision,
+            spec=campaign.spec,
+        )
+        return "campaign_exhausted"
+
+    submit_jobs(paths, {"jobs": stage_specs})
+    state["pending_stage"] = {
+        "phase": phase,
+        "stage_id": stage_id,
+        "job_ids": [spec["job_id"] for spec in stage_specs],
+    }
+    _update_campaign_state(connection, campaign.campaign_id, phase, state)
+    _record_campaign_event(
+        connection,
+        campaign.campaign_id,
+        "stage_submitted",
+        f"Submitted {len(stage_specs)} jobs for {phase}",
+        {"phase": phase, "stage_id": stage_id, "job_count": len(stage_specs)},
+    )
+    _emit_campaign_notification(
+        paths,
+        campaign_id=campaign.campaign_id,
+        campaign_name=campaign.campaign_name,
+        event_type="stage_submitted",
+        message=f"Submitted {len(stage_specs)} jobs for {phase}",
+        payload={"phase": phase, "stage_id": stage_id, "job_count": len(stage_specs)},
+        spec=spec,
+    )
+    return "stage_submitted"
+
+
+def _campaign_phase_specs(
+    campaign: ResearchCampaign,
+    phase: str,
+    stage_id: str,
+    stage_label: str,
+    scenarios: list[tuple[str, dict[str, object]]],
+    seed_overrides: dict[str, object],
+    *,
+    include_control: bool,
+    priority_start: int,
+) -> list[dict[str, object]]:
+    spec = campaign.spec
+    limit = int(spec.get("stage_candidate_limit", 0) or 0)
+    selected_scenarios = scenarios[:limit] if limit > 0 else scenarios
+    job_specs: list[dict[str, object]] = []
+    next_priority = priority_start
+    if include_control:
+        control_variant = _campaign_research_variant(
+            phase=phase,
+            stage_label=stage_label,
+            scenario_name="control",
+            seed_overrides=seed_overrides,
+            scenario_overrides={},
+            is_control=True,
+        )
+        job_specs.append(
+            _campaign_job_spec(
+                campaign,
+                stage_id,
+                phase,
+                next_priority,
+                control_variant,
+                is_control=True,
+            )
+        )
+        next_priority += 1
+    for scenario_name, overrides in selected_scenarios:
+        variant = _campaign_research_variant(
+            phase=phase,
+            stage_label=stage_label,
+            scenario_name=scenario_name,
+            seed_overrides=seed_overrides,
+            scenario_overrides=overrides,
+            is_control=False,
+        )
+        job_specs.append(
+            _campaign_job_spec(
+                campaign,
+                stage_id,
+                phase,
+                next_priority,
+                variant,
+                is_control=False,
+            )
+        )
+        next_priority += 1
+    return job_specs
+
+
+def _campaign_stress_specs(
+    campaign: ResearchCampaign,
+    phase: str,
+    stage_id: str,
+    shortlisted: list[dict[str, object]],
+    priority_start: int,
+) -> list[dict[str, object]]:
+    spec = campaign.spec
+    base_config = load_config(campaign.config_path, evaluation_profile=spec.get("evaluation_profile"))
+    job_specs: list[dict[str, object]] = []
+    next_priority = priority_start
+    for candidate_row in shortlisted:
+        candidate_config = _candidate_row_config(base_config, candidate_row)
+        for scenario_name, overrides in _stress_scenarios(candidate_config):
+            merged_overrides = _merge_overrides(
+                _dict_copy(candidate_row.get("merged_overrides")),
+                overrides,
+            )
+            variant = {
+                "kind": "candidate",
+                "tranche_name": phase,
+                "scenario_name": scenario_name,
+                "scenario_label": _campaign_phase_label(phase),
+                "overrides": merged_overrides,
+            }
+            job_specs.append(
+                _campaign_job_spec(
+                    campaign,
+                    stage_id,
+                    phase,
+                    next_priority,
+                    variant,
+                    is_control=False,
+                    campaign_candidate_run_name=str(candidate_row.get("run_name", "")),
+                    campaign_candidate_profile_name=str(candidate_row.get("profile_name", "")),
+                )
+            )
+            next_priority += 1
+    return job_specs
+
+
+def _campaign_job_spec(
+    campaign: ResearchCampaign,
+    stage_id: str,
+    phase: str,
+    priority: int,
+    research_variant: dict[str, object],
+    *,
+    is_control: bool,
+    campaign_candidate_run_name: str | None = None,
+    campaign_candidate_profile_name: str | None = None,
+) -> dict[str, object]:
+    spec = campaign.spec
+    payload = {
+        "job_id": uuid.uuid4().hex,
+        "campaign_id": campaign.campaign_id,
+        "command": "promotion-check",
+        "config_path": campaign.config_path,
+        "priority": priority,
+        "quality_gate": str(spec.get("quality_gate", "all")),
+        "evaluation_profile": _optional_text(spec.get("evaluation_profile")),
+        "input_dataset_ref": spec.get("input_dataset_ref"),
+        "input_dataset_ref_mode": str(spec.get("input_dataset_ref_mode", "runtime_relative")),
+        "feature_set_ref": spec.get("feature_set_ref"),
+        "feature_set_ref_mode": str(spec.get("feature_set_ref_mode", "raw")),
+        "research_variant": research_variant,
+        "campaign_phase": phase,
+        "campaign_stage_id": stage_id,
+        "campaign_is_control": is_control,
+    }
+    if campaign_candidate_run_name:
+        payload["campaign_candidate_run_name"] = campaign_candidate_run_name
+    if campaign_candidate_profile_name:
+        payload["campaign_candidate_profile_name"] = campaign_candidate_profile_name
+    return payload
+
+
+def _campaign_research_variant(
+    *,
+    phase: str,
+    stage_label: str,
+    scenario_name: str,
+    seed_overrides: dict[str, object],
+    scenario_overrides: dict[str, object],
+    is_control: bool,
+) -> dict[str, object]:
+    merged_overrides = _merge_overrides(seed_overrides, scenario_overrides)
+    if is_control and not merged_overrides:
+        return {
+            "kind": "control",
+            "tranche_name": phase,
+            "scenario_name": "control",
+            "scenario_label": stage_label,
+        }
+    return {
+        "kind": "candidate",
+        "tranche_name": phase,
+        "scenario_name": scenario_name,
+        "scenario_label": stage_label,
+        "overrides": merged_overrides,
+    }
+
+
+def _process_campaign_stage(
+    paths: ResearchRuntimePaths,
+    connection: sqlite3.Connection,
+    campaign: ResearchCampaign,
+    pending_stage: dict[str, object],
+    stage_rows: list[sqlite3.Row],
+) -> str:
+    phase = str(pending_stage.get("phase", campaign.phase))
+    state = campaign.state
+    base_config = load_config(campaign.config_path, evaluation_profile=campaign.spec.get("evaluation_profile"))
+    completed_jobs = [row for row in stage_rows if row["status"] == "completed"]
+    if phase in {"focused_operability", "benchmark_pivot", "stability_pivot"}:
+        outcome = _process_search_stage(paths, connection, campaign, state, phase, base_config, completed_jobs)
+    elif phase == "stress_pack":
+        outcome = _process_stress_stage(paths, connection, campaign, state, base_config, completed_jobs)
+    else:
+        outcome = "unknown_phase"
+    state = _get_campaign(connection, campaign.campaign_id).state
+    state["pending_stage"] = None
+    _update_campaign_state(connection, campaign.campaign_id, _get_campaign(connection, campaign.campaign_id).phase, state)
+    return outcome
+
+
+def _process_search_stage(
+    paths: ResearchRuntimePaths,
+    connection: sqlite3.Connection,
+    campaign: ResearchCampaign,
+    state: dict[str, object],
+    phase: str,
+    base_config,
+    completed_jobs: list[sqlite3.Row],
+) -> str:
+    rows = [_campaign_candidate_row(base_config, row) for row in completed_jobs]
+    control_row = next((row for row in rows if bool(row.get("campaign_is_control", False))), None)
+    candidate_rows = [row for row in rows if not bool(row.get("campaign_is_control", False))]
+    if control_row is None:
+        control_row = state.get("control_row")
+    if not isinstance(control_row, dict):
+        final_decision = {
+            "recommended_action": "exhausted",
+            "reason": f"{phase}_control_missing",
+            "selected_run_name": None,
+            "selected_profile_name": None,
+            "selected_candidate_eligible": False,
+            "selected_stress_ok": False,
+            "pivot_used": bool(state.get("pivot_result")),
+        }
+        _set_campaign_final_decision(
+            connection,
+            campaign,
+            final_decision,
+            status="failed",
+        )
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign.campaign_id,
+            campaign_name=campaign.campaign_name,
+            event_type="campaign_failed",
+            message=f"Campaign failed in {phase}: control missing",
+            payload=final_decision,
+            spec=campaign.spec,
+        )
+        return "campaign_failed"
+    decision = _select_operability_candidate(control_row, candidate_rows)
+    artifacts = write_tranche_report(
+        output_dir=paths.catalog_output_dir,
+        report_name=f"{campaign.campaign_name}_{phase}_report",
+        tranche_name=phase,
+        control_row=control_row,
+        candidate_rows=candidate_rows,
+        decision=decision,
+    )
+    result = {
+        "control": control_row,
+        "candidates": candidate_rows,
+        "top_candidate": decision.get("selected_candidate"),
+        "decision": {key: value for key, value in decision.items() if key != "selected_candidate"},
+        "artifacts": artifacts,
+    }
+    state["control_row"] = control_row
+    pool = [row for row in state.get("candidate_pool", []) if isinstance(row, dict)]
+    pool.extend(candidate_rows)
+    state["candidate_pool"] = pool
+    if phase == "focused_operability":
+        state["focused_result"] = result
+        if decision.get("selected_candidate"):
+            state["seed_overrides"] = _dict_copy(decision["selected_candidate"].get("merged_overrides"))
+        next_phase = "stress_pack" if bool(decision.get("focused_success", False)) else "benchmark_pivot"
+    elif phase == "benchmark_pivot":
+        state["pivot_result"] = result
+        if decision.get("selected_candidate"):
+            state["seed_overrides"] = _dict_copy(decision["selected_candidate"].get("merged_overrides"))
+            next_phase = "stress_pack"
+        else:
+            next_phase = "stability_pivot"
+    else:
+        state["stability_result"] = result
+        if decision.get("selected_candidate"):
+            state["seed_overrides"] = _dict_copy(decision["selected_candidate"].get("merged_overrides"))
+            next_phase = "stress_pack"
+        else:
+            next_phase = "exhausted"
+    if next_phase == "stress_pack":
+        state["shortlisted"] = _operability_shortlist(
+            control_row,
+            [row for row in state.get("candidate_pool", []) if isinstance(row, dict)],
+            limit=int(campaign.spec.get("shortlist_size", 3) or 3),
+        )
+    latest_report_path = _write_campaign_program_report(paths, campaign, state)
+    if next_phase == "exhausted":
+        final_decision = {
+            "recommended_action": "exhausted",
+            "reason": f"{phase}_did_not_produce_viable_candidate",
+            "selected_run_name": None,
+            "selected_profile_name": None,
+            "selected_candidate_eligible": False,
+            "selected_stress_ok": False,
+            "pivot_used": bool(state.get("pivot_result")),
+        }
+        _set_campaign_final_decision(
+            connection,
+            campaign,
+            final_decision,
+            status="exhausted",
+            latest_report_path=latest_report_path,
+        )
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign.campaign_id,
+            campaign_name=campaign.campaign_name,
+            event_type="campaign_finished",
+            message="Campaign finished with status exhausted",
+            payload={**final_decision, "latest_report_path": latest_report_path},
+            spec=campaign.spec,
+        )
+        return "campaign_exhausted"
+    _update_campaign_state(connection, campaign.campaign_id, next_phase, state, latest_report_path=latest_report_path)
+    _record_campaign_event(
+        connection,
+        campaign.campaign_id,
+        "stage_processed",
+        f"Processed {phase} and advanced to {next_phase}",
+        {"phase": phase, "next_phase": next_phase},
+    )
+    _emit_campaign_notification(
+        paths,
+        campaign_id=campaign.campaign_id,
+        campaign_name=campaign.campaign_name,
+        event_type="stage_processed",
+        message=f"Processed {phase} and advanced to {next_phase}",
+        payload={"phase": phase, "next_phase": next_phase, "latest_report_path": latest_report_path},
+        spec=campaign.spec,
+    )
+    return "stage_processed"
+
+
+def _process_stress_stage(
+    paths: ResearchRuntimePaths,
+    connection: sqlite3.Connection,
+    campaign: ResearchCampaign,
+    state: dict[str, object],
+    base_config,
+    completed_jobs: list[sqlite3.Row],
+) -> str:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    candidate_names: dict[str, str] = {}
+    for row in completed_jobs:
+        payload = _load_result_payload(row["result_json"])
+        promotion = payload.get("promotion_decision")
+        if not isinstance(promotion, dict):
+            continue
+        spec_json = json.loads(row["spec_json"])
+        variant = spec_json.get("research_variant", {})
+        config = base_config
+        if isinstance(variant, dict):
+            config = _apply_variant_to_config(base_config, variant)
+        scenario_row = _candidate_row_from_promotion(
+            config,
+            promotion,
+            scenario_name=str(variant.get("scenario_name", "stress")),
+            scenario_label=str(variant.get("scenario_label", "stress")),
+            tranche_name="stress_pack",
+        )
+        scenario_row["non_broken"] = _stress_row_non_broken(scenario_row)
+        scenario_row["merged_overrides"] = _dict_copy(variant.get("overrides"))
+        candidate_run_name = str(spec_json.get("campaign_candidate_run_name", "unknown"))
+        candidate_names[candidate_run_name] = str(spec_json.get("campaign_candidate_profile_name", "unknown"))
+        grouped.setdefault(candidate_run_name, []).append(scenario_row)
+
+    stress_results: list[dict[str, object]] = []
+    shortlisted = [row for row in state.get("shortlisted", []) if isinstance(row, dict)]
+    for candidate_row in shortlisted:
+        candidate_run_name = str(candidate_row.get("run_name", "unknown"))
+        scenarios = grouped.get(candidate_run_name, [])
+        non_broken_count = sum(1 for row in scenarios if bool(row.get("non_broken", False)))
+        stress_results.append(
+            {
+                "candidate_run_name": candidate_run_name,
+                "candidate_profile_name": candidate_names.get(
+                    candidate_run_name,
+                    str(candidate_row.get("profile_name", "unknown")),
+                ),
+                "scenario_count": len(scenarios),
+                "non_broken_count": non_broken_count,
+                "broken_count": len(scenarios) - non_broken_count,
+                "stress_ok": bool(scenarios) and non_broken_count == len(scenarios),
+                "scenarios": scenarios,
+            }
+        )
+    state["stress_results"] = stress_results
+    selected_candidate, final_decision = _campaign_stress_decision(campaign, state, stress_results)
+    latest_report_path = _write_campaign_program_report(paths, campaign, state, final_decision=final_decision)
+    if selected_candidate is not None and final_decision["recommended_action"] == "freeze_candidate":
+        write_promotion_artifacts(
+            output_dir=paths.catalog_output_dir,
+            report_name=f"{campaign.campaign_name}_promotion_report",
+            promotion_decision=dict(selected_candidate.get("promotion_decision", {})),
+            config_path=f"generated:{selected_candidate.get('profile_name', 'candidate')}",
+        )
+        _set_campaign_final_decision(
+            connection,
+            campaign,
+            final_decision,
+            status="completed",
+            latest_report_path=latest_report_path,
+        )
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign.campaign_id,
+            campaign_name=campaign.campaign_name,
+            event_type="campaign_finished",
+            message="Campaign finished with status completed",
+            payload={**final_decision, "latest_report_path": latest_report_path},
+            spec=campaign.spec,
+        )
+        return "campaign_completed"
+
+    if not state.get("pivot_result"):
+        next_phase = "benchmark_pivot"
+    elif not state.get("stability_result"):
+        next_phase = "stability_pivot"
+    else:
+        _set_campaign_final_decision(
+            connection,
+            campaign,
+            final_decision,
+            status="exhausted",
+            latest_report_path=latest_report_path,
+        )
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign.campaign_id,
+            campaign_name=campaign.campaign_name,
+            event_type="campaign_finished",
+            message="Campaign finished with status exhausted",
+            payload={**final_decision, "latest_report_path": latest_report_path},
+            spec=campaign.spec,
+        )
+        return "campaign_exhausted"
+    _update_campaign_state(connection, campaign.campaign_id, next_phase, state, latest_report_path=latest_report_path)
+    _record_campaign_event(
+        connection,
+        campaign.campaign_id,
+        "stress_processed",
+        f"Stress pack did not freeze a candidate; advancing to {next_phase}",
+        {"next_phase": next_phase, "reason": final_decision.get("reason", "unknown")},
+    )
+    _emit_campaign_notification(
+        paths,
+        campaign_id=campaign.campaign_id,
+        campaign_name=campaign.campaign_name,
+        event_type="stress_processed",
+        message=f"Stress pack did not freeze a candidate; advancing to {next_phase}",
+        payload={
+            "next_phase": next_phase,
+            "reason": final_decision.get("reason", "unknown"),
+            "latest_report_path": latest_report_path,
+        },
+        spec=campaign.spec,
+    )
+    return "stage_processed"
+
+
+def _campaign_candidate_row(base_config, row: sqlite3.Row) -> dict[str, object]:
+    payload = _load_result_payload(row["result_json"])
+    promotion = payload.get("promotion_decision")
+    if not isinstance(promotion, dict):
+        return {}
+    spec = json.loads(row["spec_json"])
+    variant = spec.get("research_variant", {})
+    config = _apply_variant_to_config(base_config, variant)
+    candidate_row = _candidate_row_from_promotion(
+        config,
+        promotion,
+        scenario_name=str(variant.get("scenario_name", "unknown")),
+        scenario_label=str(variant.get("scenario_label", "campaign")),
+        tranche_name=str(variant.get("tranche_name", spec.get("campaign_phase", "campaign"))),
+    )
+    candidate_row["merged_overrides"] = _dict_copy(variant.get("overrides"))
+    candidate_row["campaign_is_control"] = bool(spec.get("campaign_is_control", False))
+    return candidate_row
+
+
+def _campaign_stress_decision(
+    campaign: ResearchCampaign,
+    state: dict[str, object],
+    stress_results: list[dict[str, object]],
+) -> tuple[dict[str, object] | None, dict[str, object]]:
+    stress_by_run = {str(result.get("candidate_run_name", "")): result for result in stress_results}
+    shortlisted = [row for row in state.get("shortlisted", []) if isinstance(row, dict)]
+    ranked_shortlist = sorted(
+        shortlisted,
+        key=lambda row: (
+            bool(stress_by_run.get(str(row.get("run_name", "")), {}).get("stress_ok", False)),
+            row.get("decision_score", _candidate_decision_score(row)),
+        ),
+        reverse=True,
+    )
+    selected_candidate = ranked_shortlist[0] if ranked_shortlist else None
+    selected_stress = None if selected_candidate is None else stress_by_run.get(str(selected_candidate.get("run_name", "")))
+    stress_ok = bool(selected_stress and selected_stress.get("stress_ok", False))
+    if selected_candidate is not None and bool(selected_candidate.get("eligible", False)) and stress_ok:
+        return selected_candidate, {
+            "recommended_action": "freeze_candidate",
+            "reason": "candidate_passed_promotion_and_stress_pack",
+            "selected_run_name": selected_candidate.get("run_name"),
+            "selected_profile_name": selected_candidate.get("profile_name"),
+            "selected_candidate_eligible": True,
+            "selected_stress_ok": True,
+            "pivot_used": bool(state.get("pivot_result")),
+        }
+    return selected_candidate, {
+        "recommended_action": "continue_research",
+        "reason": "no_stress_validated_candidate",
+        "selected_run_name": None if selected_candidate is None else selected_candidate.get("run_name"),
+        "selected_profile_name": None if selected_candidate is None else selected_candidate.get("profile_name"),
+        "selected_candidate_eligible": False if selected_candidate is None else bool(selected_candidate.get("eligible", False)),
+        "selected_stress_ok": stress_ok,
+        "pivot_used": bool(state.get("pivot_result")),
+    }
+
+
+def _write_campaign_program_report(
+    paths: ResearchRuntimePaths,
+    campaign: ResearchCampaign,
+    state: dict[str, object],
+    *,
+    final_decision: dict[str, object] | None = None,
+) -> str:
+    decision = final_decision or (
+        state.get("final_decision")
+        if isinstance(state.get("final_decision"), dict)
+        else {
+            "recommended_action": "continue_research",
+            "reason": "campaign_in_progress",
+            "selected_run_name": None,
+            "selected_profile_name": None,
+            "selected_candidate_eligible": False,
+            "selected_stress_ok": False,
+            "pivot_used": bool(state.get("pivot_result")),
+        }
+    )
+    artifacts = write_operability_program_report(
+        output_dir=paths.catalog_output_dir,
+        report_name=f"{campaign.campaign_name}_operability_program",
+        control_row=state.get("control_row") or {},
+        focused_result=state.get("focused_result") or {"decision": {}},
+        pivot_result=(state.get("pivot_result") or state.get("stability_result")),
+        shortlisted=[row for row in state.get("shortlisted", []) if isinstance(row, dict)],
+        stress_results=[row for row in state.get("stress_results", []) if isinstance(row, dict)],
+        final_decision=decision,
+    )
+    return str(artifacts["summary_md"])
+
+
+def _apply_variant_to_config(base_config, variant: object):
+    if isinstance(variant, dict):
+        return apply_research_variant(base_config, variant)
+    return base_config
+
+
+def _campaign_priority_seed(connection: sqlite3.Connection, campaign_id: str) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(priority), 99) AS priority FROM jobs WHERE campaign_id = ?",
+        (campaign_id,),
+    ).fetchone()
+    return int(row["priority"] or 99) + 1
+
+
+def _campaign_stage_jobs(connection: sqlite3.Connection, job_ids: list[str]) -> list[sqlite3.Row]:
+    if not job_ids:
+        return []
+    placeholders = ",".join("?" for _ in job_ids)
+    return connection.execute(
+        f"SELECT job_id, status, spec_json, result_json FROM jobs WHERE job_id IN ({placeholders}) ORDER BY created_at ASC",
+        tuple(job_ids),
+    ).fetchall()
+
+
+def _get_campaign(connection: sqlite3.Connection, campaign_id: str) -> ResearchCampaign:
+    row = connection.execute("SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown campaign '{campaign_id}'")
+    return ResearchCampaign(
+        campaign_id=row["campaign_id"],
+        campaign_name=row["campaign_name"],
+        config_path=row["config_path"],
+        status=row["status"],
+        phase=row["phase"],
+        spec_json=row["spec_json"],
+        state_json=row["state_json"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        latest_report_path=row["latest_report_path"],
+        last_error=row["last_error"],
+    )
+
+
+def _update_campaign_state(
+    connection: sqlite3.Connection,
+    campaign_id: str,
+    phase: str,
+    state: dict[str, object],
+    *,
+    latest_report_path: str | None = None,
+) -> None:
+    connection.execute(
+        """
+        UPDATE campaigns
+        SET phase = ?, state_json = ?, updated_at = ?, latest_report_path = COALESCE(?, latest_report_path)
+        WHERE campaign_id = ?
+        """,
+        (phase, json.dumps(state, indent=2), _utcnow(), latest_report_path, campaign_id),
+    )
+
+
+def _set_campaign_final_decision(
+    connection: sqlite3.Connection,
+    campaign: ResearchCampaign,
+    final_decision: dict[str, object],
+    *,
+    status: str,
+    latest_report_path: str | None = None,
+) -> None:
+    state = campaign.state
+    state["final_decision"] = final_decision
+    now = _utcnow()
+    connection.execute(
+        """
+        UPDATE campaigns
+        SET status = ?, state_json = ?, updated_at = ?, finished_at = ?, latest_report_path = COALESCE(?, latest_report_path)
+        WHERE campaign_id = ?
+        """,
+        (status, json.dumps(state, indent=2), now, now, latest_report_path, campaign.campaign_id),
+    )
+    _record_campaign_event(
+        connection,
+        campaign.campaign_id,
+        "campaign_finished",
+        f"Campaign finished with status {status}",
+        final_decision,
+    )
+
+
+def _mark_campaign_finished(connection: sqlite3.Connection, campaign: ResearchCampaign, *, status: str) -> None:
+    now = _utcnow()
+    connection.execute(
+        "UPDATE campaigns SET status = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?) WHERE campaign_id = ?",
+        (status, now, now, campaign.campaign_id),
+    )
+
+
+def _record_campaign_event(
+    connection: sqlite3.Connection,
+    campaign_id: str,
+    event_type: str,
+    message: str,
+    payload: dict[str, object],
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO campaign_events (campaign_id, recorded_at_utc, event_type, message, payload_json)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (campaign_id, _utcnow(), event_type, message, json.dumps(payload, indent=2)),
+    )
+
+
+def _emit_campaign_notification(
+    paths: ResearchRuntimePaths,
+    *,
+    campaign_id: str,
+    campaign_name: str,
+    event_type: str,
+    message: str,
+    payload: dict[str, object],
+    spec: dict[str, object],
+) -> None:
+    exports_dir = paths.runtime_root / "exports"
+    notifications_dir = exports_dir / "campaign_notifications"
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    notifications_dir.mkdir(parents=True, exist_ok=True)
+
+    recorded_at = _utcnow()
+    notify_events = {
+        str(value)
+        for value in spec.get("notify_events", DEFAULT_NOTIFICATION_EVENTS)
+        if isinstance(value, str) and value
+    }
+    notification_command = _optional_text(spec.get("notification_command"))
+    payload_stem = (
+        f"{_timestamp_slug(recorded_at)}_{_safe_filename_component(campaign_name)}_"
+        f"{_safe_filename_component(event_type)}_{uuid.uuid4().hex[:8]}"
+    )
+    payload_path = notifications_dir / f"{payload_stem}.json"
+    record = {
+        "recorded_at_utc": recorded_at,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name,
+        "event_type": event_type,
+        "message": message,
+        "payload": payload,
+        "payload_path": str(payload_path),
+        "notification_command": notification_command,
+        "notification_requested": bool(notification_command and event_type in notify_events),
+        "hook": {
+            "executed": False,
+            "success": None,
+            "exit_code": None,
+            "stdout_path": None,
+            "stderr_path": None,
+            "error": None,
+        },
+    }
+    payload_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    if not notification_command or event_type not in notify_events:
+        with (exports_dir / CAMPAIGN_NOTIFICATION_JSONL).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record))
+            handle.write("\n")
+        return
+
+    stdout_path = notifications_dir / f"{payload_stem}.stdout.log"
+    stderr_path = notifications_dir / f"{payload_stem}.stderr.log"
+    env = os.environ.copy()
+    env.update(
+        {
+            "TROTTERS_CAMPAIGN_ID": campaign_id,
+            "TROTTERS_CAMPAIGN_NAME": campaign_name,
+            "TROTTERS_EVENT_TYPE": event_type,
+            "TROTTERS_EVENT_MESSAGE": message,
+            "TROTTERS_EVENT_RECORDED_AT_UTC": recorded_at,
+            "TROTTERS_NOTIFICATION_PAYLOAD_PATH": str(payload_path),
+            "TROTTERS_RUNTIME_ROOT": str(paths.runtime_root),
+            "TROTTERS_CATALOG_OUTPUT_DIR": str(paths.catalog_output_dir),
+        }
+    )
+    try:
+        completed = subprocess.run(
+            notification_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=Path.cwd(),
+            env=env,
+            check=False,
+        )
+        stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+        stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+        record["hook"] = {
+            "executed": True,
+            "success": completed.returncode == 0,
+            "exit_code": completed.returncode,
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "error": None,
+        }
+    except Exception as exc:
+        stderr_path.write_text(str(exc), encoding="utf-8")
+        record["hook"] = {
+            "executed": True,
+            "success": False,
+            "exit_code": None,
+            "stdout_path": None,
+            "stderr_path": str(stderr_path),
+            "error": str(exc),
+        }
+    payload_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    with (exports_dir / CAMPAIGN_NOTIFICATION_JSONL).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record))
+        handle.write("\n")
+
+
+def _handle_campaign_runtime_error(
+    paths: ResearchRuntimePaths,
+    campaign_id: str,
+    exc: Exception,
+) -> None:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        campaign = _get_campaign(connection, campaign_id)
+        if campaign.status not in ACTIVE_CAMPAIGN_STATUSES:
+            return
+        state = campaign.state
+        state["pending_stage"] = None
+        final_decision = {
+            "recommended_action": "failed",
+            "reason": "campaign_runtime_error",
+            "selected_run_name": None,
+            "selected_profile_name": None,
+            "selected_candidate_eligible": False,
+            "selected_stress_ok": False,
+            "pivot_used": bool(state.get("pivot_result")),
+            "error": str(exc),
+        }
+        state["final_decision"] = final_decision
+        now = _utcnow()
+        connection.execute(
+            """
+            UPDATE campaigns
+            SET status = 'failed', state_json = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?), last_error = ?
+            WHERE campaign_id = ?
+            """,
+            (json.dumps(state, indent=2), now, now, str(exc), campaign_id),
+        )
+        _record_campaign_event(
+            connection,
+            campaign_id,
+            "campaign_failed",
+            f"Campaign failed due to runtime error: {exc}",
+            final_decision,
+        )
+        campaign_name = campaign.campaign_name
+        spec = campaign.spec
+    _emit_campaign_notification(
+        paths,
+        campaign_id=campaign_id,
+        campaign_name=campaign_name,
+        event_type="campaign_failed",
+        message=f"Campaign failed due to runtime error: {exc}",
+        payload=final_decision,
+        spec=spec,
+    )
+
+
+def _campaign_step_payload(campaign: ResearchCampaign, outcome: str) -> dict[str, object]:
+    return {
+        "campaign_id": campaign.campaign_id,
+        "campaign_name": campaign.campaign_name,
+        "status": campaign.status,
+        "phase": campaign.phase,
+        "latest_report_path": campaign.latest_report_path,
+        "outcome": outcome,
+    }
+
+
+def _campaign_phase_label(phase: str) -> str:
+    labels = {
+        "focused_operability": "operability",
+        "benchmark_pivot": "pivot",
+        "stability_pivot": "stability",
+        "stress_pack": "stress",
+    }
+    return labels.get(phase, phase)
+
+
+def _merge_overrides(base: dict[str, object] | None, extra: dict[str, object] | None) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    if isinstance(base, dict):
+        merged.update(base)
+    if isinstance(extra, dict):
+        merged.update(extra)
+    return merged
+
+
+def _dict_copy(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def collect_artifacts(payload: object) -> list[dict[str, str]]:
+    artifacts: list[dict[str, str]] = []
+
+    def visit(value: object, key_path: list[str]) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                visit(nested, [*key_path, str(key)])
+            return
+        if isinstance(value, list):
+            for index, nested in enumerate(value):
+                visit(nested, [*key_path, str(index)])
+            return
+        if not isinstance(value, str):
+            return
+        path = Path(value)
+        if path.suffix.lower() not in PATH_SUFFIXES:
+            return
+        artifacts.append(
+            {
+                "artifact_key": ".".join(key_path) or "artifact",
+                "artifact_type": key_path[0] if key_path else "artifact",
+                "artifact_name": path.name,
+                "path": value,
+            }
+        )
+
+    visit(payload, [])
+    deduped: dict[tuple[str, str], dict[str, str]] = {}
+    for artifact in artifacts:
+        deduped[(artifact["artifact_key"], artifact["path"])] = artifact
+    return list(deduped.values())
+
+
+def summarize_job_result(command: str, payload: dict[str, object]) -> dict[str, object]:
+    promotion = payload.get("promotion_decision")
+    if isinstance(promotion, dict):
+        return {
+            "evaluation_status": "pass" if bool(promotion.get("eligible", False)) else "fail",
+            "recommended_action": promotion.get("recommended_action", "retain"),
+        }
+    evaluation = payload.get("evaluation")
+    if isinstance(evaluation, dict):
+        return {"evaluation_status": str(evaluation.get("status", "unknown"))}
+    runs = payload.get("runs")
+    if isinstance(runs, list):
+        for row in runs:
+            if isinstance(row, dict):
+                item_evaluation = row.get("evaluation")
+                if isinstance(item_evaluation, dict):
+                    return {"evaluation_status": str(item_evaluation.get("status", "unknown")), "run_count": len(runs)}
+        return {"evaluation_status": "unknown", "run_count": len(runs)}
+    return {"evaluation_status": "unknown", "command": command}
+
+
+def _normalize_job_specs(payload: object) -> list[dict[str, object]]:
+    if isinstance(payload, dict):
+        if isinstance(payload.get("jobs"), list):
+            return [dict(spec) for spec in payload["jobs"] if isinstance(spec, dict)]
+        return [dict(payload)]
+    if isinstance(payload, list):
+        return [dict(spec) for spec in payload if isinstance(spec, dict)]
+    raise ValueError("Job spec must be a JSON object or list of objects")
+
+
+def _finish_attempt(
+    connection: sqlite3.Connection,
+    job_id: str,
+    worker_id: str,
+    status: str,
+    finished_at: str,
+    exit_code: int,
+    stdout_path: Path,
+    stderr_path: Path,
+    error_message: str | None,
+) -> None:
+    row = connection.execute(
+        """
+        SELECT attempt_id
+        FROM job_attempts
+        WHERE job_id = ? AND worker_id = ? AND status = 'running'
+        ORDER BY attempt_id DESC
+        LIMIT 1
+        """,
+        (job_id, worker_id),
+    ).fetchone()
+    if row is None:
+        return
+    connection.execute(
+        """
+        UPDATE job_attempts
+        SET status = ?, finished_at = ?, exit_code = ?, stdout_path = ?, stderr_path = ?, error_message = ?
+        WHERE attempt_id = ?
+        """,
+        (status, finished_at, exit_code, str(stdout_path), str(stderr_path), error_message, row["attempt_id"]),
+    )
+
+
+def _prune_stale_workers(connection: sqlite3.Connection, cutoff: str) -> None:
+    stale_workers = connection.execute(
+        """
+        SELECT workers.worker_id
+        FROM workers
+        LEFT JOIN worker_heartbeats ON worker_heartbeats.worker_id = workers.worker_id
+        WHERE COALESCE(worker_heartbeats.heartbeat_at, workers.updated_at) < ?
+          AND (
+              workers.current_job_id IS NULL
+              OR NOT EXISTS (
+                  SELECT 1
+                  FROM jobs
+                  WHERE jobs.job_id = workers.current_job_id
+                    AND jobs.status = 'running'
+                    AND jobs.leased_by = workers.worker_id
+              )
+          )
+        """,
+        (cutoff,),
+    ).fetchall()
+    for row in stale_workers:
+        connection.execute("DELETE FROM workers WHERE worker_id = ?", (row["worker_id"],))
+        connection.execute("DELETE FROM worker_heartbeats WHERE worker_id = ?", (row["worker_id"],))
+
+
+def _write_runtime_status_exports(paths: ResearchRuntimePaths) -> None:
+    status_dir = paths.runtime_root / "exports"
+    status_dir.mkdir(parents=True, exist_ok=True)
+    status = runtime_status(paths)
+    (status_dir / "runtime_status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+    jobs = status.get("jobs", [])
+    if isinstance(jobs, list):
+        _write_csv(status_dir / "jobs.csv", jobs)
+    workers = status.get("workers", [])
+    if isinstance(workers, list):
+        _write_csv(status_dir / "workers.csv", workers)
+    campaigns = status.get("campaigns", [])
+    if isinstance(campaigns, list):
+        _write_csv(status_dir / "campaigns.csv", campaigns)
+
+
+def _write_profile_history_snapshot(paths: ResearchRuntimePaths) -> None:
+    with _connect(paths) as connection:
+        rows = connection.execute(
+            "SELECT result_json FROM jobs WHERE status = 'completed' AND result_json IS NOT NULL ORDER BY finished_at ASC"
+        ).fetchall()
+    history_by_profile: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        payload = _load_result_payload(row["result_json"])
+        promotion = payload.get("promotion_decision") if isinstance(payload, dict) else None
+        if not isinstance(promotion, dict):
+            continue
+        profile = promotion.get("profile", {})
+        if not isinstance(profile, dict):
+            continue
+        profile_name = str(profile.get("profile_name", "") or "")
+        if not profile_name:
+            continue
+        history_by_profile.setdefault(profile_name, []).append(promotion)
+    history_dir = paths.catalog_output_dir / "profile_history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    for profile_name, entries in history_by_profile.items():
+        content = "\n".join(json.dumps(entry) for entry in entries)
+        if content:
+            content += "\n"
+        (history_dir / f"{profile_name}.jsonl").write_text(content, encoding="utf-8")
+
+
+def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
+    counts = {
+        row["status"]: row["count"]
+        for row in connection.execute("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status").fetchall()
+    }
+    workers = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT workers.worker_id, workers.status, workers.current_job_id, workers.updated_at, worker_heartbeats.heartbeat_at
+            FROM workers
+            LEFT JOIN worker_heartbeats ON worker_heartbeats.worker_id = workers.worker_id
+            ORDER BY workers.worker_id ASC
+            """
+        ).fetchall()
+    ]
+    jobs = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT job_id, campaign_id, command, status, priority, attempt_count, max_attempts, leased_by, output_root, created_at, updated_at
+            FROM jobs
+            ORDER BY priority ASC, created_at ASC
+            """
+        ).fetchall()
+    ]
+    campaigns = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT campaign_id, campaign_name, status, phase, updated_at, latest_report_path
+            FROM campaigns
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+    ]
+    return {
+        "database_path": str(connection.execute("PRAGMA database_list").fetchone()["file"]),
+        "counts": counts,
+        "workers": workers,
+        "jobs": jobs,
+        "campaigns": campaigns,
+    }
+
+
+def _row_to_job(row: sqlite3.Row) -> ResearchJob:
+    return ResearchJob(
+        job_id=row["job_id"],
+        campaign_id=row["campaign_id"],
+        command=row["command"],
+        config_path=row["config_path"],
+        spec_json=row["spec_json"],
+        priority=int(row["priority"]),
+        status=row["status"],
+        attempt_count=int(row["attempt_count"]),
+        max_attempts=int(row["max_attempts"]),
+        output_root=row["output_root"],
+        input_dataset_ref=row["input_dataset_ref"],
+        feature_set_ref=row["feature_set_ref"],
+        control_profile=row["control_profile"],
+        quality_gate=row["quality_gate"],
+        evaluation_profile=row["evaluation_profile"],
+    )
+
+
+def _load_result_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _timestamp_slug(value: str) -> str:
+    return value.replace(":", "").replace("+00:00", "Z")
+
+
+def _safe_filename_component(value: str) -> str:
+    safe = "".join(character if character.isalnum() or character in {"-", "_"} else "_" for character in value)
+    return safe or "campaign"
+
+
+@contextmanager
+def _connect(paths: ResearchRuntimePaths):
+    connection = sqlite3.connect(paths.database_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _optional_text(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _normalize_output_root(value: object, job_id: str) -> tuple[str, str]:
+    if value in (None, ""):
+        return (str(PurePosixPath("job_outputs") / job_id), "runtime_relative")
+    return (str(value), "raw")
+
+
+def _utcnow() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+def _isoformat(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat()
+
+
+def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    fieldnames = sorted({key for row in rows for key in row.keys()})
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column in columns:
+        return
+    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
