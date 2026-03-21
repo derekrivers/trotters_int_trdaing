@@ -1,12 +1,18 @@
 from pathlib import Path
 from dataclasses import replace
+from datetime import date
 import unittest
 
-from trotters_trader.backtest import run_backtest
+from trotters_trader.backtest import build_daily_decision_package, run_backtest
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.config import load_config
 from trotters_trader.experiments import run_promotion_check, run_universe_slice_sweep
-from trotters_trader.reports import build_operability_scorecard, write_operability_program_report, write_promotion_artifacts
+from trotters_trader.reports import (
+    build_operability_scorecard,
+    write_operability_program_report,
+    write_paper_trade_decision_artifacts,
+    write_promotion_artifacts,
+)
 from tests.support import IsolatedWorkspaceTestCase
 
 
@@ -226,6 +232,34 @@ class ReportTests(IsolatedWorkspaceTestCase):
 
         self.assertEqual(scorecard["operator_recommendation"], "reject")
         self.assertIn("rejected", str(scorecard["summary"]).lower())
+
+    def test_paper_trade_decision_artifacts_are_written(self) -> None:
+        config = self.isolated_config(Path("configs/backtest.toml"))
+        materialize_canonical_data(config.data)
+        decision_package = build_daily_decision_package(
+            config,
+            reference_date=date(2026, 3, 21),
+        )
+
+        artifacts = write_paper_trade_decision_artifacts(
+            output_dir=config.run.output_dir,
+            report_name="paper_trade_decision_test",
+            decision_package=decision_package,
+        )
+
+        self.assertTrue(Path(artifacts["decision_json"]).exists())
+        self.assertTrue(Path(artifacts["decision_md"]).exists())
+        self.assertTrue(Path(artifacts["targets_csv"]).exists())
+        self.assertIn("expected_turnover", decision_package)
+        self.assertIn("action_summary", decision_package)
+        self.assertTrue(any("rehearsal" in str(warning).lower() for warning in decision_package["warnings"]))
+        self.assertTrue(any("stale" in str(warning).lower() for warning in decision_package["warnings"]))
+        markdown_text = Path(artifacts["decision_md"]).read_text(encoding="utf-8")
+        self.assertIn("## Package Metadata", markdown_text)
+        self.assertIn("## Rebalance Action Summary", markdown_text)
+        self.assertIn("## Warnings", markdown_text)
+        self.assertIn("## Target Holdings", markdown_text)
+        self.assertIn("Expected turnover:", markdown_text)
 
 
 if __name__ == "__main__":

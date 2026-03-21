@@ -1,8 +1,12 @@
+import argparse
+from datetime import date
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from trotters_trader.cli import _build_parser
+from trotters_trader.cli import _build_parser, execute_command
+from tests.support import IsolatedWorkspaceTestCase
 
 
 class CliTests(unittest.TestCase):
@@ -25,6 +29,22 @@ class CliTests(unittest.TestCase):
         args = parser.parse_args(["operability-program"])
 
         self.assertEqual(args.command, "operability-program")
+
+    def test_parser_accepts_paper_trade_decision_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "paper-trade-decision",
+                "--config",
+                "configs/backtest.toml",
+                "--reference-date",
+                "2026-03-21",
+            ]
+        )
+
+        self.assertEqual(args.command, "paper-trade-decision")
+        self.assertEqual(args.config, "configs/backtest.toml")
+        self.assertEqual(str(args.reference_date), "2026-03-21")
 
     def test_parser_accepts_research_campaign_start_command(self) -> None:
         parser = _build_parser()
@@ -98,6 +118,29 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.notification_command, "echo notify")
         self.assertEqual(args.notify_events, "campaign_finished,campaign_failed")
+
+
+class CliCommandExecutionTests(IsolatedWorkspaceTestCase):
+    def test_execute_command_writes_paper_trade_decision_artifacts(self) -> None:
+        config = self.isolated_config(Path("configs/backtest.toml"))
+
+        payload = execute_command(
+            "paper-trade-decision",
+            config,
+            "configs/backtest.toml",
+            scope_data_paths=False,
+            prepare_data=True,
+            command_args=argparse.Namespace(reference_date=date(2026, 3, 21)),
+        )
+
+        self.assertIn("decision_package", payload)
+        self.assertIn("artifacts", payload)
+        self.assertTrue(Path(payload["artifacts"]["decision_json"]).exists())
+        self.assertTrue(Path(payload["artifacts"]["decision_md"]).exists())
+        self.assertTrue(Path(payload["artifacts"]["targets_csv"]).exists())
+        warnings = payload["decision_package"].get("warnings", [])
+        self.assertTrue(any("rehearsal" in str(warning).lower() for warning in warnings))
+        self.assertTrue(any("stale" in str(warning).lower() for warning in warnings))
 
 
 if __name__ == "__main__":

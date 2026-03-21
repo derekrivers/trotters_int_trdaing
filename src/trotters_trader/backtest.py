@@ -26,6 +26,190 @@ class BacktestResult:
     results_path: str
 
 
+def build_daily_decision_package(
+    config: AppConfig,
+    *,
+    reference_date: date | None = None,
+) -> dict[str, object]:
+    all_bars_by_instrument = load_daily_bars(config.data.canonical_dir / "daily_bars.csv")
+    instruments = load_instruments(config.data.canonical_dir / "instruments.csv")
+    validate_market_data(all_bars_by_instrument, instruments, {})
+    ensure_feature_set(config)
+    feature_store = load_feature_store(config) if config.features.enabled and config.features.use_precomputed else None
+    if feature_store is not None and not feature_store_matches_config(feature_store, config):
+        feature_store = None
+
+    eligibility_bars = _eligibility_bars(all_bars_by_instrument, config.period.start_date)
+    allowed = eligible_instruments(
+        eligibility_bars,
+        instruments,
+        config.universe,
+        start_date=config.period.start_date,
+        end_date=config.period.end_date,
+    )
+    bars_by_instrument = {
+        instrument: bars
+        for instrument, bars in all_bars_by_instrument.items()
+        if instrument in allowed
+    }
+    bars_by_instrument = _bars_to_end_date(bars_by_instrument, config.period.end_date)
+    calendar = TradingCalendar(tuple(trading_calendar(bars_by_instrument)))
+    trading_dates = tuple(_dates_in_period(calendar.dates, config.period.start_date, config.period.end_date))
+    if not trading_dates:
+        raise ValueError("No trading dates are available for the configured paper-trading decision package")
+
+    strategy = build_strategy(config.strategy)
+    portfolio = PortfolioState(cash=config.run.initial_cash)
+    bars_lookup = _bars_lookup_by_date(bars_by_instrument)
+    peak_nav = config.run.initial_cash
+    prior_drawdown = 0.0
+    prior_benchmark_regime_active = False
+    latest_trade_date = trading_dates[-1]
+    latest_visible_history: dict[str, list[DailyBar]] = {}
+    latest_target_weights: dict[str, float] = {}
+    latest_portfolio_config = config.portfolio
+    next_trade_date: date | None = None
+
+    for day_index, trade_date in enumerate(trading_dates):
+        portfolio.advance_holding_days()
+        latest_visible_history = _history_to_date(bars_by_instrument, trade_date)
+        current_nav = _portfolio_nav(portfolio, bars_lookup.get(trade_date, {}))
+        peak_nav = max(peak_nav, current_nav)
+        current_drawdown = _current_drawdown(current_nav, peak_nav)
+        effective_portfolio_config = _apply_drawdown_overlay(config.portfolio, current_drawdown)
+        benchmark_regime_active = _benchmark_regime_active(
+            latest_visible_history,
+            effective_portfolio_config,
+        )
+        effective_portfolio_config = _apply_benchmark_regime_overlay(
+            effective_portfolio_config,
+            benchmark_regime_active,
+        )
+        latest_portfolio_config = effective_portfolio_config
+        feature_snapshot = None
+        if feature_store is not None:
+            feature_snapshot = feature_store.snapshot(trade_date.isoformat())
+        scores = strategy.score(latest_visible_history, feature_snapshot=feature_snapshot)
+        latest_target_weights = build_target_weights(
+            scores,
+            latest_visible_history,
+            config.strategy,
+            instruments=instruments,
+            current_holdings=set(portfolio.positions),
+            holding_days=portfolio.holding_days,
+            selection_buffer_slots=config.portfolio.selection_buffer_slots,
+            max_positions_per_sector=config.portfolio.max_positions_per_sector,
+            max_positions_per_industry=config.portfolio.max_positions_per_industry,
+            max_positions_per_benchmark_bucket=config.portfolio.max_positions_per_benchmark_bucket,
+            min_holding_days=config.portfolio.min_holding_days,
+        )
+        if day_index == len(trading_dates) - 1:
+            latest_trade_date = trade_date
+            break
+
+        next_trade_date = trading_dates[day_index + 1]
+        next_day_bars = bars_lookup[next_trade_date]
+        should_rebalance = day_index % max(config.portfolio.rebalance_frequency_days, 1) == 0
+        drawdown_breach = (
+            effective_portfolio_config.drawdown_force_rebalance
+            and effective_portfolio_config.drawdown_reduce_threshold > 0
+            and prior_drawdown < effective_portfolio_config.drawdown_reduce_threshold <= current_drawdown
+        )
+        if drawdown_breach:
+            should_rebalance = True
+        if (
+            effective_portfolio_config.benchmark_regime_force_rebalance
+            and benchmark_regime_active
+            and not prior_benchmark_regime_active
+        ):
+            should_rebalance = True
+        orders = []
+        if should_rebalance:
+            orders = build_rebalance_orders(
+                portfolio=portfolio,
+                target_weights=latest_target_weights,
+                prices=next_day_bars,
+                history_by_instrument=latest_visible_history,
+                config=effective_portfolio_config,
+            )
+        for order in orders:
+            next_bar = next_day_bars[order.instrument]
+            fill = simulate_fill(order, next_bar, config.execution)
+            if fill is None:
+                continue
+            portfolio.apply_fill(fill)
+        prior_drawdown = current_drawdown
+        prior_benchmark_regime_active = benchmark_regime_active
+
+    decision_prices = bars_lookup.get(latest_trade_date, {})
+    current_nav = _portfolio_nav(portfolio, decision_prices)
+    planned_orders = build_rebalance_orders(
+        portfolio=portfolio,
+        target_weights=latest_target_weights,
+        prices=decision_prices,
+        history_by_instrument=latest_visible_history,
+        config=latest_portfolio_config,
+    )
+    projected_positions = dict(portfolio.positions)
+    for order in planned_orders:
+        signed_quantity = order.quantity if order.side == "BUY" else -order.quantity
+        projected_positions[order.instrument] = projected_positions.get(order.instrument, 0) + signed_quantity
+        if projected_positions[order.instrument] <= 0:
+            projected_positions.pop(order.instrument, None)
+
+    missing_prices = sorted(
+        instrument
+        for instrument in set(portfolio.positions) | set(latest_target_weights)
+        if instrument not in decision_prices
+    )
+    warnings = _daily_decision_warnings(
+        config=config,
+        latest_trade_date=latest_trade_date,
+        next_trade_date=next_trade_date,
+        missing_prices=missing_prices,
+        reference_date=reference_date,
+    )
+    target_rows = _daily_decision_target_rows(
+        target_weights=latest_target_weights,
+        current_positions=portfolio.positions,
+        projected_positions=projected_positions,
+        prices=decision_prices,
+        current_nav=current_nav,
+        instruments=instruments,
+    )
+    action_summary = _daily_decision_action_summary(target_rows)
+    expected_turnover = _expected_turnover(planned_orders, decision_prices, current_nav)
+    summary_text = _daily_decision_summary(action_summary, warnings)
+
+    return {
+        "decision_date": latest_trade_date.isoformat(),
+        "reference_date": None if reference_date is None else reference_date.isoformat(),
+        "latest_data_date": latest_trade_date.isoformat(),
+        "next_trade_date": None if next_trade_date is None else next_trade_date.isoformat(),
+        "profile_name": config.research.profile_name,
+        "profile_version": config.research.profile_version,
+        "promoted": config.research.promoted,
+        "strategy_name": config.strategy.name,
+        "summary": summary_text,
+        "warnings": warnings,
+        "action_summary": action_summary,
+        "expected_turnover": expected_turnover,
+        "current_nav": current_nav,
+        "target_gross_exposure": latest_portfolio_config.target_gross_exposure,
+        "target_holdings": target_rows,
+        "planned_orders": [
+            {
+                "trade_date": order.trade_date.isoformat(),
+                "instrument": order.instrument,
+                "side": order.side,
+                "quantity": order.quantity,
+                "reference_open": decision_prices[order.instrument].open if order.instrument in decision_prices else 0.0,
+            }
+            for order in planned_orders
+        ],
+    }
+
+
 def run_backtest(config: AppConfig) -> BacktestResult:
     all_bars_by_instrument = load_daily_bars(config.data.canonical_dir / "daily_bars.csv")
     instruments = load_instruments(config.data.canonical_dir / "instruments.csv")
@@ -461,3 +645,131 @@ def _apply_benchmark_regime_overlay(config: AppConfig | object, regime_active: b
         portfolio_config,
         target_gross_exposure=min(float(getattr(portfolio_config, "target_gross_exposure", 0.0)), reduced_exposure),
     )
+
+
+def _daily_decision_warnings(
+    *,
+    config: AppConfig,
+    latest_trade_date: date,
+    next_trade_date: date | None,
+    missing_prices: list[str],
+    reference_date: date | None,
+) -> list[str]:
+    warnings: list[str] = []
+    if not config.research.promoted:
+        warnings.append("Profile is not marked promoted; this package is for paper-trading rehearsal only.")
+    if next_trade_date is None:
+        warnings.append(
+            "No forward trading date is available in the dataset; planned orders use the latest available prices as an estimate."
+        )
+    if reference_date is not None:
+        stale_days = (reference_date - latest_trade_date).days
+        if stale_days > 5:
+            warnings.append(
+                f"Latest market data is stale by {stale_days} calendar days relative to the reference date."
+            )
+    if missing_prices:
+        warnings.append(
+            "Missing decision-date prices for: " + ", ".join(missing_prices[:10]) + ("..." if len(missing_prices) > 10 else "")
+        )
+    return warnings
+
+
+def _daily_decision_target_rows(
+    *,
+    target_weights: dict[str, float],
+    current_positions: dict[str, int],
+    projected_positions: dict[str, int],
+    prices: dict[str, DailyBar],
+    current_nav: float,
+    instruments: dict[str, object],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for instrument in sorted(set(target_weights) | set(current_positions) | set(projected_positions)):
+        bar = prices.get(instrument)
+        metadata = instruments.get(instrument)
+        current_quantity = int(current_positions.get(instrument, 0) or 0)
+        projected_quantity = int(projected_positions.get(instrument, 0) or 0)
+        close_price = 0.0 if bar is None else float(bar.close)
+        current_value = current_quantity * close_price
+        projected_value = projected_quantity * close_price
+        current_weight = 0.0 if current_nav <= 0 else current_value / current_nav
+        projected_weight = 0.0 if current_nav <= 0 else projected_value / current_nav
+        rows.append(
+            {
+                "instrument": instrument,
+                "sector": "" if metadata is None else str(getattr(metadata, "sector", "") or ""),
+                "industry": "" if metadata is None else str(getattr(metadata, "industry", "") or ""),
+                "current_quantity": current_quantity,
+                "projected_quantity": projected_quantity,
+                "target_weight": float(target_weights.get(instrument, 0.0) or 0.0),
+                "current_weight": current_weight,
+                "projected_weight": projected_weight,
+                "reference_close": close_price,
+                "action": _daily_decision_action(current_quantity, projected_quantity),
+            }
+        )
+    return rows
+
+
+def _daily_decision_action(current_quantity: int, projected_quantity: int) -> str:
+    if current_quantity <= 0 and projected_quantity > 0:
+        return "add"
+    if current_quantity > 0 and projected_quantity <= 0:
+        return "exit"
+    if projected_quantity > current_quantity:
+        return "increase"
+    if projected_quantity < current_quantity:
+        return "trim"
+    return "hold"
+
+
+def _daily_decision_action_summary(rows: list[dict[str, object]]) -> dict[str, int]:
+    summary = {
+        "adds": 0,
+        "increases": 0,
+        "trims": 0,
+        "exits": 0,
+        "holds": 0,
+    }
+    for row in rows:
+        action = str(row.get("action", "hold"))
+        if action == "add":
+            summary["adds"] += 1
+        elif action == "increase":
+            summary["increases"] += 1
+        elif action == "trim":
+            summary["trims"] += 1
+        elif action == "exit":
+            summary["exits"] += 1
+        else:
+            summary["holds"] += 1
+    return summary
+
+
+def _expected_turnover(orders: list[Order], prices: dict[str, DailyBar], current_nav: float) -> float:
+    if current_nav <= 0:
+        return 0.0
+    total_notional = 0.0
+    for order in orders:
+        bar = prices.get(order.instrument)
+        if bar is None:
+            continue
+        total_notional += order.quantity * bar.open
+    return total_notional / current_nav
+
+
+def _daily_decision_summary(action_summary: dict[str, int], warnings: list[str]) -> str:
+    if warnings:
+        prefix = "Decision package generated with warnings."
+    else:
+        prefix = "Decision package generated without blocking warnings."
+    moves = [
+        f"{action_summary.get('adds', 0)} adds",
+        f"{action_summary.get('increases', 0)} increases",
+        f"{action_summary.get('trims', 0)} trims",
+        f"{action_summary.get('exits', 0)} exits",
+    ]
+    if sum(action_summary.values()) == action_summary.get("holds", 0):
+        return prefix + " No rebalance action is currently required."
+    return prefix + " Planned actions: " + ", ".join(moves) + "."

@@ -179,6 +179,7 @@ python -m trotters_trader.cli ranking-sweep --config configs/eodhd_momentum.toml
 python -m trotters_trader.cli construction-sweep --config configs/eodhd_momentum.toml --quality-gate pass_warn
 python -m trotters_trader.cli starter-tranche --config configs/eodhd_momentum.toml --quality-gate pass_warn
 python -m trotters_trader.cli operability-program --config configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml --quality-gate pass_warn
+python -m trotters_trader.cli paper-trade-decision --config configs/backtest.toml --reference-date 2026-03-21
 python -m trotters_trader.cli research-campaign-start --config configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml --runtime-root runtime/research_runtime --catalog-output-dir runtime/catalog --campaign-name broad-operability
 python -m trotters_trader.cli research-campaign-status --runtime-root runtime/research_runtime --campaign-id <campaign_id>
 ```
@@ -187,6 +188,7 @@ python -m trotters_trader.cli research-campaign-status --runtime-root runtime/re
 `compare-profiles` runs the same strategy comparison under each named evaluation profile and writes one aggregate report so you can see how research conclusions change under different review standards.
 `compare-benchmarks` runs the same strategy comparison against each configured primary benchmark and writes benchmark-specific excess-return columns into the aggregate report.
 `operability-program` runs the robustness-first promotion workflow: focused operability tranche, optional benchmark-aware pivot, stress pack on the shortlist, and one final handoff report.
+`paper-trade-decision` writes a daily decision package with target holdings, rebalance actions, expected turnover, and warnings for stale or incomplete inputs. It is intended for paper-trading rehearsal once a strategy is promoted.
 `research-campaign-start` creates a persisted autonomous campaign in the runtime database; the campaign manager can keep advancing it in the background until it freezes a candidate or exhausts its budget.
 
 ## Docker

@@ -369,6 +369,53 @@ def write_operability_program_report(
     }
 
 
+def write_paper_trade_decision_artifacts(
+    output_dir: Path,
+    report_name: str,
+    decision_package: dict[str, object],
+) -> dict[str, str]:
+    report_dir = output_dir / report_name
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    json_path = report_dir / "paper_trade_decision.json"
+    markdown_path = report_dir / "paper_trade_decision.md"
+    targets_csv_path = report_dir / "paper_trade_targets.csv"
+
+    target_rows = [
+        row
+        for row in decision_package.get("target_holdings", [])
+        if isinstance(row, dict)
+    ] if isinstance(decision_package, dict) else []
+
+    json_path.write_text(json.dumps(decision_package, indent=2), encoding="utf-8")
+    markdown_path.write_text(_render_paper_trade_decision_markdown(decision_package), encoding="utf-8")
+    _write_csv(targets_csv_path, target_rows)
+
+    warnings = decision_package.get("warnings", []) if isinstance(decision_package, dict) else []
+    profile_name = str(decision_package.get("profile_name", "unknown")) if isinstance(decision_package, dict) else "unknown"
+    register_catalog_entry(
+        output_dir=output_dir,
+        entry={
+            "artifact_type": "paper_trade_decision",
+            "artifact_name": report_name,
+            "profile_name": profile_name,
+            "profile_version": str(decision_package.get("profile_version", "unversioned")),
+            "strategy_family": str(decision_package.get("strategy_name", "unknown")),
+            "sweep_type": "paper_trade_decision",
+            "evaluation_status": "warn" if warnings else "pass",
+            "primary_path": str(json_path),
+            "summary_path": str(markdown_path),
+            "rankings_path": str(targets_csv_path),
+            "recommended_action": "paper_trade_rehearsal",
+        },
+    )
+    return {
+        "decision_json": str(json_path),
+        "decision_md": str(markdown_path),
+        "targets_csv": str(targets_csv_path),
+    }
+
+
 def build_operability_scorecard(
     *,
     control_row: dict[str, object],
@@ -1479,6 +1526,62 @@ def _render_operability_program_markdown(
             f"- Pivot used: {bool(final_decision.get('pivot_used', False))}",
         ]
     )
+    return "\n".join(lines) + "\n"
+
+
+def _render_paper_trade_decision_markdown(decision_package: dict[str, object]) -> str:
+    summary = str(decision_package.get("summary", ""))
+    warnings = decision_package.get("warnings", []) if isinstance(decision_package.get("warnings"), list) else []
+    action_summary = decision_package.get("action_summary", {}) if isinstance(decision_package.get("action_summary"), dict) else {}
+    target_rows = [
+        row for row in decision_package.get("target_holdings", []) if isinstance(row, dict)
+    ] if isinstance(decision_package.get("target_holdings"), list) else []
+    lines = [
+        "# Paper-Trade Decision Package",
+        "",
+        "## Summary",
+        "",
+        summary,
+        "",
+        "## Package Metadata",
+        "",
+        f"- Decision date: {decision_package.get('decision_date', 'unknown')}",
+        f"- Reference date: {decision_package.get('reference_date', 'unspecified') or 'unspecified'}",
+        f"- Latest data date: {decision_package.get('latest_data_date', 'unknown')}",
+        f"- Next trade date: {decision_package.get('next_trade_date', 'unavailable') or 'unavailable'}",
+        f"- Profile name: {decision_package.get('profile_name', 'unknown')}",
+        f"- Profile version: {decision_package.get('profile_version', 'unversioned')}",
+        f"- Promoted flag: {bool(decision_package.get('promoted', False))}",
+        f"- Strategy name: {decision_package.get('strategy_name', 'unknown')}",
+        f"- Current NAV: {float(decision_package.get('current_nav', 0.0) or 0.0):.2f}",
+        f"- Target gross exposure: {float(decision_package.get('target_gross_exposure', 0.0) or 0.0):.2%}",
+        f"- Expected turnover: {float(decision_package.get('expected_turnover', 0.0) or 0.0):.2%}",
+        "",
+        "## Rebalance Action Summary",
+        "",
+        f"- Adds: {int(action_summary.get('adds', 0) or 0)}",
+        f"- Increases: {int(action_summary.get('increases', 0) or 0)}",
+        f"- Trims: {int(action_summary.get('trims', 0) or 0)}",
+        f"- Exits: {int(action_summary.get('exits', 0) or 0)}",
+        f"- Holds: {int(action_summary.get('holds', 0) or 0)}",
+        "",
+        "## Warnings",
+        "",
+    ]
+    if warnings:
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Target Holdings", ""])
+    for row in target_rows:
+        lines.append(
+            f"- {row.get('instrument', 'unknown')}: action={row.get('action', 'hold')}, "
+            f"current_quantity={int(row.get('current_quantity', 0) or 0)}, "
+            f"projected_quantity={int(row.get('projected_quantity', 0) or 0)}, "
+            f"target_weight={float(row.get('target_weight', 0.0) or 0.0):.2%}, "
+            f"projected_weight={float(row.get('projected_weight', 0.0) or 0.0):.2%}"
+        )
     return "\n".join(lines) + "\n"
 
 

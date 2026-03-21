@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import date
 from pathlib import Path, PurePosixPath
 import time
 
 from trotters_trader.alpha_vantage import download_daily_series
-from trotters_trader.backtest import run_backtest
+from trotters_trader.backtest import build_daily_decision_package, run_backtest
 from trotters_trader.catalog import load_catalog_entries
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.config import (
@@ -48,7 +49,7 @@ from trotters_trader.experiments import (
     write_experiment_comparison,
 )
 from trotters_trader.features import materialize_feature_set
-from trotters_trader.reports import write_promotion_artifacts
+from trotters_trader.reports import write_paper_trade_decision_artifacts, write_promotion_artifacts
 from trotters_trader.research_runtime import (
     campaign_manager_loop,
     campaign_status,
@@ -105,6 +106,7 @@ LEGACY_COMMANDS = [
     "construction-sweep",
     "starter-tranche",
     "operability-program",
+    "paper-trade-decision",
 ]
 RUNTIME_COMMANDS = [
     "research-coordinator",
@@ -292,6 +294,19 @@ def execute_command(
         return run_starter_tranche(config)
     if command == "operability-program":
         return run_operability_program(config)
+    if command == "paper-trade-decision":
+        decision_package = build_daily_decision_package(
+            config,
+            reference_date=getattr(command_args, "reference_date", None),
+        )
+        return {
+            "decision_package": decision_package,
+            "artifacts": write_paper_trade_decision_artifacts(
+                output_dir=config.run.output_dir,
+                report_name=f"{config.run.name}_paper_trade_decision",
+                decision_package=decision_package,
+            ),
+        }
     if command == "compare-profiles":
         profile_configs = [
             apply_runtime_overrides(
@@ -321,6 +336,10 @@ def execute_command(
         return payload
     results = run_strategy_comparison(config)
     return _comparison_payload(results, config.run.output_dir, f"{config.run.name}_strategy_report", quality_gate, config.evaluation.profile_name)
+
+
+def _parse_iso_date(value: str) -> date:
+    return date.fromisoformat(value)
 
 
 def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
@@ -655,6 +674,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--from-date")
     parser.add_argument("--to-date")
+    parser.add_argument("--reference-date", type=_parse_iso_date)
     parser.add_argument("--runtime-root", default="runtime/research_runtime")
     parser.add_argument("--catalog-output-dir", default="runs")
     parser.add_argument("--spec", help="JSON string or path to a JSON job spec.")
