@@ -269,8 +269,17 @@ def write_operability_program_report(
     decision_json_path = report_dir / "operability_program.json"
     shortlist_path = report_dir / "shortlist.csv"
     stress_path = report_dir / "stress_results.csv"
+    scorecard_json_path = report_dir / "operator_scorecard.json"
+    scorecard_md_path = report_dir / "operator_scorecard.md"
+    comparison_md_path = report_dir / "candidate_comparison.md"
 
     stress_rows = _flatten_stress_rows(stress_results)
+    scorecard = build_operability_scorecard(
+        control_row=control_row,
+        shortlisted=shortlisted,
+        stress_results=stress_results,
+        final_decision=final_decision,
+    )
     summary_path.write_text(
         _render_operability_program_markdown(
             control_row=control_row,
@@ -296,6 +305,9 @@ def write_operability_program_report(
         ),
         encoding="utf-8",
     )
+    scorecard_json_path.write_text(json.dumps(scorecard, indent=2), encoding="utf-8")
+    scorecard_md_path.write_text(_render_operability_scorecard_markdown(scorecard), encoding="utf-8")
+    comparison_md_path.write_text(_render_operability_comparison_markdown(scorecard), encoding="utf-8")
     _write_csv(
         shortlist_path,
         [{key: value for key, value in row.items() if key != "promotion_decision"} for row in shortlisted],
@@ -318,12 +330,69 @@ def write_operability_program_report(
             "rankings_path": str(shortlist_path),
         },
     )
+    register_catalog_entry(
+        output_dir=output_dir,
+        entry={
+            "artifact_type": "operator_scorecard",
+            "artifact_name": report_name,
+            "profile_name": profile_name,
+            "strategy_family": str(control_row.get("strategy_family", "cross_sectional_momentum")),
+            "sweep_type": "operability_program",
+            "evaluation_status": evaluation_status,
+            "primary_path": str(scorecard_json_path),
+            "summary_path": str(scorecard_md_path),
+            "recommended_action": scorecard.get("operator_recommendation", "needs_more_research"),
+        },
+    )
+    register_catalog_entry(
+        output_dir=output_dir,
+        entry={
+            "artifact_type": "candidate_comparison",
+            "artifact_name": report_name,
+            "profile_name": profile_name,
+            "strategy_family": str(control_row.get("strategy_family", "cross_sectional_momentum")),
+            "sweep_type": "operability_program",
+            "evaluation_status": evaluation_status,
+            "primary_path": str(comparison_md_path),
+            "recommended_action": scorecard.get("operator_recommendation", "needs_more_research"),
+        },
+    )
 
     return {
         "summary_md": str(summary_path),
         "decision_json": str(decision_json_path),
         "shortlist_csv": str(shortlist_path),
         "stress_csv": str(stress_path),
+        "scorecard_json": str(scorecard_json_path),
+        "scorecard_md": str(scorecard_md_path),
+        "comparison_md": str(comparison_md_path),
+    }
+
+
+def build_operability_scorecard(
+    *,
+    control_row: dict[str, object],
+    shortlisted: list[dict[str, object]],
+    stress_results: list[dict[str, object]],
+    final_decision: dict[str, object],
+) -> dict[str, object]:
+    selected_candidate = _select_scorecard_candidate(shortlisted, final_decision)
+    selected_stress = _select_scorecard_stress_result(stress_results, selected_candidate, final_decision)
+    operator_recommendation = _operator_recommendation(final_decision)
+    strengths = _scorecard_strengths(control_row, selected_candidate, selected_stress, final_decision)
+    weaknesses = _scorecard_weaknesses(control_row, selected_candidate, selected_stress, final_decision)
+    next_steps = _scorecard_next_steps(operator_recommendation)
+    return {
+        "campaign_decision": final_decision.get("recommended_action", "continue_research"),
+        "campaign_reason": final_decision.get("reason", "unknown"),
+        "operator_recommendation": operator_recommendation,
+        "summary": _scorecard_summary(operator_recommendation, selected_candidate, final_decision),
+        "selected_candidate": _scorecard_candidate_snapshot(selected_candidate, selected_stress),
+        "control": _scorecard_candidate_snapshot(control_row, None),
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "next_steps": next_steps,
+        "comparison": _scorecard_comparison(control_row, selected_candidate, selected_stress),
     }
 
 
@@ -947,6 +1016,278 @@ def _render_research_decision_markdown(decision: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _select_scorecard_candidate(
+    shortlisted: list[dict[str, object]],
+    final_decision: dict[str, object],
+) -> dict[str, object] | None:
+    selected_run_name = str(final_decision.get("selected_run_name") or "")
+    if selected_run_name:
+        for row in shortlisted:
+            if str(row.get("run_name", "")) == selected_run_name:
+                return row
+    return shortlisted[0] if shortlisted else None
+
+
+def _select_scorecard_stress_result(
+    stress_results: list[dict[str, object]],
+    selected_candidate: dict[str, object] | None,
+    final_decision: dict[str, object],
+) -> dict[str, object] | None:
+    selected_run_name = str(final_decision.get("selected_run_name") or "")
+    if not selected_run_name and selected_candidate is not None:
+        selected_run_name = str(selected_candidate.get("run_name", ""))
+    for row in stress_results:
+        if str(row.get("candidate_run_name", "")) == selected_run_name:
+            return row
+    return None
+
+
+def _operator_recommendation(final_decision: dict[str, object]) -> str:
+    action = str(final_decision.get("recommended_action", "continue_research"))
+    if action == "freeze_candidate":
+        return "paper_trade_next"
+    if action in {
+        "continue_research",
+        "continue_benchmark_pivot",
+        "continue_focused_research",
+        "continue_operability_validation",
+        "stopped",
+    }:
+        return "needs_more_research"
+    return "reject"
+
+
+def _scorecard_summary(
+    operator_recommendation: str,
+    selected_candidate: dict[str, object] | None,
+    final_decision: dict[str, object],
+) -> str:
+    if operator_recommendation == "paper_trade_next" and selected_candidate is not None:
+        return (
+            f"The current best candidate is {selected_candidate.get('run_name', 'unknown')}. "
+            "It passed the promotion gate and the configured stress pack, so the next boundary is paper-trading preparation."
+        )
+    if operator_recommendation == "needs_more_research":
+        return (
+            "The campaign found useful evidence, but the result is not yet strong enough to treat as paper-trading ready. "
+            "More research or a policy pivot is still required."
+        )
+    return (
+        "This campaign should be treated as a rejected current branch. "
+        f"Recorded campaign reason: {final_decision.get('reason', 'unknown')}."
+    )
+
+
+def _scorecard_strengths(
+    control_row: dict[str, object],
+    selected_candidate: dict[str, object] | None,
+    selected_stress: dict[str, object] | None,
+    final_decision: dict[str, object],
+) -> list[str]:
+    if selected_candidate is None:
+        return ["No candidate emerged strongly enough to summarize as an operational strength."]
+    strengths: list[str] = []
+    if bool(selected_candidate.get("eligible", False)):
+        strengths.append("Passed the promotion eligibility gate.")
+    validation = float(selected_candidate.get("validation_excess_return", 0.0) or 0.0)
+    if validation > 0:
+        strengths.append(f"Produced positive validation excess return of {validation:.2%}.")
+    holdout = float(selected_candidate.get("holdout_excess_return", 0.0) or 0.0)
+    if holdout > 0:
+        strengths.append(f"Produced positive holdout excess return of {holdout:.2%}.")
+    candidate_windows = int(selected_candidate.get("walkforward_pass_windows", 0) or 0)
+    control_windows = int(control_row.get("walkforward_pass_windows", 0) or 0)
+    if candidate_windows > control_windows:
+        strengths.append(
+            f"Improved walk-forward pass windows from {control_windows} on the control to {candidate_windows}."
+        )
+    if selected_stress is not None and bool(selected_stress.get("stress_ok", False)):
+        strengths.append("Stayed non-broken across all configured stress scenarios.")
+    if final_decision.get("recommended_action") == "freeze_candidate":
+        strengths.append("Strong enough to freeze as the current best strategy candidate.")
+    return strengths or ["The candidate reached the shortlist, which means it outperformed many weaker variants."]
+
+
+def _scorecard_weaknesses(
+    control_row: dict[str, object],
+    selected_candidate: dict[str, object] | None,
+    selected_stress: dict[str, object] | None,
+    final_decision: dict[str, object],
+) -> list[str]:
+    weaknesses: list[str] = []
+    if selected_candidate is None:
+        weaknesses.append("No selected candidate is available for operator review.")
+    else:
+        if float(selected_candidate.get("holdout_excess_return", 0.0) or 0.0) <= 0:
+            weaknesses.append("Holdout excess return is not yet convincingly positive.")
+        if int(selected_candidate.get("walkforward_pass_windows", 0) or 0) <= int(
+            control_row.get("walkforward_pass_windows", 0) or 0
+        ):
+            weaknesses.append("Walk-forward evidence did not clearly beat the control.")
+        if selected_stress is not None and not bool(selected_stress.get("stress_ok", False)):
+            weaknesses.append("Stress-pack evidence is incomplete or contains broken scenarios.")
+        rejection_reason = str(selected_candidate.get("rejection_reason", "") or "")
+        if rejection_reason:
+            weaknesses.append(f"Recorded rejection warning: {rejection_reason}.")
+    if final_decision.get("recommended_action") in {"failed", "exhausted"}:
+        weaknesses.append("The campaign finished without enough evidence to keep this branch alive.")
+    if final_decision.get("pivot_used"):
+        weaknesses.append("The campaign required a pivot to recover evidence, which suggests the base family was fragile.")
+    return weaknesses or ["No major weakness was recorded, but operator review is still required before any paper phase."]
+
+
+def _scorecard_next_steps(operator_recommendation: str) -> list[str]:
+    if operator_recommendation == "paper_trade_next":
+        return [
+            "Review the frozen candidate and confirm the result is understandable to the operator.",
+            "Prepare the paper-trading boundary: daily decision exports, monitoring, and operational checks.",
+            "Do not move to live trading until paper-trading design and controls are in place.",
+        ]
+    if operator_recommendation == "needs_more_research":
+        return [
+            "Keep this candidate in research mode rather than treating it as deployable.",
+            "Use the scorecard weaknesses to decide whether to continue the family or pivot to the next branch.",
+            "Wait for stronger holdout, walk-forward, or stress evidence before paper-trading consideration.",
+        ]
+    return [
+        "Treat the current branch as rejected.",
+        "Do not promote it into paper trading.",
+        "Move research effort to the next approved family or director plan entry.",
+    ]
+
+
+def _scorecard_candidate_snapshot(
+    row: dict[str, object] | None,
+    stress_result: dict[str, object] | None,
+) -> dict[str, object]:
+    payload = row if isinstance(row, dict) else {}
+    snapshot = {
+        "run_name": str(payload.get("run_name", "unknown")),
+        "profile_name": str(payload.get("profile_name", "unknown")),
+        "validation_excess_return": float(payload.get("validation_excess_return", 0.0) or 0.0),
+        "holdout_excess_return": float(payload.get("holdout_excess_return", 0.0) or 0.0),
+        "walkforward_pass_windows": int(payload.get("walkforward_pass_windows", 0) or 0),
+        "rebalance_frequency_days": int(payload.get("rebalance_frequency_days", 0) or 0),
+        "max_rebalance_turnover_pct": float(payload.get("max_rebalance_turnover_pct", 0.0) or 0.0),
+        "eligible": bool(payload.get("eligible", False)),
+    }
+    if stress_result is not None:
+        snapshot["stress_ok"] = bool(stress_result.get("stress_ok", False))
+        snapshot["stress_non_broken_count"] = int(stress_result.get("non_broken_count", 0) or 0)
+        snapshot["stress_scenario_count"] = int(stress_result.get("scenario_count", 0) or 0)
+    return snapshot
+
+
+def _scorecard_comparison(
+    control_row: dict[str, object],
+    selected_candidate: dict[str, object] | None,
+    selected_stress: dict[str, object] | None,
+) -> dict[str, object]:
+    control_validation = float(control_row.get("validation_excess_return", 0.0) or 0.0)
+    control_holdout = float(control_row.get("holdout_excess_return", 0.0) or 0.0)
+    control_walkforward = int(control_row.get("walkforward_pass_windows", 0) or 0)
+    if selected_candidate is None:
+        return {
+            "control": _scorecard_candidate_snapshot(control_row, None),
+            "candidate": None,
+            "deltas": {
+                "validation_excess_return": None,
+                "holdout_excess_return": None,
+                "walkforward_pass_windows": None,
+            },
+        }
+    return {
+        "control": _scorecard_candidate_snapshot(control_row, None),
+        "candidate": _scorecard_candidate_snapshot(selected_candidate, selected_stress),
+        "deltas": {
+            "validation_excess_return": float(selected_candidate.get("validation_excess_return", 0.0) or 0.0)
+            - control_validation,
+            "holdout_excess_return": float(selected_candidate.get("holdout_excess_return", 0.0) or 0.0)
+            - control_holdout,
+            "walkforward_pass_windows": int(selected_candidate.get("walkforward_pass_windows", 0) or 0)
+            - control_walkforward,
+        },
+    }
+
+
+def _render_operability_scorecard_markdown(scorecard: dict[str, object]) -> str:
+    selected = scorecard.get("selected_candidate", {}) if isinstance(scorecard.get("selected_candidate"), dict) else {}
+    control = scorecard.get("control", {}) if isinstance(scorecard.get("control"), dict) else {}
+    comparison = scorecard.get("comparison", {}) if isinstance(scorecard.get("comparison"), dict) else {}
+    deltas = comparison.get("deltas", {}) if isinstance(comparison.get("deltas"), dict) else {}
+    lines = [
+        "# Operator Scorecard",
+        "",
+        f"- Operator recommendation: {scorecard.get('operator_recommendation', 'needs_more_research')}",
+        f"- Campaign decision: {scorecard.get('campaign_decision', 'continue_research')}",
+        f"- Campaign reason: {scorecard.get('campaign_reason', 'unknown')}",
+        "",
+        "## Summary",
+        "",
+        str(scorecard.get("summary", "")),
+        "",
+        "## Selected Candidate",
+        "",
+        f"- Run: {selected.get('run_name', 'unknown')}",
+        f"- Profile: {selected.get('profile_name', 'unknown')}",
+        f"- Validation excess return: {float(selected.get('validation_excess_return', 0.0) or 0.0):.4%}",
+        f"- Holdout excess return: {float(selected.get('holdout_excess_return', 0.0) or 0.0):.4%}",
+        f"- Walk-forward pass windows: {int(selected.get('walkforward_pass_windows', 0) or 0)}",
+        "",
+        "## Control Comparison",
+        "",
+        f"- Control run: {control.get('run_name', 'unknown')}",
+        f"- Validation excess delta: {_format_optional_percent(deltas.get('validation_excess_return'))}",
+        f"- Holdout excess delta: {_format_optional_percent(deltas.get('holdout_excess_return'))}",
+        f"- Walk-forward delta: {_format_optional_int(deltas.get('walkforward_pass_windows'))}",
+        "",
+        "## Strengths",
+        "",
+    ]
+    for item in scorecard.get("strengths", []):
+        lines.append(f"- {item}")
+    lines.extend(["", "## Weaknesses", ""])
+    for item in scorecard.get("weaknesses", []):
+        lines.append(f"- {item}")
+    lines.extend(["", "## Next Steps", ""])
+    for item in scorecard.get("next_steps", []):
+        lines.append(f"- {item}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_operability_comparison_markdown(scorecard: dict[str, object]) -> str:
+    comparison = scorecard.get("comparison", {}) if isinstance(scorecard.get("comparison"), dict) else {}
+    control = comparison.get("control", {}) if isinstance(comparison.get("control"), dict) else {}
+    candidate = comparison.get("candidate", {}) if isinstance(comparison.get("candidate"), dict) else {}
+    deltas = comparison.get("deltas", {}) if isinstance(comparison.get("deltas"), dict) else {}
+    lines = [
+        "# Candidate Comparison",
+        "",
+        "## Control",
+        "",
+        f"- Run: {control.get('run_name', 'unknown')}",
+        f"- Profile: {control.get('profile_name', 'unknown')}",
+        f"- Validation excess return: {float(control.get('validation_excess_return', 0.0) or 0.0):.4%}",
+        f"- Holdout excess return: {float(control.get('holdout_excess_return', 0.0) or 0.0):.4%}",
+        f"- Walk-forward pass windows: {int(control.get('walkforward_pass_windows', 0) or 0)}",
+        "",
+        "## Selected Candidate",
+        "",
+        f"- Run: {candidate.get('run_name', 'unknown')}",
+        f"- Profile: {candidate.get('profile_name', 'unknown')}",
+        f"- Validation excess return: {float(candidate.get('validation_excess_return', 0.0) or 0.0):.4%}",
+        f"- Holdout excess return: {float(candidate.get('holdout_excess_return', 0.0) or 0.0):.4%}",
+        f"- Walk-forward pass windows: {int(candidate.get('walkforward_pass_windows', 0) or 0)}",
+        "",
+        "## Deltas",
+        "",
+        f"- Validation excess delta: {_format_optional_percent(deltas.get('validation_excess_return'))}",
+        f"- Holdout excess delta: {_format_optional_percent(deltas.get('holdout_excess_return'))}",
+        f"- Walk-forward delta: {_format_optional_int(deltas.get('walkforward_pass_windows'))}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _rank_tranche_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return sorted(
         rows,
@@ -1163,3 +1504,15 @@ def _flatten_stress_rows(stress_results: list[dict[str, object]]) -> list[dict[s
                 }
             )
     return rows
+
+
+def _format_optional_percent(value: object) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value or 0.0):.4%}"
+
+
+def _format_optional_int(value: object) -> str:
+    if value is None:
+        return "n/a"
+    return str(int(value or 0))

@@ -6,7 +6,7 @@ from trotters_trader.backtest import run_backtest
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.config import load_config
 from trotters_trader.experiments import run_promotion_check, run_universe_slice_sweep
-from trotters_trader.reports import write_operability_program_report, write_promotion_artifacts
+from trotters_trader.reports import build_operability_scorecard, write_operability_program_report, write_promotion_artifacts
 from tests.support import IsolatedWorkspaceTestCase
 
 
@@ -185,12 +185,47 @@ class ReportTests(IsolatedWorkspaceTestCase):
         self.assertTrue(Path(artifacts["decision_json"]).exists())
         self.assertTrue(Path(artifacts["shortlist_csv"]).exists())
         self.assertTrue(Path(artifacts["stress_csv"]).exists())
+        self.assertTrue(Path(artifacts["scorecard_json"]).exists())
+        self.assertTrue(Path(artifacts["scorecard_md"]).exists())
+        self.assertTrue(Path(artifacts["comparison_md"]).exists())
         summary_text = Path(artifacts["summary_md"]).read_text(encoding="utf-8")
+        scorecard_text = Path(artifacts["scorecard_md"]).read_text(encoding="utf-8")
+        comparison_text = Path(artifacts["comparison_md"]).read_text(encoding="utf-8")
         self.assertIn("## Control", summary_text)
         self.assertIn("## Focused Tranche", summary_text)
         self.assertIn("## Pivot Tranche", summary_text)
         self.assertIn("## Stress Pack", summary_text)
         self.assertIn("## Final Recommendation", summary_text)
+        self.assertIn("Operator recommendation: paper_trade_next", scorecard_text)
+        self.assertIn("## Strengths", scorecard_text)
+        self.assertIn("## Weaknesses", scorecard_text)
+        self.assertIn("## Next Steps", scorecard_text)
+        self.assertIn("## Deltas", comparison_text)
+
+    def test_operability_scorecard_maps_exhausted_campaign_to_reject(self) -> None:
+        scorecard = build_operability_scorecard(
+            control_row={
+                "run_name": "control_run",
+                "profile_name": "control_profile",
+                "validation_excess_return": 0.01,
+                "holdout_excess_return": -0.02,
+                "walkforward_pass_windows": 1,
+            },
+            shortlisted=[],
+            stress_results=[],
+            final_decision={
+                "recommended_action": "exhausted",
+                "reason": "no_stress_validated_candidate",
+                "selected_run_name": None,
+                "selected_profile_name": None,
+                "selected_candidate_eligible": False,
+                "selected_stress_ok": False,
+                "pivot_used": False,
+            },
+        )
+
+        self.assertEqual(scorecard["operator_recommendation"], "reject")
+        self.assertIn("rejected", str(scorecard["summary"]).lower())
 
 
 if __name__ == "__main__":

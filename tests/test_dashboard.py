@@ -226,6 +226,81 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("What Should Happen Next", body)
         self.assertIn("candidate-run", body)
         self.assertIn("Compare Candidates", body)
+        self.assertIn("operator recommendation", body)
+        self.assertIn("paper_trade_next", body)
+
+    def test_campaign_scorecard_page_renders_operator_recommendation(self) -> None:
+        root = self._workspace_root("scorecard")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch(
+                "trotters_trader.dashboard.campaign_status",
+                return_value={
+                    "campaign": {
+                        "campaign_id": "campaign-1",
+                        "campaign_name": "broad-operability",
+                        "latest_report_path": str((root / "catalog" / "campaign-1" / "operability_program.md").resolve()),
+                        "state": {
+                            "control_row": {
+                                "run_name": "control-run",
+                                "profile_name": "control-profile",
+                                "validation_excess_return": -0.03,
+                                "holdout_excess_return": -0.12,
+                                "walkforward_pass_windows": 0,
+                            },
+                            "shortlisted": [
+                                {
+                                    "run_name": "candidate-run",
+                                    "profile_name": "candidate-profile",
+                                    "eligible": True,
+                                    "validation_excess_return": 0.04,
+                                    "holdout_excess_return": 0.02,
+                                    "walkforward_pass_windows": 2,
+                                    "rebalance_frequency_days": 84,
+                                    "max_rebalance_turnover_pct": 0.08,
+                                }
+                            ],
+                            "stress_results": [
+                                {
+                                    "candidate_run_name": "candidate-run",
+                                    "stress_ok": True,
+                                    "non_broken_count": 4,
+                                    "scenario_count": 4,
+                                }
+                            ],
+                            "final_decision": {
+                                "recommended_action": "freeze_candidate",
+                                "reason": "candidate_passed_promotion_and_stress_pack",
+                                "selected_run_name": "candidate-run",
+                                "selected_profile_name": "candidate-profile",
+                                "selected_candidate_eligible": True,
+                                "selected_stress_ok": True,
+                                "pivot_used": False,
+                            },
+                        },
+                    },
+                    "events": [],
+                    "jobs": [],
+                },
+            ):
+                artifact_dir = root / "catalog" / "campaign-1"
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                (artifact_dir / "operator_scorecard.md").write_text("scorecard", encoding="utf-8")
+                (artifact_dir / "operator_scorecard.json").write_text("{}", encoding="utf-8")
+                (artifact_dir / "candidate_comparison.md").write_text("comparison", encoding="utf-8")
+                (artifact_dir / "operability_program.md").write_text("program", encoding="utf-8")
+                status, _, body = self._invoke(app, "GET", "/campaigns/campaign-1/scorecard")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Operator Scorecard", body)
+        self.assertIn("paper_trade_next", body)
+        self.assertIn("scorecard md", body)
+        self.assertIn("comparison md", body)
+        self.assertIn("Strengths", body)
+        self.assertIn("Weaknesses", body)
 
     def test_campaign_comparison_page_renders_control_and_shortlist(self) -> None:
         root = self._workspace_root("comparison")

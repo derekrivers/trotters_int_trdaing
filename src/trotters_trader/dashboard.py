@@ -16,6 +16,7 @@ from trotters_trader.research_runtime import (
     runtime_status,
     stop_campaign,
 )
+from trotters_trader.reports import build_operability_scorecard
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,17 @@ class DashboardApp:
                     raise ValueError("Campaign id is required")
                 payload = self._controller.campaign_detail(campaign_id)
                 html = _render_campaign_comparison(
+                    payload,
+                    refresh_seconds=self._refresh_seconds,
+                    flash=_query_value(query, "flash"),
+                )
+                return self._html_response("200 OK", html)
+            if path.endswith("/scorecard"):
+                campaign_id = path.removeprefix("/campaigns/").removesuffix("/scorecard").strip("/")
+                if not campaign_id:
+                    raise ValueError("Campaign id is required")
+                payload = self._controller.campaign_detail(campaign_id)
+                html = _render_campaign_scorecard(
                     payload,
                     refresh_seconds=self._refresh_seconds,
                     flash=_query_value(query, "flash"),
@@ -385,8 +397,15 @@ def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int
     shortlisted = [row for row in state.get("shortlisted", []) if isinstance(row, dict)]
     stress_results = [row for row in state.get("stress_results", []) if isinstance(row, dict)]
     final_decision = state.get("final_decision") if isinstance(state.get("final_decision"), dict) else {}
+    scorecard = build_operability_scorecard(
+        control_row=control_row,
+        shortlisted=shortlisted,
+        stress_results=stress_results,
+        final_decision=final_decision,
+    )
     selected_candidate = _selected_candidate(shortlisted, final_decision)
     selected_stress = _selected_stress_result(stress_results, final_decision, selected_candidate)
+    artifact_paths = _campaign_scorecard_artifact_paths(campaign)
 
     body = f"""
     {_flash_banner(flash)}
@@ -397,6 +416,7 @@ def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int
         <p>Plain-English summary for {escape(str(campaign.get("campaign_name", "unknown campaign")))}.</p>
       </div>
       <div class="hero-links">
+        <a class="button secondary" href="/campaigns/{quote(campaign_id)}/scorecard">Scorecard</a>
         <a class="button secondary" href="/campaigns/{quote(campaign_id)}/comparison">Compare Candidates</a>
         <a class="button secondary" href="/api/campaigns/{quote(campaign_id)}">JSON</a>
       </div>
@@ -406,6 +426,13 @@ def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int
       {_summary_card("phase", str(campaign.get("phase", "unknown")))}
       {_summary_card("shortlist", str(len(shortlisted)))}
       {_summary_card("decision", str(final_decision.get("recommended_action", "pending")))}
+      {_summary_card("operator recommendation", str(scorecard.get("operator_recommendation", "needs_more_research")))}
+    </section>
+    <section class="panel">
+      <h2>Operator Recommendation</h2>
+      <p><strong>{escape(str(scorecard.get("operator_recommendation", "needs_more_research")))}</strong></p>
+      <p>{escape(str(scorecard.get("summary", "")))}</p>
+      {_scorecard_artifact_paths(artifact_paths)}
     </section>
     <section class="panel">
       <h2>What The Strategy Does</h2>
@@ -423,7 +450,7 @@ def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int
     </section>
     <section class="panel">
       <h2>What Should Happen Next</h2>
-      {_handoff_next_steps(final_decision)}
+      {_scorecard_list(scorecard.get("next_steps"), empty_message="No next steps recorded yet.")}
     </section>
     <section class="split-grid">
       <section class="panel">
@@ -437,6 +464,58 @@ def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int
     </section>
     """
     return _render_layout("Promotion Handoff", body, refresh_seconds=refresh_seconds)
+
+
+def _render_campaign_scorecard(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
+    campaign = payload.get("campaign", {}) if isinstance(payload.get("campaign"), dict) else {}
+    state = campaign.get("state", {}) if isinstance(campaign.get("state"), dict) else {}
+    campaign_id = str(campaign.get("campaign_id", ""))
+    scorecard = build_operability_scorecard(
+        control_row=state.get("control_row") if isinstance(state.get("control_row"), dict) else {},
+        shortlisted=[row for row in state.get("shortlisted", []) if isinstance(row, dict)],
+        stress_results=[row for row in state.get("stress_results", []) if isinstance(row, dict)],
+        final_decision=state.get("final_decision") if isinstance(state.get("final_decision"), dict) else {},
+    )
+    artifact_paths = _campaign_scorecard_artifact_paths(campaign)
+
+    body = f"""
+    {_flash_banner(flash)}
+    <section class="hero">
+      <div>
+        <p><a href="/campaigns/{quote(campaign_id)}/handoff">Back to handoff</a></p>
+        <h1>Operator Scorecard</h1>
+        <p>Plain-English operator recommendation for {escape(str(campaign.get("campaign_name", "unknown campaign")))}.</p>
+      </div>
+      <div class="hero-links">
+        <a class="button secondary" href="/campaigns/{quote(campaign_id)}/comparison">Compare Candidates</a>
+        <a class="button secondary" href="/api/campaigns/{quote(campaign_id)}">JSON</a>
+      </div>
+    </section>
+    <section class="summary-grid">
+      {_summary_card("operator recommendation", str(scorecard.get("operator_recommendation", "needs_more_research")))}
+      {_summary_card("campaign decision", str(scorecard.get("campaign_decision", "continue_research")))}
+    </section>
+    <section class="panel">
+      <h2>Summary</h2>
+      <p>{escape(str(scorecard.get("summary", "")))}</p>
+      {_scorecard_artifact_paths(artifact_paths)}
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Strengths</h2>
+        {_scorecard_list(scorecard.get("strengths"), empty_message="No strengths recorded.")}
+      </section>
+      <section class="panel">
+        <h2>Weaknesses</h2>
+        {_scorecard_list(scorecard.get("weaknesses"), empty_message="No weaknesses recorded.")}
+      </section>
+    </section>
+    <section class="panel">
+      <h2>Next Steps</h2>
+      {_scorecard_list(scorecard.get("next_steps"), empty_message="No next steps recorded.")}
+    </section>
+    """
+    return _render_layout("Operator Scorecard", body, refresh_seconds=refresh_seconds)
 
 
 def _render_campaign_comparison(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
@@ -900,6 +979,7 @@ def _campaign_handoff_links(campaign: dict[str, object], state: dict[str, object
         return ""
     return (
         f"<a class='button secondary' href='/campaigns/{quote(campaign_id)}/handoff'>Handoff</a>"
+        f"<a class='button secondary' href='/campaigns/{quote(campaign_id)}/scorecard'>Scorecard</a>"
         f"<a class='button secondary' href='/campaigns/{quote(campaign_id)}/comparison'>Compare</a>"
     )
 
@@ -1127,6 +1207,36 @@ def _operator_note(row: dict[str, object], stress_result: dict[str, object] | No
     if rejection_reason:
         return rejection_reason
     return "Shortlisted, but not yet strong enough to freeze."
+
+
+def _campaign_scorecard_artifact_paths(campaign: dict[str, object]) -> dict[str, str]:
+    latest_report_path = str(campaign.get("latest_report_path") or "")
+    if not latest_report_path:
+        return {}
+    report_dir = Path(latest_report_path).parent
+    paths = {
+        "scorecard_md": report_dir / "operator_scorecard.md",
+        "scorecard_json": report_dir / "operator_scorecard.json",
+        "comparison_md": report_dir / "candidate_comparison.md",
+    }
+    return {key: str(path) for key, path in paths.items() if path.exists()}
+
+
+def _scorecard_artifact_paths(paths: dict[str, str]) -> str:
+    if not paths:
+        return "<p class='subtle'>No scorecard artifact files have been written yet.</p>"
+    return "".join(
+        f"<p><strong>{escape(label.replace('_', ' '))}:</strong> <code>{escape(path)}</code></p>"
+        for label, path in sorted(paths.items())
+    )
+
+
+def _scorecard_list(items: object, *, empty_message: str) -> str:
+    values = [str(item) for item in items] if isinstance(items, list) else []
+    if not values:
+        return f"<p>{escape(empty_message)}</p>"
+    joined = "".join(f"<li>{escape(item)}</li>" for item in values)
+    return f"<ul>{joined}</ul>"
 
 
 def _paragraph_list(lines: list[str]) -> str:
