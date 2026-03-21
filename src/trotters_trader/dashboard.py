@@ -13,7 +13,10 @@ from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
     campaign_status,
     director_status,
+    pause_director,
+    resume_director,
     runtime_status,
+    skip_director_next,
     stop_campaign,
 )
 from trotters_trader.reports import build_operability_scorecard
@@ -64,6 +67,15 @@ class DashboardController:
 
     def director_detail(self, director_id: str) -> dict[str, object]:
         return director_status(self._paths, director_id)
+
+    def pause_director(self, director_id: str, reason: str) -> dict[str, object]:
+        return pause_director(self._paths, director_id, reason=reason)
+
+    def resume_director(self, director_id: str, reason: str) -> dict[str, object]:
+        return resume_director(self._paths, director_id, reason=reason)
+
+    def skip_director_next(self, director_id: str, reason: str) -> dict[str, object]:
+        return skip_director_next(self._paths, director_id, reason=reason)
 
     def stop_campaign(self, campaign_id: str, reason: str) -> dict[str, object]:
         return stop_campaign(self._paths, campaign_id, reason=reason)
@@ -120,6 +132,27 @@ class DashboardApp:
                 flash=_query_value(query, "flash"),
             )
             return self._html_response("200 OK", html)
+        if method == "POST" and path.startswith("/directors/") and path.endswith("/pause"):
+            director_id = path.removeprefix("/directors/").removesuffix("/pause").strip("/")
+            form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+            reason = _query_value(form, "reason") or "operator_pause"
+            self._controller.pause_director(director_id, reason)
+            location = f"/directors/{quote(director_id)}?{urlencode({'flash': 'Director paused'})}"
+            return DashboardResponse("303 See Other", [("Location", location)], b"")
+        if method == "POST" and path.startswith("/directors/") and path.endswith("/resume"):
+            director_id = path.removeprefix("/directors/").removesuffix("/resume").strip("/")
+            form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+            reason = _query_value(form, "reason") or "operator_resume"
+            self._controller.resume_director(director_id, reason)
+            location = f"/directors/{quote(director_id)}?{urlencode({'flash': 'Director resumed'})}"
+            return DashboardResponse("303 See Other", [("Location", location)], b"")
+        if method == "POST" and path.startswith("/directors/") and path.endswith("/skip-next"):
+            director_id = path.removeprefix("/directors/").removesuffix("/skip-next").strip("/")
+            form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+            reason = _query_value(form, "reason") or "operator_skip"
+            self._controller.skip_director_next(director_id, reason)
+            location = f"/directors/{quote(director_id)}?{urlencode({'flash': 'Director skipped next pending campaign'})}"
+            return DashboardResponse("303 See Other", [("Location", location)], b"")
         if method == "GET" and path.startswith("/campaigns/"):
             if path.endswith("/handoff"):
                 campaign_id = path.removeprefix("/campaigns/").removesuffix("/handoff").strip("/")
@@ -426,6 +459,7 @@ def _render_director_detail(payload: dict[str, object], *, refresh_seconds: int,
     campaign_rows = "".join(_director_campaign_row(campaign) for campaign in campaigns) or (
         "<tr><td colspan='6'>No campaigns recorded for this director.</td></tr>"
     )
+    controls = _director_controls(director, queue)
 
     body = f"""
     {_flash_banner(flash)}
@@ -452,6 +486,7 @@ def _render_director_detail(payload: dict[str, object], *, refresh_seconds: int,
         <p><strong>Plan source:</strong> <code>{escape(plan_source)}</code></p>
         <p><strong>Adopt active campaigns:</strong> {bool(spec.get("adopt_active_campaigns", True))}</p>
         <p><strong>Default quality gate:</strong> <code>{escape(str(spec.get("quality_gate", "all")))}</code></p>
+        {controls}
       </section>
       <section class="panel">
         <h2>Final Result</h2>
@@ -1455,6 +1490,48 @@ def _stop_form(campaign_id: str) -> str:
       <button class="button danger" type="submit">Stop Campaign</button>
     </form>
     """
+
+
+def _director_controls(director: dict[str, object], queue: list[dict[str, object]]) -> str:
+    director_id = str(director.get("director_id", ""))
+    status = str(director.get("status", "unknown"))
+    has_pending = _next_pending_director_entry(queue) is not None
+    parts: list[str] = []
+    if status in {"running", "queued"}:
+        parts.append(_director_control_form(director_id, "pause", "operator_pause", "Pause Director", button_class="danger"))
+    if status == "paused":
+        parts.append(_director_control_form(director_id, "resume", "operator_resume", "Resume Director"))
+    if status in {"running", "queued", "paused"} and has_pending:
+        parts.append(_director_control_form(director_id, "skip-next", "operator_skip", "Skip Next Campaign", button_class="secondary"))
+    if not parts:
+        return "<p class='subtle'>No director controls are available in the current state.</p>"
+    return "".join(parts)
+
+
+def _director_control_form(
+    director_id: str,
+    action: str,
+    default_reason: str,
+    label: str,
+    *,
+    button_class: str = "",
+) -> str:
+    class_name = "button"
+    if button_class:
+        class_name += f" {button_class}"
+    return f"""
+    <form class="inline" action="/directors/{quote(director_id)}/{action}" method="post">
+      <input type="text" name="reason" value="{escape(default_reason)}" aria-label="{escape(label)} reason">
+      <button class="{class_name}" type="submit">{escape(label)}</button>
+    </form>
+    """
+
+
+def _next_pending_director_entry(queue: list[dict[str, object]]) -> dict[str, object] | None:
+    for entry in queue:
+        if str(entry.get("status", "")) == "pending":
+            return entry
+    return None
 
 
 def _flash_banner(message: str | None) -> str:

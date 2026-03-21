@@ -1146,6 +1146,111 @@ def stop_director(
     }
 
 
+def pause_director(
+    paths: ResearchRuntimePaths,
+    director_id: str,
+    *,
+    reason: str = "operator_pause",
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        director = _get_director(connection, director_id)
+        if director.status == "paused":
+            return _director_step_payload(director, "director_already_paused")
+        if director.status not in ACTIVE_DIRECTOR_STATUSES:
+            return _director_step_payload(director, "director_not_active")
+        state = director.state
+        state["pause_reason"] = reason
+        connection.execute(
+            """
+            UPDATE directors
+            SET status = 'paused', state_json = ?, updated_at = ?
+            WHERE director_id = ?
+            """,
+            (json.dumps(state, indent=2), _utcnow(), director_id),
+        )
+        _record_director_event(
+            connection,
+            director_id,
+            "director_paused",
+            f"Director paused: {reason}",
+            {"reason": reason, "active_campaign_id": director.current_campaign_id},
+        )
+        refreshed = _get_director(connection, director_id)
+    return _director_step_payload(refreshed, "director_paused")
+
+
+def resume_director(
+    paths: ResearchRuntimePaths,
+    director_id: str,
+    *,
+    reason: str = "operator_resume",
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        director = _get_director(connection, director_id)
+        if director.status != "paused":
+            return _director_step_payload(director, "director_not_paused")
+        state = director.state
+        state["pause_reason"] = None
+        connection.execute(
+            """
+            UPDATE directors
+            SET status = 'running', state_json = ?, updated_at = ?
+            WHERE director_id = ?
+            """,
+            (json.dumps(state, indent=2), _utcnow(), director_id),
+        )
+        _record_director_event(
+            connection,
+            director_id,
+            "director_resumed",
+            f"Director resumed: {reason}",
+            {"reason": reason, "active_campaign_id": director.current_campaign_id},
+        )
+    return step_director(paths, director_id)
+
+
+def skip_director_next(
+    paths: ResearchRuntimePaths,
+    director_id: str,
+    *,
+    reason: str = "operator_skip",
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    should_step = False
+    with _connect(paths) as connection:
+        director = _get_director(connection, director_id)
+        if director.status not in ACTIVE_DIRECTOR_STATUSES | {"paused"}:
+            return _director_step_payload(director, "director_not_skippable")
+        state = director.state
+        queue = _director_queue(state)
+        entry = _next_director_queue_entry(queue)
+        if entry is None:
+            return _director_step_payload(director, "director_no_pending_campaign")
+        entry["status"] = "skipped"
+        entry["completed_at"] = _utcnow()
+        entry["outcome"] = reason
+        _update_director_state(connection, director_id, state)
+        _record_director_event(
+            connection,
+            director_id,
+            "director_campaign_skipped",
+            f"Director skipped pending campaign {entry.get('campaign_name', 'unknown')}",
+            {
+                "reason": reason,
+                "queue_index": entry.get("queue_index"),
+                "config_path": entry.get("config_path"),
+                "campaign_name": entry.get("campaign_name"),
+            },
+        )
+        should_step = director.status in ACTIVE_DIRECTOR_STATUSES and not bool(director.current_campaign_id)
+        refreshed = _get_director(connection, director_id)
+    if should_step:
+        return step_director(paths, director_id)
+    return _director_step_payload(refreshed, "director_campaign_skipped")
+
+
 def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, object]:
     initialize_runtime(paths)
     director = None
@@ -1153,6 +1258,8 @@ def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, ob
     adopt_campaign_id = None
     with _connect(paths) as connection:
         director = _get_director(connection, director_id)
+        if director.status == "paused":
+            return _director_step_payload(director, "director_paused")
         if director.status not in ACTIVE_DIRECTOR_STATUSES:
             return _director_step_payload(director, "director_not_active")
         state = director.state

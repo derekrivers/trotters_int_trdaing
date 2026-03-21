@@ -198,6 +198,28 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("primary", body)
         self.assertIn("fallback", body)
         self.assertIn("0 / 2", body)
+        self.assertIn("Pause Director", body)
+        self.assertIn("Skip Next Campaign", body)
+
+    def test_director_pause_post_redirects(self) -> None:
+        root = self._workspace_root("director_pause")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch("trotters_trader.dashboard.pause_director", return_value={"status": "paused"}) as pause_mock:
+                status, headers, _ = self._invoke(
+                    app,
+                    "POST",
+                    "/directors/director-1/pause",
+                    body=b"reason=operator_pause",
+                    content_type="application/x-www-form-urlencoded",
+                )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "303 See Other")
+        self.assertEqual(dict(headers)["Location"], "/directors/director-1?flash=Director+paused")
+        pause_mock.assert_called_once()
 
     def test_campaign_detail_page_renders_state_and_events(self) -> None:
         root = self._workspace_root("detail")

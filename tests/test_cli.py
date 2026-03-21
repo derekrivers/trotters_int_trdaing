@@ -66,6 +66,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.director_id, "director-1")
         self.assertTrue(args.stop_active_campaign)
 
+    def test_parser_accepts_research_director_pause_resume_and_skip_commands(self) -> None:
+        parser = _build_parser()
+        pause_args = parser.parse_args(["research-director-pause", "--director-id", "director-1"])
+        resume_args = parser.parse_args(["research-director-resume", "--director-id", "director-1"])
+        skip_args = parser.parse_args(["research-director-skip-next", "--director-id", "director-1"])
+
+        self.assertEqual(pause_args.command, "research-director-pause")
+        self.assertEqual(resume_args.command, "research-director-resume")
+        self.assertEqual(skip_args.command, "research-director-skip-next")
+        self.assertEqual(skip_args.director_id, "director-1")
+
     def test_parser_accepts_research_dashboard_command(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(["research-dashboard", "--dashboard-port", "9999"])

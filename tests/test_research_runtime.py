@@ -17,6 +17,9 @@ from trotters_trader.research_runtime import (
     director_status,
     get_job,
     initialize_runtime,
+    pause_director,
+    resume_director,
+    skip_director_next,
     start_director,
     runtime_paths,
     runtime_status,
@@ -556,6 +559,88 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         status = director_status(paths, "director-3")
         self.assertEqual(status["director"]["status"], "completed")
         self.assertEqual(status["director"]["successful_campaign_id"], "campaign-freeze")
+
+    def test_pause_and_resume_director(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        with patch(
+            "trotters_trader.research_runtime.step_director",
+            return_value={"outcome": "campaign_started"},
+        ):
+            payload = start_director(
+                paths,
+                config_path="configs/backtest.toml",
+                director_name="director-pause",
+            )
+
+        paused = pause_director(paths, payload["director_id"], reason="operator_pause")
+        self.assertEqual(paused["outcome"], "director_paused")
+        status = director_status(paths, payload["director_id"])
+        self.assertEqual(status["director"]["status"], "paused")
+        self.assertEqual(status["director"]["state"]["pause_reason"], "operator_pause")
+
+        with patch(
+            "trotters_trader.research_runtime.step_director",
+            return_value={"outcome": "campaign_started"},
+        ) as step_mock:
+            resumed = resume_director(paths, payload["director_id"], reason="operator_resume")
+        self.assertEqual(resumed["outcome"], "campaign_started")
+        step_mock.assert_called_once()
+
+    def test_skip_director_next_marks_pending_entry_skipped(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO directors (
+                    director_id, director_name, status, spec_json, state_json, created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "director-skip",
+                    "director-skip",
+                    "paused",
+                    json.dumps({"plan": [{"config_path": "configs/backtest.toml"}]}),
+                    json.dumps(
+                        {
+                            "campaign_queue": [
+                                {
+                                    "queue_index": 0,
+                                    "config_path": "configs/backtest.toml",
+                                    "campaign_name": "first",
+                                    "status": "pending",
+                                    "campaign_id": None,
+                                    "completed_at": None,
+                                    "outcome": None,
+                                },
+                                {
+                                    "queue_index": 1,
+                                    "config_path": "configs/eodhd_momentum.toml",
+                                    "campaign_name": "second",
+                                    "status": "pending",
+                                    "campaign_id": None,
+                                    "completed_at": None,
+                                    "outcome": None,
+                                },
+                            ],
+                            "active_campaign_id": None,
+                            "successful_campaign_id": None,
+                            "final_result": None,
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        skipped = skip_director_next(paths, "director-skip", reason="operator_skip")
+        self.assertEqual(skipped["outcome"], "director_campaign_skipped")
+        status = director_status(paths, "director-skip")
+        queue = status["director"]["state"]["campaign_queue"]
+        self.assertEqual(queue[0]["status"], "skipped")
+        self.assertEqual(queue[0]["outcome"], "operator_skip")
 
     def test_stop_campaign_marks_campaign_stopped_and_invokes_notification_hook(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")

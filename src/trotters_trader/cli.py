@@ -58,6 +58,9 @@ from trotters_trader.research_runtime import (
     director_status,
     export_runtime_catalog,
     get_job,
+    pause_director,
+    resume_director,
+    skip_director_next,
     start_director,
     start_campaign,
     runtime_paths,
@@ -117,6 +120,9 @@ RUNTIME_COMMANDS = [
     "research-campaign-manager",
     "research-director-start",
     "research-director-step",
+    "research-director-pause",
+    "research-director-resume",
+    "research-director-skip-next",
     "research-director-stop",
     "research-director-status",
     "research-director-manager",
@@ -422,6 +428,18 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
         if not args.director_id:
             raise ValueError("research-director-step requires --director-id")
         return step_director(paths, args.director_id)
+    if args.command == "research-director-pause":
+        if not args.director_id:
+            raise ValueError("research-director-pause requires --director-id")
+        return pause_director(paths, args.director_id, reason=str(getattr(args, "stop_reason", "operator_pause")))
+    if args.command == "research-director-resume":
+        if not args.director_id:
+            raise ValueError("research-director-resume requires --director-id")
+        return resume_director(paths, args.director_id, reason=str(getattr(args, "stop_reason", "operator_resume")))
+    if args.command == "research-director-skip-next":
+        if not args.director_id:
+            raise ValueError("research-director-skip-next requires --director-id")
+        return skip_director_next(paths, args.director_id, reason=str(getattr(args, "stop_reason", "operator_skip")))
     if args.command == "research-director-stop":
         if not args.director_id:
             raise ValueError("research-director-stop requires --director-id")
