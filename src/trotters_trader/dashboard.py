@@ -289,6 +289,8 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     counts = status.get("counts", {}) if isinstance(status.get("counts"), dict) else {}
     workers = status.get("workers", []) if isinstance(status.get("workers"), list) else []
     jobs = status.get("jobs", []) if isinstance(status.get("jobs"), list) else []
+    all_directors = status.get("directors", []) if isinstance(status.get("directors"), list) else []
+    all_campaigns = status.get("campaigns", []) if isinstance(status.get("campaigns"), list) else []
     directors = payload.get("active_directors", []) if isinstance(payload.get("active_directors"), list) else []
     campaigns = payload.get("active_campaigns", []) if isinstance(payload.get("active_campaigns"), list) else []
     notifications = payload.get("notifications", []) if isinstance(payload.get("notifications"), list) else []
@@ -296,6 +298,19 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     summary_cards = "".join(
         _summary_card(label, str(counts.get(label, 0)))
         for label in ("queued", "running", "completed", "failed", "cancelled")
+    )
+    outcome_cards = "".join(
+        _summary_card(label, str(value))
+        for label, value in [
+            ("campaign completed", _status_count(all_campaigns, "completed")),
+            ("campaign exhausted", _status_count(all_campaigns, "exhausted")),
+            ("campaign failed", _status_count(all_campaigns, "failed")),
+            ("campaign stopped", _status_count(all_campaigns, "stopped")),
+            ("director completed", _status_count(all_directors, "completed")),
+            ("director exhausted", _status_count(all_directors, "exhausted")),
+            ("director failed", _status_count(all_directors, "failed")),
+            ("director stopped", _status_count(all_directors, "stopped")),
+        ]
     )
     director_rows = "".join(_director_row(director) for director in directors) or (
         "<tr><td colspan='7'>No active directors</td></tr>"
@@ -310,6 +325,16 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     notification_rows = "".join(_notification_row(record) for record in notifications) or (
         "<tr><td colspan='5'>No notifications yet</td></tr>"
     )
+    recent_campaign_rows = "".join(_campaign_outcome_row(campaign) for campaign in _recent_outcomes(all_campaigns)) or (
+        "<tr><td colspan='6'>No recent campaign outcomes</td></tr>"
+    )
+    recent_director_rows = "".join(_director_outcome_row(director) for director in _recent_outcomes(all_directors)) or (
+        "<tr><td colspan='6'>No recent director outcomes</td></tr>"
+    )
+    recent_change_rows = "".join(
+        _recent_change_row(change)
+        for change in _recent_changes(all_campaigns, all_directors, notifications)
+    ) or "<tr><td colspan='3'>No recent changes recorded</td></tr>"
 
     body = f"""
     {_flash_banner(flash)}
@@ -324,6 +349,11 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
       </div>
     </section>
     <section class="summary-grid">{summary_cards}</section>
+    <section class="panel">
+      <h2>Outcome Summary</h2>
+      <p class="subtle">Recent terminal outcomes across campaigns and directors.</p>
+      <section class="summary-grid">{outcome_cards}</section>
+    </section>
     <section class="panel">
       <h2>Active Directors</h2>
       <table>
@@ -351,6 +381,30 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         <table>
           <thead><tr><th>Time</th><th>Event</th><th>Campaign</th><th>Message</th><th>Hook</th></tr></thead>
           <tbody>{notification_rows}</tbody>
+        </table>
+      </section>
+    </section>
+    <section class="panel">
+      <h2>What Changed Since Last Check</h2>
+      <p class="subtle">This feed highlights the most recent notifications and terminal state changes.</p>
+      <table>
+        <thead><tr><th>Time</th><th>Source</th><th>Change</th></tr></thead>
+        <tbody>{recent_change_rows}</tbody>
+      </table>
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Recent Campaign Outcomes</h2>
+        <table>
+          <thead><tr><th>Campaign</th><th>Status</th><th>Phase</th><th>Updated</th><th>Report</th><th>Action</th></tr></thead>
+          <tbody>{recent_campaign_rows}</tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h2>Recent Director Outcomes</h2>
+        <table>
+          <thead><tr><th>Director</th><th>Status</th><th>Plan</th><th>Updated</th><th>Successful Campaign</th><th>Action</th></tr></thead>
+          <tbody>{recent_director_rows}</tbody>
         </table>
       </section>
     </section>
@@ -971,6 +1025,12 @@ def _summary_card(label: str, value: str) -> str:
     return f"<section class='card'><h2>{escape(label)}</h2><div class='metric'>{escape(value)}</div></section>"
 
 
+def _status_count(items: object, status: str) -> int:
+    if not isinstance(items, list):
+        return 0
+    return sum(1 for item in items if isinstance(item, dict) and str(item.get("status", "")).lower() == status.lower())
+
+
 def _campaign_row(campaign: object) -> str:
     if not isinstance(campaign, dict):
         return ""
@@ -1071,6 +1131,51 @@ def _notification_row(record: object) -> str:
         f"<td>{campaign_link}</td>"
         f"<td>{escape(str(record.get('message', '')))}</td>"
         f"<td><span class='pill{hook_class}'>{escape(hook_text)}</span></td>"
+        "</tr>"
+    )
+
+
+def _campaign_outcome_row(campaign: object) -> str:
+    if not isinstance(campaign, dict):
+        return ""
+    report = escape(str(campaign.get("latest_report_path") or ""))
+    campaign_id = str(campaign.get("campaign_id", ""))
+    return (
+        "<tr>"
+        f"<td><a href='/campaigns/{quote(campaign_id)}'>{escape(str(campaign.get('campaign_name', campaign_id)))}</a></td>"
+        f"<td>{_status_pill(str(campaign.get('status', 'unknown')))}</td>"
+        f"<td>{escape(str(campaign.get('phase', 'unknown')))}</td>"
+        f"<td>{_timestamp_with_age(campaign.get('updated_at'))}</td>"
+        f"<td><code>{report or 'None'}</code></td>"
+        f"<td><a class='button secondary' href='/campaigns/{quote(campaign_id)}'>View</a></td>"
+        "</tr>"
+    )
+
+
+def _director_outcome_row(director: object) -> str:
+    payload = director if isinstance(director, dict) else {}
+    director_id = str(payload.get("director_id", ""))
+    plan_name = str(payload.get("plan_name") or payload.get("spec", {}).get("plan_name", "unnamed_plan")) if isinstance(payload.get("spec"), dict) else str(payload.get("plan_name") or "unnamed_plan")
+    return (
+        "<tr>"
+        f"<td><a href='/directors/{quote(director_id)}'>{escape(str(payload.get('director_name', director_id or 'unknown')))}</a></td>"
+        f"<td>{_status_pill(str(payload.get('status', 'unknown')))}</td>"
+        f"<td><code>{escape(plan_name)}</code></td>"
+        f"<td>{_timestamp_with_age(payload.get('updated_at'))}</td>"
+        f"<td><code>{escape(str(payload.get('successful_campaign_id') or '-'))}</code></td>"
+        f"<td><a class='button secondary' href='/directors/{quote(director_id)}'>View</a></td>"
+        "</tr>"
+    )
+
+
+def _recent_change_row(change: object) -> str:
+    if not isinstance(change, dict):
+        return ""
+    return (
+        "<tr>"
+        f"<td>{_timestamp_with_age(change.get('timestamp'))}</td>"
+        f"<td>{escape(str(change.get('source', 'unknown')))}</td>"
+        f"<td>{escape(str(change.get('message', '')))}</td>"
         "</tr>"
     )
 
@@ -1437,6 +1542,85 @@ def _director_progress_text(queue: object) -> str:
         return "0 / 0"
     finished = sum(1 for entry in entries if str(entry.get("status", "")) in {"completed", "exhausted", "failed", "stopped"})
     return f"{finished} / {len(entries)}"
+
+
+def _recent_outcomes(items: object, *, limit: int = 6) -> list[dict[str, object]]:
+    terminal_statuses = {"completed", "exhausted", "failed", "stopped"}
+    candidates = [
+        item
+        for item in items
+        if isinstance(item, dict) and str(item.get("status", "")).lower() in terminal_statuses
+    ] if isinstance(items, list) else []
+    return sorted(candidates, key=lambda item: _timestamp_sort_key(item.get("updated_at")), reverse=True)[:limit]
+
+
+def _recent_changes(
+    campaigns: object,
+    directors: object,
+    notifications: object,
+    *,
+    limit: int = 8,
+) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    if isinstance(notifications, list):
+        for record in notifications:
+            if not isinstance(record, dict):
+                continue
+            items.append(
+                {
+                    "timestamp": record.get("recorded_at_utc"),
+                    "source": "notification",
+                    "message": str(record.get("message", "") or record.get("event_type", "notification")),
+                }
+            )
+    if isinstance(campaigns, list):
+        for campaign in campaigns:
+            if not isinstance(campaign, dict):
+                continue
+            status = str(campaign.get("status", "")).lower()
+            if status not in {"completed", "exhausted", "failed", "stopped"}:
+                continue
+            items.append(
+                {
+                    "timestamp": campaign.get("updated_at"),
+                    "source": "campaign",
+                    "message": (
+                        f"{campaign.get('campaign_name', campaign.get('campaign_id', 'unknown campaign'))} "
+                        f"is now {status}."
+                    ),
+                }
+            )
+    if isinstance(directors, list):
+        for director in directors:
+            if not isinstance(director, dict):
+                continue
+            status = str(director.get("status", "")).lower()
+            if status not in {"completed", "exhausted", "failed", "stopped"}:
+                continue
+            items.append(
+                {
+                    "timestamp": director.get("updated_at"),
+                    "source": "director",
+                    "message": (
+                        f"{director.get('director_name', director.get('director_id', 'unknown director'))} "
+                        f"is now {status}."
+                    ),
+                }
+            )
+    return sorted(items, key=lambda item: _timestamp_sort_key(item.get("timestamp")), reverse=True)[:limit]
+
+
+def _timestamp_sort_key(value: object) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        timestamp = datetime.fromisoformat(text)
+    except ValueError:
+        return 0.0
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC).timestamp()
 
 
 def _paragraph_list(lines: list[str]) -> str:

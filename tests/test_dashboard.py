@@ -66,12 +66,27 @@ class DashboardTests(unittest.TestCase):
                                 "status": "running",
                                 "phase": "stress_pack",
                                 "updated_at": "2026-03-21T16:01:00+00:00",
+                            },
+                            {
+                                "campaign_id": "campaign-2",
+                                "campaign_name": "completed-operability",
+                                "status": "completed",
+                                "phase": "stress_pack",
+                                "updated_at": "2026-03-21T16:02:00+00:00",
+                                "latest_report_path": "runtime/catalog/completed.md",
                             }
                         ],
                         "directors": [
                             {
                                 "director_id": "director-1",
                                 "status": "running",
+                            },
+                            {
+                                "director_id": "director-2",
+                                "director_name": "archived-director",
+                                "status": "exhausted",
+                                "successful_campaign_id": None,
+                                "updated_at": "2026-03-21T16:03:00+00:00",
                             }
                         ],
                     },
@@ -118,6 +133,12 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("2026-03-21T16:01:00+00:00", body)
         self.assertIn("ago", body)
         self.assertIn("broad-operability-plan", body)
+        self.assertIn("Outcome Summary", body)
+        self.assertIn("What Changed Since Last Check", body)
+        self.assertIn("Recent Campaign Outcomes", body)
+        self.assertIn("Recent Director Outcomes", body)
+        self.assertIn("completed-operability", body)
+        self.assertIn("archived-director", body)
 
     def test_director_detail_page_renders_plan_queue(self) -> None:
         root = self._workspace_root("director")
