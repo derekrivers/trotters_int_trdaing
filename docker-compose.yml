@@ -10,6 +10,24 @@ x-runtime-service: &runtime-service
     - ./runtime:/runtime
 
 services:
+  dashboard:
+    <<: *runtime-service
+    command:
+      - research-dashboard
+      - --runtime-root
+      - /runtime/research_runtime
+      - --catalog-output-dir
+      - /runtime/catalog
+      - --dashboard-host
+      - 0.0.0.0
+      - --dashboard-port
+      - "8888"
+      - --dashboard-refresh-seconds
+      - "10"
+    ports:
+      - "8888:8888"
+    depends_on:
+      - coordinator
   coordinator:
     <<: *runtime-service
     command:
@@ -34,6 +52,19 @@ services:
       - "15"
     depends_on:
       - coordinator
+  research-director:
+    <<: *runtime-service
+    command:
+      - research-director-manager
+      - --runtime-root
+      - /runtime/research_runtime
+      - --catalog-output-dir
+      - /runtime/catalog
+      - --poll-seconds
+      - "30"
+    depends_on:
+      - coordinator
+      - campaign-manager
   worker:
     <<: *runtime-service
     command:

@@ -61,8 +61,14 @@ SUPPORTED_RESEARCH_COMMANDS = {
 
 PATH_SUFFIXES = {".json", ".jsonl", ".md", ".csv"}
 ACTIVE_CAMPAIGN_STATUSES = {"queued", "running"}
+ACTIVE_DIRECTOR_STATUSES = {"queued", "running"}
 DEFAULT_NOTIFICATION_EVENTS = ("campaign_finished", "campaign_stopped", "campaign_failed")
 CAMPAIGN_NOTIFICATION_JSONL = "campaign_notifications.jsonl"
+DEFAULT_DIRECTOR_PRIMARY_CONFIG = "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml"
+DEFAULT_DIRECTOR_FALLBACK_CONFIGS = (
+    "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
+    "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,7 @@ class ResearchRuntimePaths:
     database_path: Path
     job_outputs_dir: Path
     logs_dir: Path
+    director_specs_dir: Path
     catalog_output_dir: Path
 
 
@@ -101,6 +108,7 @@ class ResearchJob:
 @dataclass(frozen=True)
 class ResearchCampaign:
     campaign_id: str
+    director_id: str | None
     campaign_name: str
     config_path: str
     status: str
@@ -125,6 +133,32 @@ class ResearchCampaign:
         return payload if isinstance(payload, dict) else {}
 
 
+@dataclass(frozen=True)
+class ResearchDirector:
+    director_id: str
+    director_name: str
+    status: str
+    spec_json: str
+    state_json: str
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    finished_at: str | None
+    current_campaign_id: str | None
+    successful_campaign_id: str | None
+    last_error: str | None
+
+    @property
+    def spec(self) -> dict[str, object]:
+        payload = json.loads(self.spec_json)
+        return payload if isinstance(payload, dict) else {}
+
+    @property
+    def state(self) -> dict[str, object]:
+        payload = json.loads(self.state_json)
+        return payload if isinstance(payload, dict) else {}
+
+
 def runtime_paths(runtime_root: Path | str, catalog_output_dir: Path | str = "runs") -> ResearchRuntimePaths:
     root = Path(runtime_root)
     return ResearchRuntimePaths(
@@ -133,6 +167,7 @@ def runtime_paths(runtime_root: Path | str, catalog_output_dir: Path | str = "ru
         database_path=root / "state" / "research_runtime.sqlite3",
         job_outputs_dir=root / "job_outputs",
         logs_dir=root / "logs",
+        director_specs_dir=root / "director_specs",
         catalog_output_dir=Path(catalog_output_dir),
     )
 
@@ -141,6 +176,7 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     paths.job_outputs_dir.mkdir(parents=True, exist_ok=True)
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
+    paths.director_specs_dir.mkdir(parents=True, exist_ok=True)
     paths.catalog_output_dir.mkdir(parents=True, exist_ok=True)
     with _connect(paths) as connection:
         connection.executescript(
@@ -208,6 +244,7 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
             );
             CREATE TABLE IF NOT EXISTS campaigns (
                 campaign_id TEXT PRIMARY KEY,
+                director_id TEXT,
                 campaign_name TEXT NOT NULL,
                 config_path TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -229,9 +266,32 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
                 message TEXT NOT NULL,
                 payload_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS directors (
+                director_id TEXT PRIMARY KEY,
+                director_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                current_campaign_id TEXT,
+                successful_campaign_id TEXT,
+                last_error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS director_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                director_id TEXT NOT NULL,
+                recorded_at_utc TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
             """
         )
         _ensure_column(connection, "jobs", "campaign_id", "TEXT")
+        _ensure_column(connection, "campaigns", "director_id", "TEXT")
 
 
 def submit_jobs(paths: ResearchRuntimePaths, payload: object) -> dict[str, object]:
@@ -551,6 +611,7 @@ def start_campaign(
     paths: ResearchRuntimePaths,
     config_path: str,
     *,
+    director_id: str | None = None,
     campaign_name: str | None = None,
     evaluation_profile: str | None = None,
     quality_gate: str = "all",
@@ -598,12 +659,13 @@ def start_campaign(
         connection.execute(
             """
             INSERT INTO campaigns (
-                campaign_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                campaign_id, director_id, campaign_name, config_path, status, phase, spec_json, state_json,
                 created_at, updated_at, started_at
-            ) VALUES (?, ?, ?, 'running', 'focused_operability', ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, 'running', 'focused_operability', ?, ?, ?, ?, ?)
             """,
             (
                 campaign_id,
+                director_id,
                 resolved_campaign_name,
                 config_path,
                 json.dumps(spec, indent=2),
@@ -641,7 +703,7 @@ def campaign_status(paths: ResearchRuntimePaths, campaign_id: str | None = None)
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT campaign_id, campaign_name, status, phase, created_at, updated_at, latest_report_path, last_error
+                    SELECT campaign_id, director_id, campaign_name, status, phase, created_at, updated_at, latest_report_path, last_error
                     FROM campaigns
                     ORDER BY created_at ASC
                     """
@@ -676,6 +738,7 @@ def campaign_status(paths: ResearchRuntimePaths, campaign_id: str | None = None)
         return {
             "campaign": {
                 "campaign_id": campaign.campaign_id,
+                "director_id": campaign.director_id,
                 "campaign_name": campaign.campaign_name,
                 "config_path": campaign.config_path,
                 "status": campaign.status,
@@ -859,6 +922,624 @@ def campaign_manager_loop(
         if once:
             return {"stepped_campaigns": stepped, "active_campaigns": len(campaign_ids)}
         time.sleep(max(poll_seconds, 0.1))
+
+
+def start_director(
+    paths: ResearchRuntimePaths,
+    *,
+    config_path: str | None = None,
+    director_name: str | None = None,
+    evaluation_profile: str | None = None,
+    quality_gate: str = "all",
+    max_hours: float = 24.0,
+    max_jobs: int = 0,
+    stage_candidate_limit: int = 0,
+    shortlist_size: int = 3,
+    notification_command: str | None = None,
+    notify_events: tuple[str, ...] = DEFAULT_NOTIFICATION_EVENTS,
+    plan_payload: object | None = None,
+    adopt_active_campaigns: bool = True,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    director_id = uuid.uuid4().hex
+    now = _utcnow()
+    plan = _resolve_director_plan(config_path=config_path, plan_payload=plan_payload)
+    resolved_name = director_name or f"research-director-{director_id[:8]}"
+    spec = {
+        "seed_config_path": config_path or plan[0]["config_path"],
+        "plan": plan,
+        "evaluation_profile": evaluation_profile,
+        "quality_gate": quality_gate,
+        "max_hours": max_hours,
+        "max_jobs": max_jobs,
+        "stage_candidate_limit": stage_candidate_limit,
+        "shortlist_size": shortlist_size,
+        "notification_command": notification_command,
+        "notify_events": list(notify_events),
+        "adopt_active_campaigns": adopt_active_campaigns,
+    }
+    state = {
+        "campaign_queue": [
+            {
+                "queue_index": index,
+                "config_path": entry["config_path"],
+                "campaign_name": entry.get("campaign_name") or f"{resolved_name}-{Path(entry['config_path']).stem}",
+                "status": "pending",
+                "campaign_id": None,
+                "completed_at": None,
+                "outcome": None,
+            }
+            for index, entry in enumerate(plan)
+        ],
+        "active_campaign_id": None,
+        "successful_campaign_id": None,
+        "final_result": None,
+    }
+    with _connect(paths) as connection:
+        connection.execute(
+            """
+            INSERT INTO directors (
+                director_id, director_name, status, spec_json, state_json,
+                created_at, updated_at, started_at
+            ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?)
+            """,
+            (
+                director_id,
+                resolved_name,
+                json.dumps(spec, indent=2),
+                json.dumps(state, indent=2),
+                now,
+                now,
+                now,
+            ),
+        )
+        _record_director_event(
+            connection,
+            director_id,
+            "director_started",
+            f"Director '{resolved_name}' started",
+            {"plan_length": len(plan), "seed_config_path": spec["seed_config_path"]},
+        )
+    _write_director_spec(paths, director_id, {"director_id": director_id, "director_name": resolved_name, "spec": spec})
+    step = step_director(paths, director_id)
+    return {"director_id": director_id, "director_name": resolved_name, **step}
+
+
+def director_status(paths: ResearchRuntimePaths, director_id: str | None = None) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        if director_id is None:
+            directors = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT director_id, director_name, status, current_campaign_id, successful_campaign_id,
+                           created_at, updated_at, finished_at, last_error
+                    FROM directors
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
+            ]
+            return {"directors": directors}
+        director = _get_director(connection, director_id)
+        events = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT recorded_at_utc, event_type, message, payload_json
+                FROM director_events
+                WHERE director_id = ?
+                ORDER BY event_id ASC
+                """,
+                (director_id,),
+            ).fetchall()
+        ]
+        campaigns = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT campaign_id, director_id, campaign_name, config_path, status, phase, updated_at, latest_report_path
+                FROM campaigns
+                WHERE director_id = ?
+                ORDER BY created_at ASC
+                """,
+                (director_id,),
+            ).fetchall()
+        ]
+        return {
+            "director": {
+                "director_id": director.director_id,
+                "director_name": director.director_name,
+                "status": director.status,
+                "current_campaign_id": director.current_campaign_id,
+                "successful_campaign_id": director.successful_campaign_id,
+                "last_error": director.last_error,
+                "state": director.state,
+                "spec": director.spec,
+            },
+            "events": events,
+            "campaigns": campaigns,
+        }
+
+
+def stop_director(
+    paths: ResearchRuntimePaths,
+    director_id: str,
+    *,
+    stop_active_campaign: bool = False,
+    reason: str = "operator_stop",
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    active_campaign_id = None
+    director_name = director_id
+    with _connect(paths) as connection:
+        director = _get_director(connection, director_id)
+        if director.status not in ACTIVE_DIRECTOR_STATUSES:
+            return {
+                "director_id": director.director_id,
+                "director_name": director.director_name,
+                "status": director.status,
+                "outcome": "director_not_active",
+            }
+        now = _utcnow()
+        state = director.state
+        active_campaign_id = state.get("active_campaign_id") if isinstance(state.get("active_campaign_id"), str) else None
+        state["final_result"] = {
+            "recommended_action": "stopped",
+            "reason": reason,
+            "active_campaign_id": active_campaign_id,
+        }
+        connection.execute(
+            """
+            UPDATE directors
+            SET status = 'stopped', state_json = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?)
+            WHERE director_id = ?
+            """,
+            (json.dumps(state, indent=2), now, now, director_id),
+        )
+        _record_director_event(
+            connection,
+            director_id,
+            "director_stopped",
+            f"Director stopped: {reason}",
+            {"active_campaign_id": active_campaign_id, "stop_active_campaign": stop_active_campaign},
+        )
+        director_name = director.director_name
+    stopped_campaign = None
+    if stop_active_campaign and active_campaign_id:
+        stopped_campaign = stop_campaign(paths, active_campaign_id, reason=f"director_stop:{reason}")
+    return {
+        "director_id": director_id,
+        "director_name": director_name,
+        "status": "stopped",
+        "outcome": "director_stopped",
+        "active_campaign_id": active_campaign_id,
+        "stopped_campaign": stopped_campaign,
+    }
+
+
+def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, object]:
+    initialize_runtime(paths)
+    director = None
+    launch_entry = None
+    adopt_campaign_id = None
+    with _connect(paths) as connection:
+        director = _get_director(connection, director_id)
+        if director.status not in ACTIVE_DIRECTOR_STATUSES:
+            return _director_step_payload(director, "director_not_active")
+        state = director.state
+        queue = _director_queue(state)
+        active_campaign_id = state.get("active_campaign_id") if isinstance(state.get("active_campaign_id"), str) else None
+        if active_campaign_id:
+            campaign = _get_campaign(connection, active_campaign_id)
+            if campaign.status in ACTIVE_CAMPAIGN_STATUSES:
+                return _director_step_payload(director, "waiting_for_campaign")
+            outcome = _process_director_campaign_outcome(connection, director, campaign, queue)
+            return _director_step_payload(_get_director(connection, director_id), outcome)
+        launch_entry = _next_director_queue_entry(queue)
+        if launch_entry is None:
+            _finish_director(
+                connection,
+                director,
+                status="exhausted",
+                final_result={"recommended_action": "exhausted", "reason": "director_queue_exhausted"},
+            )
+            return _director_step_payload(_get_director(connection, director_id), "director_exhausted")
+        if bool(director.spec.get("adopt_active_campaigns", True)):
+            adopt_campaign_id = _find_adoptable_campaign(connection, launch_entry["config_path"])
+            if adopt_campaign_id:
+                now = _utcnow()
+                launch_entry["campaign_id"] = adopt_campaign_id
+                launch_entry["status"] = "running"
+                state["active_campaign_id"] = adopt_campaign_id
+                connection.execute(
+                    "UPDATE campaigns SET director_id = ?, updated_at = ? WHERE campaign_id = ?",
+                    (director.director_id, now, adopt_campaign_id),
+                )
+                _update_director_state(
+                    connection,
+                    director.director_id,
+                    state,
+                    current_campaign_id=adopt_campaign_id,
+                )
+                _record_director_event(
+                    connection,
+                    director.director_id,
+                    "campaign_adopted",
+                    f"Director adopted existing campaign {adopt_campaign_id}",
+                    {"campaign_id": adopt_campaign_id, "config_path": launch_entry["config_path"]},
+                )
+                return _director_step_payload(_get_director(connection, director_id), "campaign_adopted")
+    assert director is not None
+    assert launch_entry is not None
+    started = start_campaign(
+        paths,
+        launch_entry["config_path"],
+        director_id=director.director_id,
+        campaign_name=launch_entry["campaign_name"],
+        evaluation_profile=director.spec.get("evaluation_profile"),
+        quality_gate=str(director.spec.get("quality_gate", "all")),
+        max_hours=float(director.spec.get("max_hours", 24.0) or 24.0),
+        max_jobs=int(director.spec.get("max_jobs", 0) or 0),
+        stage_candidate_limit=int(director.spec.get("stage_candidate_limit", 0) or 0),
+        shortlist_size=int(director.spec.get("shortlist_size", 3) or 3),
+        notification_command=director.spec.get("notification_command"),
+        notify_events=tuple(str(item) for item in director.spec.get("notify_events", DEFAULT_NOTIFICATION_EVENTS)),
+    )
+    with _connect(paths) as connection:
+        refreshed = _get_director(connection, director_id)
+        state = refreshed.state
+        queue = _director_queue(state)
+        queued_entry = _find_director_queue_entry(queue, launch_entry["queue_index"])
+        if queued_entry is not None:
+            queued_entry["campaign_id"] = started["campaign_id"]
+            queued_entry["status"] = "running"
+        state["active_campaign_id"] = started["campaign_id"]
+        _update_director_state(
+            connection,
+            director_id,
+            state,
+            current_campaign_id=started["campaign_id"],
+        )
+        _record_director_event(
+            connection,
+            director_id,
+            "campaign_started",
+            f"Director started campaign {started['campaign_name']}",
+            {"campaign_id": started["campaign_id"], "config_path": launch_entry["config_path"]},
+        )
+        refreshed = _get_director(connection, director_id)
+        return _director_step_payload(refreshed, "campaign_started")
+
+
+def director_manager_loop(
+    paths: ResearchRuntimePaths,
+    *,
+    poll_seconds: float = 30.0,
+    once: bool = False,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    stepped = 0
+    while True:
+        with _connect(paths) as connection:
+            director_ids = [
+                row["director_id"]
+                for row in connection.execute(
+                    """
+                    SELECT director_id
+                    FROM directors
+                    WHERE status IN ('queued', 'running')
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
+            ]
+        for director_id in director_ids:
+            try:
+                step_director(paths, director_id)
+            except Exception as exc:
+                _handle_director_runtime_error(paths, director_id, exc)
+            stepped += 1
+        if once:
+            return {"stepped_directors": stepped, "active_directors": len(director_ids)}
+        time.sleep(max(poll_seconds, 0.1))
+
+
+def _resolve_director_plan(*, config_path: str | None, plan_payload: object | None) -> list[dict[str, str]]:
+    if plan_payload is None:
+        seed = config_path or DEFAULT_DIRECTOR_PRIMARY_CONFIG
+        ordered = [seed, *DEFAULT_DIRECTOR_FALLBACK_CONFIGS]
+        seen: set[str] = set()
+        plan = []
+        for candidate in ordered:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            plan.append({"config_path": candidate})
+        return plan
+    if isinstance(plan_payload, list):
+        raw_entries = plan_payload
+    elif isinstance(plan_payload, dict):
+        raw_entries = plan_payload.get("campaigns", [])
+    else:
+        raise ValueError("Director plan must be a list or an object with a 'campaigns' list.")
+    plan: list[dict[str, str]] = []
+    for index, entry in enumerate(raw_entries):
+        if isinstance(entry, str):
+            plan.append({"config_path": entry})
+            continue
+        if isinstance(entry, dict):
+            config_value = entry.get("config_path")
+            if not isinstance(config_value, str) or not config_value.strip():
+                raise ValueError(f"Director plan entry {index} is missing config_path")
+            normalized = {"config_path": config_value.strip()}
+            campaign_name = entry.get("campaign_name")
+            if isinstance(campaign_name, str) and campaign_name.strip():
+                normalized["campaign_name"] = campaign_name.strip()
+            plan.append(normalized)
+            continue
+        raise ValueError(f"Unsupported director plan entry at index {index}")
+    if not plan:
+        raise ValueError("Director plan must contain at least one campaign config.")
+    return plan
+
+
+def _write_director_spec(paths: ResearchRuntimePaths, director_id: str, payload: dict[str, object]) -> None:
+    spec_path = paths.director_specs_dir / f"{director_id}.json"
+    spec_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _get_director(connection: sqlite3.Connection, director_id: str) -> ResearchDirector:
+    row = connection.execute("SELECT * FROM directors WHERE director_id = ?", (director_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown director '{director_id}'")
+    return ResearchDirector(
+        director_id=row["director_id"],
+        director_name=row["director_name"],
+        status=row["status"],
+        spec_json=row["spec_json"],
+        state_json=row["state_json"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        current_campaign_id=row["current_campaign_id"],
+        successful_campaign_id=row["successful_campaign_id"],
+        last_error=row["last_error"],
+    )
+
+
+def _director_queue(state: dict[str, object]) -> list[dict[str, object]]:
+    queue = state.get("campaign_queue")
+    if isinstance(queue, list):
+        return [entry for entry in queue if isinstance(entry, dict)]
+    return []
+
+
+def _next_director_queue_entry(queue: list[dict[str, object]]) -> dict[str, object] | None:
+    for entry in queue:
+        if str(entry.get("status", "pending")) == "pending":
+            return entry
+    return None
+
+
+def _find_director_queue_entry(queue: list[dict[str, object]], queue_index: object) -> dict[str, object] | None:
+    for entry in queue:
+        if entry.get("queue_index") == queue_index:
+            return entry
+    return None
+
+
+def _update_director_state(
+    connection: sqlite3.Connection,
+    director_id: str,
+    state: dict[str, object],
+    *,
+    current_campaign_id: str | None | object = ...,
+    successful_campaign_id: str | None | object = ...,
+) -> None:
+    assignments = ["state_json = ?", "updated_at = ?"]
+    params: list[object] = [json.dumps(state, indent=2), _utcnow()]
+    if current_campaign_id is not ...:
+        assignments.append("current_campaign_id = ?")
+        params.append(current_campaign_id)
+    if successful_campaign_id is not ...:
+        assignments.append("successful_campaign_id = ?")
+        params.append(successful_campaign_id)
+    params.append(director_id)
+    connection.execute(
+        f"UPDATE directors SET {', '.join(assignments)} WHERE director_id = ?",
+        params,
+    )
+
+
+def _finish_director(
+    connection: sqlite3.Connection,
+    director: ResearchDirector,
+    *,
+    status: str,
+    final_result: dict[str, object],
+    current_campaign_id: str | None = None,
+    successful_campaign_id: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    state = director.state
+    state["final_result"] = final_result
+    now = _utcnow()
+    connection.execute(
+        """
+        UPDATE directors
+        SET status = ?, state_json = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?),
+            current_campaign_id = ?, successful_campaign_id = COALESCE(?, successful_campaign_id), last_error = ?
+        WHERE director_id = ?
+        """,
+        (
+            status,
+            json.dumps(state, indent=2),
+            now,
+            now,
+            current_campaign_id,
+            successful_campaign_id,
+            last_error,
+            director.director_id,
+        ),
+    )
+    _record_director_event(
+        connection,
+        director.director_id,
+        f"director_{status}",
+        f"Director finished with status {status}",
+        final_result,
+    )
+
+
+def _record_director_event(
+    connection: sqlite3.Connection,
+    director_id: str,
+    event_type: str,
+    message: str,
+    payload: dict[str, object],
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO director_events (director_id, recorded_at_utc, event_type, message, payload_json)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (director_id, _utcnow(), event_type, message, json.dumps(payload, indent=2)),
+    )
+
+
+def _process_director_campaign_outcome(
+    connection: sqlite3.Connection,
+    director: ResearchDirector,
+    campaign: ResearchCampaign,
+    queue: list[dict[str, object]],
+) -> str:
+    state = director.state
+    entry = next((row for row in queue if str(row.get("campaign_id", "")) == campaign.campaign_id), None)
+    decision = campaign.state.get("final_decision") if isinstance(campaign.state.get("final_decision"), dict) else {}
+    if entry is not None:
+        entry["completed_at"] = campaign.finished_at or _utcnow()
+        entry["outcome"] = decision.get("recommended_action") or campaign.status
+    state["active_campaign_id"] = None
+    if campaign.status == "completed" and decision.get("recommended_action") == "freeze_candidate":
+        if entry is not None:
+            entry["status"] = "completed"
+        state["successful_campaign_id"] = campaign.campaign_id
+        _finish_director(
+            connection,
+            director,
+            status="completed",
+            final_result={
+                "recommended_action": "freeze_candidate",
+                "reason": "director_found_viable_strategy",
+                "campaign_id": campaign.campaign_id,
+                "selected_profile_name": decision.get("selected_profile_name"),
+            },
+            current_campaign_id=None,
+            successful_campaign_id=campaign.campaign_id,
+        )
+        return "director_completed"
+    if campaign.status == "exhausted" or (
+        campaign.status == "completed" and decision.get("recommended_action") != "freeze_candidate"
+    ):
+        if entry is not None:
+            entry["status"] = "exhausted"
+        _update_director_state(connection, director.director_id, state, current_campaign_id=None)
+        _record_director_event(
+            connection,
+            director.director_id,
+            "campaign_exhausted",
+            f"Campaign {campaign.campaign_name} exhausted without a viable strategy",
+            {"campaign_id": campaign.campaign_id, "config_path": campaign.config_path},
+        )
+        return "campaign_exhausted"
+    if campaign.status == "stopped":
+        if entry is not None:
+            entry["status"] = "stopped"
+        _finish_director(
+            connection,
+            director,
+            status="stopped",
+            final_result={
+                "recommended_action": "stopped",
+                "reason": "campaign_stopped",
+                "campaign_id": campaign.campaign_id,
+            },
+            current_campaign_id=None,
+        )
+        return "director_stopped"
+    if entry is not None:
+        entry["status"] = "failed"
+    _finish_director(
+        connection,
+        director,
+        status="failed",
+        final_result={
+            "recommended_action": "failed",
+            "reason": "campaign_failed",
+            "campaign_id": campaign.campaign_id,
+        },
+        current_campaign_id=None,
+        last_error=campaign.last_error,
+    )
+    return "director_failed"
+
+
+def _find_adoptable_campaign(connection: sqlite3.Connection, config_path: str) -> str | None:
+    row = connection.execute(
+        """
+        SELECT campaign_id
+        FROM campaigns
+        WHERE config_path = ?
+          AND status IN ('queued', 'running')
+          AND (director_id IS NULL OR director_id = '')
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        (config_path,),
+    ).fetchone()
+    return None if row is None else str(row["campaign_id"])
+
+
+def _director_step_payload(director: ResearchDirector, outcome: str) -> dict[str, object]:
+    return {
+        "director_id": director.director_id,
+        "director_name": director.director_name,
+        "status": director.status,
+        "current_campaign_id": director.current_campaign_id,
+        "successful_campaign_id": director.successful_campaign_id,
+        "outcome": outcome,
+    }
+
+
+def _handle_director_runtime_error(paths: ResearchRuntimePaths, director_id: str, exc: Exception) -> None:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        director = _get_director(connection, director_id)
+        if director.status not in ACTIVE_DIRECTOR_STATUSES:
+            return
+        state = director.state
+        state["final_result"] = {
+            "recommended_action": "failed",
+            "reason": "director_runtime_error",
+            "message": str(exc),
+        }
+        now = _utcnow()
+        connection.execute(
+            """
+            UPDATE directors
+            SET status = 'failed', state_json = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?), last_error = ?
+            WHERE director_id = ?
+            """,
+            (json.dumps(state, indent=2), now, now, str(exc), director_id),
+        )
+        _record_director_event(
+            connection,
+            director_id,
+            "director_failed",
+            f"Director failed: {exc}",
+            {"reason": "director_runtime_error", "message": str(exc)},
+        )
 
 
 def export_runtime_catalog(paths: ResearchRuntimePaths) -> dict[str, str]:
@@ -1659,6 +2340,7 @@ def _get_campaign(connection: sqlite3.Connection, campaign_id: str) -> ResearchC
         raise ValueError(f"Unknown campaign '{campaign_id}'")
     return ResearchCampaign(
         campaign_id=row["campaign_id"],
+        director_id=row["director_id"],
         campaign_name=row["campaign_name"],
         config_path=row["config_path"],
         status=row["status"],
@@ -2072,6 +2754,9 @@ def _write_runtime_status_exports(paths: ResearchRuntimePaths) -> None:
     campaigns = status.get("campaigns", [])
     if isinstance(campaigns, list):
         _write_csv(status_dir / "campaigns.csv", campaigns)
+    directors = status.get("directors", [])
+    if isinstance(directors, list):
+        _write_csv(status_dir / "directors.csv", directors)
 
 
 def _write_profile_history_snapshot(paths: ResearchRuntimePaths) -> None:
@@ -2131,8 +2816,18 @@ def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
         dict(row)
         for row in connection.execute(
             """
-            SELECT campaign_id, campaign_name, status, phase, updated_at, latest_report_path
+            SELECT campaign_id, director_id, campaign_name, status, phase, updated_at, latest_report_path
             FROM campaigns
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+    ]
+    directors = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT director_id, director_name, status, current_campaign_id, successful_campaign_id, updated_at
+            FROM directors
             ORDER BY created_at ASC
             """
         ).fetchall()
@@ -2143,6 +2838,7 @@ def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
         "workers": workers,
         "jobs": jobs,
         "campaigns": campaigns,
+        "directors": directors,
     }
 
 

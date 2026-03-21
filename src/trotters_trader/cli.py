@@ -18,6 +18,7 @@ from trotters_trader.config import (
     scope_app_config,
 )
 from trotters_trader.coverage import summarize_data_coverage, write_coverage_artifacts
+from trotters_trader.dashboard import serve_dashboard
 from trotters_trader.eodhd import download_daily_series as download_eodhd_daily_series
 from trotters_trader.experiments import (
     BATCH_PRESETS,
@@ -53,13 +54,18 @@ from trotters_trader.research_runtime import (
     campaign_status,
     collect_artifacts,
     coordinator_cycle,
+    director_manager_loop,
+    director_status,
     export_runtime_catalog,
     get_job,
+    start_director,
     start_campaign,
     runtime_paths,
     runtime_status,
+    stop_director,
     stop_campaign,
     step_campaign,
+    step_director,
     submit_jobs,
     summarize_job_result,
     worker_loop,
@@ -109,6 +115,12 @@ RUNTIME_COMMANDS = [
     "research-campaign-stop",
     "research-campaign-status",
     "research-campaign-manager",
+    "research-director-start",
+    "research-director-step",
+    "research-director-stop",
+    "research-director-status",
+    "research-director-manager",
+    "research-dashboard",
 ]
 ALL_COMMANDS = LEGACY_COMMANDS + RUNTIME_COMMANDS
 
@@ -381,6 +393,54 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
         return campaign_status(paths, getattr(args, "campaign_id", None))
     if args.command == "research-campaign-manager":
         return campaign_manager_loop(paths, poll_seconds=args.poll_seconds, once=args.once)
+    if args.command == "research-director-start":
+        plan_payload = None
+        if getattr(args, "director_plan_file", None):
+            plan_payload = _load_spec_payload(args.director_plan_file)
+        notify_events = tuple(
+            event.strip()
+            for event in str(getattr(args, "notify_events", "")).split(",")
+            if event.strip()
+        )
+        return start_director(
+            paths,
+            config_path=getattr(args, "config", None),
+            director_name=getattr(args, "director_name", None),
+            evaluation_profile=args.evaluation_profile,
+            quality_gate=args.quality_gate,
+            max_hours=float(getattr(args, "campaign_max_hours", 24.0)),
+            max_jobs=int(getattr(args, "campaign_max_jobs", 0)),
+            stage_candidate_limit=int(getattr(args, "stage_candidate_limit", 0)),
+            shortlist_size=int(getattr(args, "shortlist_size", 3)),
+            notification_command=getattr(args, "notification_command", None),
+            notify_events=notify_events,
+            plan_payload=plan_payload,
+            adopt_active_campaigns=not bool(getattr(args, "disable_director_adoption", False)),
+        )
+    if args.command == "research-director-step":
+        if not args.director_id:
+            raise ValueError("research-director-step requires --director-id")
+        return step_director(paths, args.director_id)
+    if args.command == "research-director-stop":
+        if not args.director_id:
+            raise ValueError("research-director-stop requires --director-id")
+        return stop_director(
+            paths,
+            args.director_id,
+            stop_active_campaign=bool(getattr(args, "stop_active_campaign", False)),
+            reason=str(getattr(args, "stop_reason", "operator_stop")),
+        )
+    if args.command == "research-director-status":
+        return director_status(paths, getattr(args, "director_id", None))
+    if args.command == "research-director-manager":
+        return director_manager_loop(paths, poll_seconds=args.poll_seconds, once=args.once)
+    if args.command == "research-dashboard":
+        return serve_dashboard(
+            paths,
+            host=args.dashboard_host,
+            port=args.dashboard_port,
+            refresh_seconds=args.dashboard_refresh_seconds,
+        )
     if args.command == "research-coordinator":
         if args.once:
             return coordinator_cycle(paths, lease_timeout_seconds=args.lease_timeout_seconds)
@@ -588,6 +648,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lease-timeout-seconds", type=int, default=900)
     parser.add_argument("--campaign-name")
     parser.add_argument("--campaign-id")
+    parser.add_argument("--director-name")
+    parser.add_argument("--director-id")
+    parser.add_argument("--director-plan-file")
+    parser.add_argument("--disable-director-adoption", action="store_true")
+    parser.add_argument("--stop-active-campaign", action="store_true")
     parser.add_argument("--campaign-max-hours", type=float, default=24.0)
     parser.add_argument("--campaign-max-jobs", type=int, default=0)
     parser.add_argument("--stage-candidate-limit", type=int, default=0)
@@ -600,6 +665,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--stop-reason", default="operator_stop")
     parser.add_argument("--keep-queued-jobs", action="store_true")
+    parser.add_argument("--dashboard-host", default="0.0.0.0")
+    parser.add_argument("--dashboard-port", type=int, default=8888)
+    parser.add_argument("--dashboard-refresh-seconds", type=int, default=10)
     parser.add_argument("--once", action="store_true")
     return parser
 

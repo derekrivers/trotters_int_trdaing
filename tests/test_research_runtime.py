@@ -14,11 +14,15 @@ from trotters_trader.research_runtime import (
     campaign_manager_loop,
     campaign_status,
     coordinator_cycle,
+    director_status,
     get_job,
     initialize_runtime,
+    start_director,
     runtime_paths,
     runtime_status,
+    step_director,
     start_campaign,
+    stop_director,
     stop_campaign,
     step_campaign,
     submit_jobs,
@@ -264,6 +268,229 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         started = next(record for record in records if record["event_type"] == "campaign_started")
         self.assertEqual(started["campaign_id"], payload["campaign_id"])
         self.assertFalse(started["notification_requested"])
+
+    def test_start_director_records_running_director_and_writes_spec(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        with patch(
+            "trotters_trader.research_runtime.step_director",
+            return_value={"outcome": "campaign_started"},
+        ):
+            payload = start_director(
+                paths,
+                config_path="configs/backtest.toml",
+                director_name="director-test",
+            )
+
+        self.assertIn("director_id", payload)
+        status = director_status(paths, payload["director_id"])
+        self.assertEqual(status["director"]["director_name"], "director-test")
+        spec_path = paths.director_specs_dir / f"{payload['director_id']}.json"
+        self.assertTrue(spec_path.exists())
+
+    def test_step_director_launches_first_campaign(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO directors (
+                    director_id, director_name, status, spec_json, state_json, created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "director-1",
+                    "director-1",
+                    "running",
+                    json.dumps(
+                        {
+                            "plan": [{"config_path": "configs/backtest.toml"}],
+                            "quality_gate": "all",
+                            "notify_events": [],
+                            "adopt_active_campaigns": False,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "campaign_queue": [
+                                {
+                                    "queue_index": 0,
+                                    "config_path": "configs/backtest.toml",
+                                    "campaign_name": "director-1-backtest",
+                                    "status": "pending",
+                                    "campaign_id": None,
+                                    "completed_at": None,
+                                    "outcome": None,
+                                }
+                            ],
+                            "active_campaign_id": None,
+                            "successful_campaign_id": None,
+                            "final_result": None,
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        with patch(
+            "trotters_trader.research_runtime.start_campaign",
+            return_value={"campaign_id": "campaign-1", "campaign_name": "director-1-backtest"},
+        ):
+            payload = step_director(paths, "director-1")
+
+        self.assertEqual(payload["outcome"], "campaign_started")
+        status = director_status(paths, "director-1")
+        self.assertEqual(status["director"]["current_campaign_id"], "campaign-1")
+        queue = status["director"]["state"]["campaign_queue"]
+        self.assertEqual(queue[0]["status"], "running")
+        self.assertEqual(queue[0]["campaign_id"], "campaign-1")
+
+    def test_step_director_adopts_matching_active_campaign(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO directors (
+                    director_id, director_name, status, spec_json, state_json, created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "director-2",
+                    "director-2",
+                    "running",
+                    json.dumps({"plan": [{"config_path": "configs/backtest.toml"}], "adopt_active_campaigns": True}),
+                    json.dumps(
+                        {
+                            "campaign_queue": [
+                                {
+                                    "queue_index": 0,
+                                    "config_path": "configs/backtest.toml",
+                                    "campaign_name": "director-2-backtest",
+                                    "status": "pending",
+                                    "campaign_id": None,
+                                    "completed_at": None,
+                                    "outcome": None,
+                                }
+                            ],
+                            "active_campaign_id": None,
+                            "successful_campaign_id": None,
+                            "final_result": None,
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO campaigns (
+                    campaign_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                    created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "campaign-existing",
+                    "campaign-existing",
+                    "configs/backtest.toml",
+                    "running",
+                    "focused_operability",
+                    json.dumps({}),
+                    json.dumps({"final_decision": None}),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        payload = step_director(paths, "director-2")
+
+        self.assertEqual(payload["outcome"], "campaign_adopted")
+        status = director_status(paths, "director-2")
+        self.assertEqual(status["director"]["current_campaign_id"], "campaign-existing")
+        self.assertEqual(status["campaigns"][0]["director_id"], "director-2")
+
+    def test_step_director_completes_on_freeze_candidate(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO directors (
+                    director_id, director_name, status, spec_json, state_json, created_at, updated_at, started_at,
+                    current_campaign_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "director-3",
+                    "director-3",
+                    "running",
+                    json.dumps({"plan": [{"config_path": "configs/backtest.toml"}]}),
+                    json.dumps(
+                        {
+                            "campaign_queue": [
+                                {
+                                    "queue_index": 0,
+                                    "config_path": "configs/backtest.toml",
+                                    "campaign_name": "director-3-backtest",
+                                    "status": "running",
+                                    "campaign_id": "campaign-freeze",
+                                    "completed_at": None,
+                                    "outcome": None,
+                                }
+                            ],
+                            "active_campaign_id": "campaign-freeze",
+                            "successful_campaign_id": None,
+                            "final_result": None,
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "campaign-freeze",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO campaigns (
+                    campaign_id, director_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                    created_at, updated_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "campaign-freeze",
+                    "director-3",
+                    "campaign-freeze",
+                    "configs/backtest.toml",
+                    "completed",
+                    "stress_pack",
+                    json.dumps({}),
+                    json.dumps(
+                        {
+                            "final_decision": {
+                                "recommended_action": "freeze_candidate",
+                                "selected_profile_name": "profile-1",
+                            }
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:30:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        payload = step_director(paths, "director-3")
+
+        self.assertEqual(payload["outcome"], "director_completed")
+        status = director_status(paths, "director-3")
+        self.assertEqual(status["director"]["status"], "completed")
+        self.assertEqual(status["director"]["successful_campaign_id"], "campaign-freeze")
 
     def test_stop_campaign_marks_campaign_stopped_and_invokes_notification_hook(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")

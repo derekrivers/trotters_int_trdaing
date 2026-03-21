@@ -208,6 +208,12 @@ docker compose ps
 # Start an autonomous research campaign
 python -m trotters_trader.cli research-campaign-start --config configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml --runtime-root runtime/research_runtime --catalog-output-dir runtime/catalog --campaign-name broad-operability
 
+# Start a deterministic research director that can chain campaigns
+python -m trotters_trader.cli research-director-start --config configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml --runtime-root runtime/research_runtime --catalog-output-dir runtime/catalog --director-name broad-director
+
+# Open the local runtime dashboard
+# http://localhost:8888
+
 # Inspect campaign state and latest recommendation
 python -m trotters_trader.cli research-campaign-status --runtime-root runtime/research_runtime
 
@@ -224,7 +230,7 @@ docker compose down
 docker compose down --remove-orphans
 ```
 
-The runtime stack now includes a dedicated `campaign-manager` service. It polls the runtime database, submits the next tranche for each active campaign, waits for worker results, and continues until the campaign freezes a candidate or exhausts its configured search budget.
+The runtime stack now includes dedicated `campaign-manager` and `research-director` services. The campaign manager advances one campaign through focused tuning, pivots, and stress. The research director sits one level higher: it can launch the next approved campaign automatically when the previous one exhausts, and stop only when it finds a frozen candidate or the approved queue is exhausted. A separate `dashboard` service exposes a local operations view on `http://localhost:8888`.
 
 Suggested Docker Desktop resources for this repo:
 
@@ -242,6 +248,8 @@ What runs in the background:
 - `coordinator`: leases queued jobs and keeps runtime state healthy
 - `worker`: executes distributed `promotion-check` jobs
 - `campaign-manager`: decides what tranche to run next and advances campaigns until they finish
+- `research-director`: decides what campaign to run next and chains campaigns until a viable strategy is found or the approved queue is exhausted
+- `dashboard`: shows queue health, worker status, campaign detail, notifications, and stop controls
 
 Campaign phases currently follow this path:
 
@@ -251,35 +259,53 @@ Campaign phases currently follow this path:
 4. `stress_pack` on the shortlisted candidates
 5. stop only when a candidate is frozen or the campaign is exhausted
 
+Director-level policy currently works like this:
+
+1. start the first approved seed config
+2. let the campaign manager run it to completion
+3. if the campaign freezes a candidate, stop successfully
+4. if the campaign exhausts, launch the next approved seed config
+5. if a campaign fails or is manually stopped, halt the director for operator review
+
 Typical background workflow:
 
 ```bash
 # 1. Start the runtime stack
 docker compose up --build -d --scale worker=4
 
-# 2. Start one autonomous campaign
-python -m trotters_trader.cli research-campaign-start \
-  --config configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml \
+# 2. Start one deterministic research director
+python -m trotters_trader.cli research-director-start \
+  --config configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml \
   --runtime-root runtime/research_runtime \
   --catalog-output-dir runtime/catalog \
-  --campaign-name broad-operability \
+  --director-name broad-operability \
   --campaign-max-hours 24 \
   --campaign-max-jobs 1500 \
   --stage-candidate-limit 120 \
   --shortlist-size 3
 
-# 3. Check campaign progress later
-python -m trotters_trader.cli research-campaign-status \
-  --runtime-root runtime/research_runtime \
-  --campaign-id <campaign_id>
+# Optional: provide an explicit queue instead of the built-in default plan
+# python -m trotters_trader.cli research-director-start \
+#   --director-plan-file runtime/research_runtime/director_specs/my_plan.json \
+#   --runtime-root runtime/research_runtime \
+#   --catalog-output-dir runtime/catalog \
+#   --director-name broad-operability
 
-# 4. Stop a campaign without tearing down the whole stack
-python -m trotters_trader.cli research-campaign-stop \
+# 3. Check director progress later
+python -m trotters_trader.cli research-director-status \
   --runtime-root runtime/research_runtime \
-  --campaign-id <campaign_id> \
+  --director-id <director_id>
+
+# 4. Open the dashboard
+# http://localhost:8888
+
+# 5. Stop a director without tearing down the whole stack
+python -m trotters_trader.cli research-director-stop \
+  --runtime-root runtime/research_runtime \
+  --director-id <director_id> \
   --stop-reason operator_pause
 
-# 5. Inspect queue and worker health
+# 6. Inspect queue and worker health
 python -m trotters_trader.cli research-status \
   --runtime-root runtime/research_runtime \
   --catalog-output-dir runtime/catalog
@@ -292,6 +318,13 @@ Important campaign controls:
 - `--stage-candidate-limit`: trims each tranche to the first `N` generated scenarios
 - `--shortlist-size`: how many candidates proceed into the stress pack
 - `research-campaign-stop`: stops orchestration for one campaign and cancels queued jobs by default
+- `research-director-start`: starts a director with a built-in deterministic queue or a supplied plan file
+- `research-director-stop`: stops higher-level orchestration; optionally also stops the active campaign
+- `research-director-status`: shows which campaign the director is currently supervising
+- `research-dashboard`: serves the local dashboard on `--dashboard-host` / `--dashboard-port`
+- `--director-plan-file`: supplies an explicit queue of campaign configs for the director
+- `--disable-director-adoption`: prevents the director from adopting an already-running matching campaign
+- `--stop-active-campaign`: when stopping a director, also stop its active campaign
 - `--keep-queued-jobs`: leaves already-queued jobs in place when stopping a campaign
 - `--stop-reason`: records why the operator stopped the campaign
 
@@ -306,6 +339,7 @@ Runtime outputs:
 
 - runtime database: [`runtime/research_runtime/state/research_runtime.sqlite3`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/state/research_runtime.sqlite3)
 - runtime exports: [`runtime/research_runtime/exports`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/exports)
+- director spec files: [`runtime/research_runtime/director_specs`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/director_specs)
 - campaign notifications jsonl: [`runtime/research_runtime/exports/campaign_notifications.jsonl`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/exports/campaign_notifications.jsonl)
 - per-event notification payloads and hook logs: [`runtime/research_runtime/exports/campaign_notifications`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/exports/campaign_notifications)
 - research catalog: [`runtime/catalog/research_catalog`](c:/Dev/TrottersIndependantTraders/runtime/catalog/research_catalog)
@@ -318,6 +352,7 @@ What to expect while a campaign is running:
 - once a stage completes, the campaign manager writes updated tranche/program artifacts into [`runtime/catalog`](c:/Dev/TrottersIndependantTraders/runtime/catalog)
 - stopping a campaign prevents new tranche submission; any already-running jobs are allowed to finish but the manager will not advance that campaign further
 - if no candidate survives the configured pivots and stress pack within budget, the campaign finishes as exhausted rather than running forever
+- if a director is active, an exhausted campaign can be followed automatically by the next approved campaign without manual intervention
 
 ## CSV Schema
 
