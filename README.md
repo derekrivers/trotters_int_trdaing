@@ -254,6 +254,7 @@ What runs in the background:
 - `dashboard`: shows queue health, worker status, campaign detail, notifications, and stop controls
 - `dashboard` also includes a plain-English `/guide` page explaining the system, the terminology, and the intended path from research candidate to later paper/live trading
 - the paper-trading boundary and operator checklist are documented in [`context/16_paper_trading_preparation.md`](c:/Dev/TrottersIndependantTraders/context/16_paper_trading_preparation.md)
+- the dated go / no-go assessment for entering a paper-trading phase is documented in [`context/17_paper_trade_readiness_review.md`](c:/Dev/TrottersIndependantTraders/context/17_paper_trade_readiness_review.md)
 
 Campaign phases currently follow this path:
 

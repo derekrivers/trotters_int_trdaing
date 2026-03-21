@@ -30,6 +30,7 @@ It is intentionally split by topic so new findings can be added without growing 
 - `14_delivery_roadmap.md`
 - `15_phase10_tasklist.md`
 - `16_paper_trading_preparation.md`
+- `17_paper_trade_readiness_review.md`
 
 ## Maintenance Rules
 
