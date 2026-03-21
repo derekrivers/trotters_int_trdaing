@@ -251,6 +251,7 @@ What runs in the background:
 - `research-director`: decides what campaign to run next and chains campaigns until a viable strategy is found or the approved queue is exhausted
 - `dashboard`: shows queue health, worker status, campaign detail, notifications, and stop controls
 - `dashboard` also includes a plain-English `/guide` page explaining the system, the terminology, and the intended path from research candidate to later paper/live trading
+- the paper-trading boundary and operator checklist are documented in [`context/16_paper_trading_preparation.md`](c:/Dev/TrottersIndependantTraders/context/16_paper_trading_preparation.md)
 
 Campaign phases currently follow this path:
 

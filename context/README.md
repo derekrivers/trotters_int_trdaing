@@ -28,6 +28,8 @@ It is intentionally split by topic so new findings can be added without growing 
 - `12_backtesting_system_architecture.md`
 - `13_domain_model.md`
 - `14_delivery_roadmap.md`
+- `15_phase10_tasklist.md`
+- `16_paper_trading_preparation.md`
 
 ## Maintenance Rules
 
