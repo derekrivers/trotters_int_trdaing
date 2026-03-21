@@ -1,0 +1,3 @@
+instrument,action_type,ex_date,record_date,payable_date,ratio_or_amount
+TSCO.L,DIVIDEND,2024-01-11,2024-01-12,2024-02-23,0.0385
+SBRY.L,DIVIDEND,2024-01-10,2024-01-11,2024-02-16,0.0320

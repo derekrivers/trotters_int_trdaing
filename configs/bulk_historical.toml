@@ -1,0 +1,147 @@
+[run]
+name = "bulk_historical_backtest"
+initial_cash = 100000.0
+output_dir = "runs"
+
+[data]
+source_name = "bulk_csv"
+source_bars_csv = "data/bulk/daily_bars.csv"
+source_instruments_csv = "data/bulk/instruments.csv"
+source_corporate_actions_csv = "data/bulk/corporate_actions.csv"
+staging_dir = "data/staging"
+canonical_dir = "data/canonical"
+raw_dir = "data/raw"
+adjustment_policy = "dividends_from_actions"
+
+[universe]
+allowed_exchange_mic = ["XLON"]
+allowed_currency = "GBP"
+active_only = true
+min_history_days = 252
+min_average_volume = 1000000.0
+allowed_benchmark_buckets = []
+allowed_tradability_statuses = []
+allowed_universe_buckets = []
+excluded_liquidity_buckets = []
+
+[strategy]
+name = "sma_cross"
+top_n = 10
+weighting = "equal"
+
+[strategy.sma_cross]
+short_window = 20
+long_window = 100
+signal_threshold = 0.002
+
+[strategy.cross_sectional_momentum]
+lookback_window = 126
+min_score = 0.0
+
+[strategy.mean_reversion]
+lookback_window = 5
+min_score = 0.0
+
+[portfolio]
+cash_buffer_pct = 0.03
+target_gross_exposure = 0.97
+max_position_weight = 0.10
+rebalance_threshold_bps = 50.0
+rebalance_frequency_days = 5
+max_rebalance_turnover_pct = 0.20
+initial_deployment_turnover_pct = 0.20
+selection_buffer_slots = 3
+max_positions_per_sector = 0
+max_positions_per_industry = 0
+max_positions_per_benchmark_bucket = 0
+min_holding_days = 20
+adv_window_days = 20
+max_target_adv_participation = 0.01
+
+[research]
+profile_name = "bulk_sma"
+profile_version = "2026-03-20.1"
+frozen_on = ""
+promoted = false
+
+[features]
+enabled = false
+feature_dir = "data/features"
+set_name = "bulk_sma"
+use_precomputed = false
+materialize_on_backtest = true
+
+[walkforward]
+enabled = false
+train_days = 756
+test_days = 252
+step_days = 252
+anchored = true
+
+[promotion]
+min_pass_windows = 2
+min_windows = 3
+max_oos_drawdown = 0.20
+max_oos_turnover = 3.0
+min_oos_excess_return = 0.0
+
+[execution]
+fill_model = "next_open"
+commission_bps = 10.0
+slippage_bps = 5.0
+spread_bps = 8.0
+stamp_duty_bps = 50.0
+max_participation_rate = 0.03
+allow_partial_fills = true
+
+[benchmark]
+models = ["equal_weight", "price_weighted"]
+primary = "equal_weight"
+
+[evaluation]
+warn_turnover = 2.0
+fail_turnover = 3.0
+warn_min_trade_count = 10
+fail_min_trade_count = 3
+warn_max_drawdown = 0.10
+fail_max_drawdown = 0.20
+warn_min_excess_return = 0.0
+fail_min_excess_return = -0.05
+flag_underperform_benchmark = true
+fail_on_zero_trade_run = true
+
+[evaluation_profiles.lenient]
+warn_turnover = 3.0
+fail_turnover = 4.5
+warn_min_trade_count = 5
+fail_min_trade_count = 1
+warn_max_drawdown = 0.15
+fail_max_drawdown = 0.30
+warn_min_excess_return = -0.02
+fail_min_excess_return = -0.10
+flag_underperform_benchmark = false
+fail_on_zero_trade_run = false
+
+[evaluation_profiles.research]
+warn_turnover = 2.0
+fail_turnover = 3.0
+warn_min_trade_count = 10
+fail_min_trade_count = 3
+warn_max_drawdown = 0.10
+fail_max_drawdown = 0.20
+warn_min_excess_return = 0.0
+fail_min_excess_return = -0.05
+flag_underperform_benchmark = true
+fail_on_zero_trade_run = true
+
+[evaluation_profiles.strict]
+warn_turnover = 1.5
+fail_turnover = 2.5
+warn_min_trade_count = 20
+fail_min_trade_count = 5
+warn_max_drawdown = 0.08
+fail_max_drawdown = 0.15
+warn_min_excess_return = 0.01
+fail_min_excess_return = -0.02
+flag_underperform_benchmark = true
+fail_on_zero_trade_run = true

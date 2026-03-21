@@ -1,0 +1,49 @@
+instrument,exchange_mic,currency,isin,sedol,company_number,status,sector,industry,benchmark_bucket,liquidity_bucket,tradability_status,universe_bucket
+TSCO.L,XLON,GBP,GB00BLGZ9862,BLGZ986,00445790,ACTIVE,Consumer Staples,Food Retail,FTSE100,high,TRADABLE,core
+SBRY.L,XLON,GBP,GB00B019KW72,B019KW7,00326695,ACTIVE,Consumer Staples,Food Retail,FTSE100,high,TRADABLE,core
+HSBA.L,XLON,GBP,,,,ACTIVE,Financials,Banks,FTSE100,high,TRADABLE,core
+SHEL.L,XLON,GBP,,,,ACTIVE,Energy,Integrated Oil and Gas,FTSE100,high,TRADABLE,core
+AZN.L,XLON,GBP,,,,ACTIVE,Health Care,Pharmaceuticals,FTSE100,high,TRADABLE,core
+BARC.L,XLON,GBP,,,,ACTIVE,Financials,Banks,FTSE100,high,TRADABLE,core
+LLOY.L,XLON,GBP,,,,ACTIVE,Financials,Banks,FTSE100,high,TRADABLE,core
+VOD.L,XLON,GBP,,,,ACTIVE,Communication Services,Telecommunications,FTSE100,high,TRADABLE,core
+GSK.L,XLON,GBP,,,,ACTIVE,Health Care,Pharmaceuticals,FTSE100,high,TRADABLE,core
+ULVR.L,XLON,GBP,,,,ACTIVE,Consumer Staples,Household Products,FTSE100,high,TRADABLE,core
+REL.L,XLON,GBP,,,,ACTIVE,Industrials,Professional Services,FTSE100,high,TRADABLE,core
+DGE.L,XLON,GBP,,,,ACTIVE,Consumer Staples,Beverages,FTSE100,high,TRADABLE,core
+RIO.L,XLON,GBP,,,,ACTIVE,Materials,Mining,FTSE100,high,TRADABLE,core
+BATS.L,XLON,GBP,,,,ACTIVE,Consumer Staples,Tobacco,FTSE100,high,TRADABLE,core
+GLEN.L,XLON,GBP,,,,ACTIVE,Materials,Mining,FTSE100,medium,TRADABLE,explore
+PRU.L,XLON,GBP,,,,ACTIVE,Financials,Insurance,FTSE100,medium,TRADABLE,explore
+STAN.L,XLON,GBP,,,,ACTIVE,Financials,Banks,FTSE100,medium,TRADABLE,explore
+ABF.L,XLON,GBP,,,,ACTIVE,Consumer Staples,Food Products,FTSE100,medium,TRADABLE,explore
+IMB.L,XLON,GBP,,,,ACTIVE,Consumer Staples,Tobacco,FTSE100,medium,TRADABLE,explore
+AAL.L,XLON,GBP,,,,ACTIVE,Materials,Mining,FTSE100,medium,TRADABLE,explore
+CCH.L,XLON,GBP,,,,ACTIVE,Consumer Staples,Beverages,FTSE100,medium,TRADABLE,explore
+III.L,XLON,GBP,,,,ACTIVE,Financials,Asset Management,FTSE100,medium,TRADABLE,explore
+MRO.L,XLON,GBP,,,,ACTIVE,Industrials,Aerospace and Defense,FTSE100,medium,TRADABLE,explore
+SSE.L,XLON,GBP,,,,ACTIVE,Utilities,Electric Utilities,FTSE100,medium,TRADABLE,explore
+ADM.L,XLON,GBP,,,,ACTIVE,Financials,Insurance,FTSE100,medium,TRADABLE,core
+AHT.L,XLON,GBP,,,,ACTIVE,Industrials,Trading and Distribution,FTSE100,high,TRADABLE,core
+ANTO.L,XLON,GBP,,,,ACTIVE,Materials,Mining,FTSE100,medium,TRADABLE,explore
+AUTO.L,XLON,GBP,,,,ACTIVE,Communication Services,Interactive Media,FTSE100,medium,TRADABLE,explore
+AV.L,XLON,GBP,,,,ACTIVE,Financials,Insurance,FTSE100,high,TRADABLE,core
+BA.L,XLON,GBP,,,,ACTIVE,Industrials,Aerospace and Defense,FTSE100,medium,TRADABLE,explore
+BEZ.L,XLON,GBP,,,,ACTIVE,Consumer Discretionary,Gaming and Leisure,FTSE100,medium,TRADABLE,explore
+BKG.L,XLON,GBP,,,,ACTIVE,Consumer Discretionary,Homebuilding,FTSE100,medium,TRADABLE,explore
+BNZL.L,XLON,GBP,,,,ACTIVE,Industrials,Distribution,FTSE100,medium,TRADABLE,explore
+BP.L,XLON,GBP,,,,ACTIVE,Energy,Integrated Oil and Gas,FTSE100,high,TRADABLE,core
+CRDA.L,XLON,GBP,,,,ACTIVE,Materials,Specialty Chemicals,FTSE100,medium,TRADABLE,explore
+EXPN.L,XLON,GBP,,,,ACTIVE,Industrials,Information Services,FTSE100,high,TRADABLE,core
+FRES.L,XLON,GBP,,,,ACTIVE,Materials,Precious Metals and Mining,FTSE100,medium,TRADABLE,explore
+HLMA.L,XLON,GBP,,,,ACTIVE,Health Care,Medical Equipment,FTSE100,medium,TRADABLE,core
+INF.L,XLON,GBP,,,,ACTIVE,Technology,Software and IT Services,FTSE100,medium,TRADABLE,explore
+ITRK.L,XLON,GBP,,,,ACTIVE,Industrials,Testing and Certification,FTSE100,medium,TRADABLE,core
+JD.L,XLON,GBP,,,,ACTIVE,Consumer Discretionary,Apparel Retail,FTSE100,medium,TRADABLE,explore
+LGEN.L,XLON,GBP,,,,ACTIVE,Financials,Insurance,FTSE100,medium,TRADABLE,core
+NWG.L,XLON,GBP,,,,ACTIVE,Financials,Banks,FTSE100,high,TRADABLE,core
+RR.L,XLON,GBP,,,,ACTIVE,Industrials,Aerospace and Defense,FTSE100,medium,TRADABLE,explore
+SMIN.L,XLON,GBP,,,,ACTIVE,Industrials,Industrial Machinery,FTSE100,medium,TRADABLE,explore
+SN.L,XLON,GBP,,,,ACTIVE,Health Care,Medical Equipment,FTSE100,medium,TRADABLE,core
+SVT.L,XLON,GBP,,,,ACTIVE,Utilities,Water Utilities,FTSE100,medium,TRADABLE,explore
+UU.L,XLON,GBP,,,,ACTIVE,Utilities,Water Utilities,FTSE100,medium,TRADABLE,explore

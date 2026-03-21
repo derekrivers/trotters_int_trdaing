@@ -1,0 +1,150 @@
+[run]
+name = "eodhd_momentum_broad_candidate_beta_n4_ms002_rf63_backtest"
+initial_cash = 100000.0
+output_dir = "runs"
+
+[data]
+source_name = "eodhd_json"
+source_bars_csv = "data/raw/eodhd_json"
+source_instruments_csv = "data/universes/uk_broad_instrument_master.csv"
+download_instruments_csv = "data/universes/uk_broad_watchlist.csv"
+source_corporate_actions_csv = "data/sample/corporate_actions.csv"
+staging_dir = "data/staging"
+canonical_dir = "data/canonical"
+raw_dir = "data/raw"
+adjustment_policy = "vendor_adjusted_close"
+
+[universe]
+allowed_exchange_mic = ["XLON"]
+allowed_currency = "GBP"
+active_only = true
+min_history_days = 252
+min_average_volume = 1000000.0
+allowed_benchmark_buckets = []
+allowed_tradability_statuses = ["TRADABLE"]
+allowed_universe_buckets = []
+excluded_liquidity_buckets = []
+
+[strategy]
+name = "cross_sectional_momentum"
+top_n = 4
+weighting = "beta_vol_inverse"
+ranking_mode = "global"
+score_transform = "raw"
+min_candidates_per_group = 1
+
+[strategy.sma_cross]
+short_window = 20
+long_window = 100
+signal_threshold = 0.002
+
+[strategy.cross_sectional_momentum]
+lookback_window = 126
+min_score = 0.02
+max_trailing_drawdown = 1.0
+drawdown_lookback_window = 0
+
+[strategy.mean_reversion]
+lookback_window = 5
+min_score = 0.0
+
+[portfolio]
+cash_buffer_pct = 0.10
+target_gross_exposure = 0.60
+max_position_weight = 0.10
+rebalance_threshold_bps = 150.0
+rebalance_frequency_days = 63
+max_rebalance_turnover_pct = 0.06
+initial_deployment_turnover_pct = 0.20
+selection_buffer_slots = 3
+max_positions_per_sector = 0
+max_positions_per_industry = 0
+max_positions_per_benchmark_bucket = 0
+min_holding_days = 84
+adv_window_days = 20
+max_target_adv_participation = 0.01
+volatility_target = 0.0
+volatility_lookback_days = 20
+drawdown_reduce_threshold = 0.0
+drawdown_reduced_gross_exposure = 0.0
+drawdown_force_rebalance = false
+benchmark_regime_window_days = 0
+benchmark_regime_min_return = 0.0
+benchmark_regime_reduced_gross_exposure = 0.0
+benchmark_regime_force_rebalance = false
+
+[execution]
+fill_model = "next_open"
+commission_bps = 10.0
+slippage_bps = 5.0
+spread_bps = 8.0
+stamp_duty_bps = 50.0
+max_participation_rate = 0.03
+allow_partial_fills = true
+
+[benchmark]
+models = ["equal_weight", "price_weighted"]
+primary = "equal_weight"
+
+[evaluation]
+warn_turnover = 2.0
+fail_turnover = 3.0
+warn_min_trade_count = 10
+fail_min_trade_count = 3
+warn_max_drawdown = 0.10
+fail_max_drawdown = 0.20
+warn_min_excess_return = 0.0
+fail_min_excess_return = -0.05
+flag_underperform_benchmark = true
+fail_on_zero_trade_run = true
+
+[validation.train]
+label = "train"
+start_date = "2019-01-02"
+end_date = "2022-12-30"
+
+[validation.validation]
+label = "validation"
+start_date = "2023-01-03"
+end_date = "2024-12-31"
+
+[validation.holdout]
+label = "holdout"
+start_date = "2025-01-01"
+end_date = "2026-03-19"
+
+[research]
+profile_name = "momentum_broad_candidate_beta_n4_ms002_rf63"
+profile_version = "2026-03-21.1"
+frozen_on = "2026-03-21"
+promoted = false
+research_tranche = "beta_seed"
+research_slice_name = "all"
+control_profile = "momentum_broad"
+promotion_candidate = true
+
+[features]
+enabled = true
+feature_dir = "data/features"
+set_name = "momentum_broad_candidate_refine_n4_ms002_rf63"
+use_precomputed = true
+materialize_on_backtest = false
+
+[walkforward]
+enabled = true
+train_days = 756
+test_days = 252
+step_days = 252
+anchored = true
+
+[promotion]
+min_pass_windows = 2
+min_windows = 3
+max_oos_drawdown = 0.20
+max_oos_turnover = 2.5
+min_oos_excess_return = 0.0
+require_frozen_profile = true
+require_validation_pass = true
+require_holdout_pass = true
+min_validation_excess_return = 0.0
+min_holdout_excess_return = 0.0
