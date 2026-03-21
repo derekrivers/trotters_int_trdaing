@@ -898,3 +898,131 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         status = campaign_status(paths, "campaign-2")
         self.assertEqual(status["campaign"]["phase"], "stress_pack")
         self.assertEqual(len(status["campaign"]["state"]["shortlisted"]), 1)
+
+    def test_successful_campaign_emits_strategy_promoted_notification(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with sqlite3.connect(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO campaigns (
+                    campaign_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                    created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "campaign-promote",
+                    "campaign-promote",
+                    "configs/backtest.toml",
+                    "running",
+                    "stress_pack",
+                    json.dumps(
+                        {
+                            "config_path": "configs/backtest.toml",
+                            "quality_gate": "all",
+                            "input_dataset_ref": "datasets/test/canonical",
+                            "input_dataset_ref_mode": "runtime_relative",
+                            "feature_set_ref": None,
+                            "feature_set_ref_mode": "raw",
+                            "notify_events": ["campaign_finished", "strategy_promoted"],
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "seed_overrides": {},
+                            "control_row": None,
+                            "candidate_pool": [],
+                            "focused_result": None,
+                            "pivot_result": {"decision": {}},
+                            "stability_result": {"decision": {}},
+                            "shortlisted": [{"run_name": "candidate-1", "profile_name": "candidate_profile", "eligible": True}],
+                            "stress_results": [],
+                            "final_decision": None,
+                            "pending_stage": {
+                                "phase": "stress_pack",
+                                "stage_id": "stage-promote",
+                                "job_ids": ["job-stress-1"],
+                            },
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, campaign_id, command, config_path, spec_json, priority, status, attempt_count, max_attempts,
+                    created_at, updated_at, output_root, quality_gate, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-stress-1",
+                    "campaign-promote",
+                    "promotion-check",
+                    "configs/backtest.toml",
+                    json.dumps(
+                        {
+                            "campaign_phase": "stress_pack",
+                            "campaign_stage_id": "stage-promote",
+                            "campaign_candidate_run_name": "candidate-1",
+                            "campaign_candidate_profile_name": "candidate_profile",
+                            "research_variant": {
+                                "kind": "stress",
+                                "scenario_name": "stress-1",
+                                "scenario_label": "stress",
+                                "tranche_name": "stress_pack",
+                            },
+                        }
+                    ),
+                    100,
+                    "completed",
+                    1,
+                    3,
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "job_outputs/job-stress-1",
+                    "all",
+                    json.dumps({"promotion_decision": {"eligible": True}}),
+                ),
+            )
+            connection.commit()
+
+        with (
+            patch(
+                "trotters_trader.research_runtime._campaign_stress_decision",
+                return_value=(
+                    {
+                        "profile_name": "candidate_profile",
+                        "promotion_decision": {"eligible": True},
+                    },
+                    {
+                        "recommended_action": "freeze_candidate",
+                        "reason": "candidate_passed_promotion_and_stress_pack",
+                        "selected_run_name": "candidate-1",
+                        "selected_profile_name": "candidate_profile",
+                        "selected_candidate_eligible": True,
+                        "selected_stress_ok": True,
+                        "pivot_used": True,
+                    },
+                ),
+            ),
+            patch(
+                "trotters_trader.research_runtime._write_campaign_program_report",
+                return_value="runtime/catalog/promoted.md",
+            ),
+            patch("trotters_trader.research_runtime.write_promotion_artifacts"),
+        ):
+            payload = step_campaign(paths, "campaign-promote")
+
+        self.assertEqual(payload["outcome"], "campaign_completed")
+        notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
+        records = [
+            json.loads(line)
+            for line in notifications_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        promoted = next(record for record in records if record["event_type"] == "strategy_promoted")
+        self.assertEqual(promoted["campaign_id"], "campaign-promote")
+        self.assertEqual(promoted["payload"]["selected_profile_name"], "candidate_profile")

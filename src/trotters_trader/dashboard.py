@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from html import escape
 import json
 from pathlib import Path
@@ -98,6 +99,8 @@ class DashboardApp:
     ) -> DashboardResponse:
         if method == "GET" and path == "/healthz":
             return DashboardResponse("200 OK", [("Content-Type", "text/plain; charset=utf-8")], b"ok")
+        if method == "GET" and path == "/guide":
+            return self._html_response("200 OK", _render_guide(refresh_seconds=0))
         if method == "GET" and path == "/":
             payload = self._controller.overview()
             html = _render_overview(payload, refresh_seconds=self._refresh_seconds, flash=_query_value(query, "flash"))
@@ -217,7 +220,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     worker_rows = "".join(_worker_row(worker) for worker in workers) or (
         "<tr><td colspan='4'>No workers recorded</td></tr>"
     )
-    job_rows = "".join(_job_row(job) for job in jobs[:20]) or "<tr><td colspan='5'>No jobs recorded</td></tr>"
+    job_rows = "".join(_job_row(job) for job in jobs[:20]) or "<tr><td colspan='7'>No jobs recorded</td></tr>"
     notification_rows = "".join(_notification_row(record) for record in notifications) or (
         "<tr><td colspan='5'>No notifications yet</td></tr>"
     )
@@ -230,6 +233,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         <p>Queue, workers, campaigns, and notifications for the autonomous research stack.</p>
       </div>
       <div class="hero-links">
+        <a class="button secondary" href="/guide">Guide</a>
         <a class="button secondary" href="/api/overview.json">JSON</a>
       </div>
     </section>
@@ -267,7 +271,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     <section class="panel">
       <h2>Recent Jobs</h2>
       <table>
-        <thead><tr><th>Job</th><th>Campaign</th><th>Command</th><th>Status</th><th>Worker</th></tr></thead>
+        <thead><tr><th>Job</th><th>Campaign</th><th>Command</th><th>Status</th><th>Worker</th><th>Created</th><th>Updated</th></tr></thead>
         <tbody>{job_rows}</tbody>
       </table>
     </section>
@@ -305,6 +309,7 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
         <p>Campaign id: <code>{escape(str(campaign.get('campaign_id', '')))}</code></p>
       </div>
       <div class="hero-links">
+        <a class="button secondary" href="/guide">Guide</a>
         <a class="button secondary" href="/api/campaigns/{quote(str(campaign.get('campaign_id', '')))}">JSON</a>
       </div>
     </section>
@@ -345,6 +350,95 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
     </section>
     """
     return _render_layout(str(campaign.get("campaign_name", "Campaign")), body, refresh_seconds=refresh_seconds)
+
+
+def _render_guide(*, refresh_seconds: int) -> str:
+    body = """
+    <section class="hero">
+      <div>
+        <p><a href="/">Back to overview</a></p>
+        <h1>Application Guide</h1>
+        <p>A plain-English walkthrough of what this system is, what it is trying to achieve, and what happens when it succeeds.</p>
+      </div>
+      <div class="hero-links">
+        <a class="button secondary" href="/">Dashboard</a>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Purpose</h2>
+      <p>This application is a strategy research and selection system for UK equities. It tests many stock-selection ideas, rejects weak ones, and tries to find a small number of robust candidates that still look sensible after tougher checks.</p>
+      <p>It is not a live trading bot today. Its current job is to do research in a disciplined way so that only stronger candidates survive.</p>
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>What It Is Trying To Achieve</h2>
+        <p>The system is trying to find one strategy that is good enough to promote. Promotion means the idea did not only look good in one backtest. It also held up when tested on separate periods and under tougher assumptions.</p>
+        <ol>
+          <li>Validation: does it still work on reserved data?</li>
+          <li>Holdout: does it keep working on later unseen data?</li>
+          <li>Walk-forward: does it remain reasonably stable through time?</li>
+          <li>Stress pack: does it remain usable under more realistic cost and execution assumptions?</li>
+        </ol>
+      </section>
+      <section class="panel">
+        <h2>What Success Means</h2>
+        <p>Success does not mean “best looking line on a chart.” It means the system found a candidate strong enough to freeze as a serious strategy proposal.</p>
+        <p>When that happens, the application writes promotion artifacts, marks the campaign as completed, and emits a dedicated promotion notification. That is the point where a human review should happen.</p>
+      </section>
+    </section>
+    <section class="panel">
+      <h2>Architecture</h2>
+      <table>
+        <thead><tr><th>Part</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Coordinator</strong></td><td>Keeps the research queue healthy and leases jobs to workers.</td></tr>
+          <tr><td><strong>Workers</strong></td><td>Run the actual research jobs in parallel.</td></tr>
+          <tr><td><strong>Campaign Manager</strong></td><td>Runs one strategy family through focused tuning, pivots, and stress testing.</td></tr>
+          <tr><td><strong>Research Director</strong></td><td>Chooses the next approved campaign when one campaign exhausts.</td></tr>
+          <tr><td><strong>Dashboard</strong></td><td>Shows what the system is doing and lets the operator stop work if needed.</td></tr>
+          <tr><td><strong>Runtime Database</strong></td><td>Stores persistent state for jobs, campaigns, directors, and events.</td></tr>
+          <tr><td><strong>Catalog</strong></td><td>Stores reports, profile history, and promotion evidence.</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>How To Read The Dashboard</h2>
+        <p><strong>Active Directors</strong> are the highest-level search programs. A director can launch the next campaign automatically.</p>
+        <p><strong>Active Campaigns</strong> are the current strategy families being tested.</p>
+        <p><strong>Workers</strong> tell you whether the machine is actively processing jobs.</p>
+        <p><strong>Recent Notifications</strong> show major events such as failures, stops, and successful promotions.</p>
+        <p><strong>Recent Jobs</strong> show the lower-level queue activity behind the higher-level orchestration.</p>
+      </section>
+      <section class="panel">
+        <h2>Important Terms</h2>
+        <p><strong>Strategy</strong>: a rules-based way to select and weight stocks.</p>
+        <p><strong>Campaign</strong>: one bounded search across a strategy family.</p>
+        <p><strong>Director</strong>: the controller that chains campaigns together.</p>
+        <p><strong>Validation / Holdout</strong>: reserved testing periods used to avoid fooling ourselves.</p>
+        <p><strong>Walk-forward</strong>: repeated rolling tests that check stability through time.</p>
+        <p><strong>Stress pack</strong>: harsher assumptions for spreads, costs, execution, or availability.</p>
+        <p><strong>Promotion</strong>: freezing a candidate because it passed the required gates.</p>
+      </section>
+    </section>
+    <section class="panel">
+      <h2>What The System Is Achieving Day To Day</h2>
+      <p>Most of the time, the system is reducing uncertainty rather than celebrating wins. It is proving which ideas do not survive robust testing. That is useful progress because it narrows the search and prevents weak strategies from reaching later stages.</p>
+      <p>If you see a lot of jobs and no promoted strategy yet, that usually means the filtering process is still doing its job. Promoted candidates should be rare compared with the total number of tested variants.</p>
+    </section>
+    <section class="panel">
+      <h2>What We Intend To Do With A Solid Candidate</h2>
+      <p>Once a strategy is promoted, the next step is not immediate live trading. The intended path is controlled review and operational hardening:</p>
+      <ol>
+        <li>review the frozen candidate and its evidence</li>
+        <li>decide whether it should go to paper trading first</li>
+        <li>define broker integration, risk controls, and monitoring</li>
+        <li>only then consider a live-trading implementation</li>
+      </ol>
+      <p>So this system is the research and evidence engine. A future live bot would be a later phase built on top of a candidate that has already passed this process.</p>
+    </section>
+    """
+    return _render_layout("Application Guide", body, refresh_seconds=refresh_seconds)
 
 
 def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
@@ -497,6 +591,11 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
       white-space: pre-wrap;
       word-break: break-word;
     }}
+    .subtle {{
+      color: var(--muted);
+      font-size: 0.82rem;
+      white-space: nowrap;
+    }}
   </style>
 </head>
 <body>
@@ -549,7 +648,7 @@ def _worker_row(worker: object) -> str:
         f"<td>{escape(str(worker.get('worker_id', '')))}</td>"
         f"<td>{_status_pill(str(worker.get('status', 'unknown')))}</td>"
         f"<td><code>{escape(str(worker.get('current_job_id') or '')) or 'Idle'}</code></td>"
-        f"<td>{escape(str(worker.get('heartbeat_at') or worker.get('updated_at') or ''))}</td>"
+        f"<td>{_timestamp_with_age(worker.get('heartbeat_at') or worker.get('updated_at'))}</td>"
         "</tr>"
     )
 
@@ -570,6 +669,8 @@ def _job_row(job: object) -> str:
         f"<td>{escape(str(job.get('command', '')))}</td>"
         f"<td>{_status_pill(str(job.get('status', 'unknown')))}</td>"
         f"<td><code>{escape(str(job.get('leased_by') or '')) or 'Unleased'}</code></td>"
+        f"<td>{_timestamp_with_age(job.get('created_at'))}</td>"
+        f"<td>{_timestamp_with_age(job.get('updated_at'))}</td>"
         "</tr>"
     )
 
@@ -595,7 +696,7 @@ def _notification_row(record: object) -> str:
     campaign_link = f"<a href='/campaigns/{quote(campaign_id)}'>{campaign_name}</a>" if campaign_id else campaign_name
     return (
         "<tr>"
-        f"<td>{escape(str(record.get('recorded_at_utc', '')))}</td>"
+        f"<td>{_timestamp_with_age(record.get('recorded_at_utc'))}</td>"
         f"<td>{_status_pill(str(record.get('event_type', 'notification')))}</td>"
         f"<td>{campaign_link}</td>"
         f"<td>{escape(str(record.get('message', '')))}</td>"
@@ -644,6 +745,28 @@ def _status_pill(value: str) -> str:
     elif lowered in {"queued", "warn", "stage_submitted"}:
         css = " warn"
     return f"<span class='pill{css}'>{escape(value)}</span>"
+
+
+def _timestamp_with_age(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    try:
+        timestamp = datetime.fromisoformat(text)
+    except ValueError:
+        return escape(text)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    delta_seconds = max(int((datetime.now(UTC) - timestamp.astimezone(UTC)).total_seconds()), 0)
+    if delta_seconds < 60:
+        age = f"{delta_seconds}s ago"
+    elif delta_seconds < 3600:
+        age = f"{delta_seconds // 60}m ago"
+    elif delta_seconds < 86400:
+        age = f"{delta_seconds // 3600}h ago"
+    else:
+        age = f"{delta_seconds // 86400}d ago"
+    return f"{escape(text)} <span class='subtle'>({escape(age)})</span>"
 
 
 def _stop_form(campaign_id: str) -> str:

@@ -55,6 +55,8 @@ class DashboardTests(unittest.TestCase):
                                 "command": "promotion-check",
                                 "status": "running",
                                 "leased_by": "worker-01",
+                                "created_at": "2026-03-21T16:00:30+00:00",
+                                "updated_at": "2026-03-21T16:01:00+00:00",
                             }
                         ],
                         "campaigns": [
@@ -92,6 +94,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("broad-operability", body)
         self.assertIn("Campaign completed", body)
         self.assertIn("worker-01", body)
+        self.assertIn("2026-03-21T16:00:30+00:00", body)
+        self.assertIn("2026-03-21T16:01:00+00:00", body)
+        self.assertIn("ago", body)
 
     def test_campaign_detail_page_renders_state_and_events(self) -> None:
         root = self._workspace_root("detail")
@@ -138,6 +143,21 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("benchmark_pivot", body)
         self.assertIn("Processed focused_operability", body)
         self.assertIn("Stop Campaign", body)
+
+    def test_guide_page_renders_plain_english_application_help(self) -> None:
+        root = self._workspace_root("guide")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            status, _, body = self._invoke(app, "GET", "/guide")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Application Guide", body)
+        self.assertIn("Purpose", body)
+        self.assertIn("What It Is Trying To Achieve", body)
+        self.assertIn("What We Intend To Do With A Solid Candidate", body)
 
     def test_stop_campaign_post_redirects(self) -> None:
         root = self._workspace_root("stop")

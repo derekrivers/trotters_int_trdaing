@@ -250,6 +250,7 @@ What runs in the background:
 - `campaign-manager`: decides what tranche to run next and advances campaigns until they finish
 - `research-director`: decides what campaign to run next and chains campaigns until a viable strategy is found or the approved queue is exhausted
 - `dashboard`: shows queue health, worker status, campaign detail, notifications, and stop controls
+- `dashboard` also includes a plain-English `/guide` page explaining the system, the terminology, and the intended path from research candidate to later paper/live trading
 
 Campaign phases currently follow this path:
 
@@ -322,6 +323,7 @@ Important campaign controls:
 - `research-director-stop`: stops higher-level orchestration; optionally also stops the active campaign
 - `research-director-status`: shows which campaign the director is currently supervising
 - `research-dashboard`: serves the local dashboard on `--dashboard-host` / `--dashboard-port`
+- the dashboard includes a `/guide` page for non-technical / non-trading users who want a high-level explanation of the application
 - `--director-plan-file`: supplies an explicit queue of campaign configs for the director
 - `--disable-director-adoption`: prevents the director from adopting an already-running matching campaign
 - `--stop-active-campaign`: when stopping a director, also stop its active campaign
@@ -331,7 +333,8 @@ Important campaign controls:
 Notification hooks:
 
 - `--notification-command`: optional shell command to run on selected campaign events
-- `--notify-events`: comma-separated event list for the hook; defaults to `campaign_finished,campaign_stopped,campaign_failed`
+- `--notify-events`: comma-separated event list for the hook; defaults to `campaign_finished,campaign_stopped,campaign_failed,strategy_promoted`
+- `strategy_promoted`: dedicated success event emitted when a candidate is actually frozen/promoted, separate from the broader `campaign_finished` event
 - the hook receives `TROTTERS_CAMPAIGN_ID`, `TROTTERS_CAMPAIGN_NAME`, `TROTTERS_EVENT_TYPE`, `TROTTERS_EVENT_MESSAGE`, and `TROTTERS_NOTIFICATION_PAYLOAD_PATH`
 - hook failures do not stop the campaign manager; they are written into the notification artifact instead
 

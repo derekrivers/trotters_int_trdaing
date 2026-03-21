@@ -62,7 +62,7 @@ SUPPORTED_RESEARCH_COMMANDS = {
 PATH_SUFFIXES = {".json", ".jsonl", ".md", ".csv"}
 ACTIVE_CAMPAIGN_STATUSES = {"queued", "running"}
 ACTIVE_DIRECTOR_STATUSES = {"queued", "running"}
-DEFAULT_NOTIFICATION_EVENTS = ("campaign_finished", "campaign_stopped", "campaign_failed")
+DEFAULT_NOTIFICATION_EVENTS = ("campaign_finished", "campaign_stopped", "campaign_failed", "strategy_promoted")
 CAMPAIGN_NOTIFICATION_JSONL = "campaign_notifications.jsonl"
 DEFAULT_DIRECTOR_PRIMARY_CONFIG = "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml"
 DEFAULT_DIRECTOR_FALLBACK_CONFIGS = (
@@ -2167,6 +2167,15 @@ def _process_stress_stage(
             campaign_name=campaign.campaign_name,
             event_type="campaign_finished",
             message="Campaign finished with status completed",
+            payload={**final_decision, "latest_report_path": latest_report_path},
+            spec=campaign.spec,
+        )
+        _emit_campaign_notification(
+            paths,
+            campaign_id=campaign.campaign_id,
+            campaign_name=campaign.campaign_name,
+            event_type="strategy_promoted",
+            message="Strategy promoted and frozen for review",
             payload={**final_decision, "latest_report_path": latest_report_path},
             spec=campaign.spec,
         )
