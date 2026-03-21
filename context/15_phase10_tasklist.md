@@ -75,6 +75,58 @@ Commit boundary:
 
 - one commit for scorecards, recommendation logic, and tests
 
+Implementation checklist:
+
+- define the operator-facing scorecard shape before editing code:
+  - candidate identity
+  - control identity
+  - promotion status
+  - recommendation state
+  - key strengths
+  - key weaknesses
+  - next action
+- decide the mapping from runtime/report outcomes to operator recommendation states:
+  - `paper_trade_next`
+  - `needs_more_research`
+  - `reject`
+- add scorecard generation in the reporting layer rather than only in dashboard HTML
+- ensure the scorecard can be generated from persisted campaign state:
+  - `control_row`
+  - `shortlisted`
+  - `stress_results`
+  - `final_decision`
+- add plain-English explanation fields in the scorecard artifact:
+  - why this candidate is the current best
+  - what evidence is still missing
+  - whether the result is promotion-worthy or still exploratory
+- add a side-by-side control vs selected-candidate summary artifact
+- expose scorecard data in the dashboard handoff page
+- show the explicit operator recommendation prominently in the dashboard
+- link from campaign detail and handoff pages to the scorecard artifact if present
+
+Suggested file touch list:
+
+- `src/trotters_trader/reports.py`
+- `src/trotters_trader/dashboard.py`
+- `tests/test_reports.py`
+- `tests/test_dashboard.py`
+
+Execution order:
+
+1. add scorecard artifact writer and serializer in the reports layer
+2. add recommendation mapping logic with deterministic rules
+3. add dashboard rendering for the scorecard and recommendation banner
+4. add or extend tests for artifact contents and dashboard rendering
+5. run the test gate
+6. commit only after a clean working tree
+
+Definition of done:
+
+- one scorecard artifact exists for a finished operability campaign
+- recommendation is visible without reading raw JSON
+- control vs candidate comparison is readable by a non-expert operator
+- tests prove both artifact generation and dashboard rendering
+
 ### Step 3: External Director Plan Files
 
 Goal:
@@ -96,6 +148,63 @@ Test gate:
 Commit boundary:
 
 - one commit for plan-file support and tests
+
+Implementation checklist:
+
+- define a first-class director plan file format before changing runtime behavior:
+  - plan name
+  - seed / ordered campaign queue
+  - per-entry config path
+  - optional campaign name override
+  - per-entry budget controls if needed later
+  - fallback behavior when a campaign exhausts
+- decide where plan files live in the repo:
+  - likely `configs/directors/` or similar
+- add loader and validator logic that fails clearly on:
+  - missing config paths
+  - malformed plan structure
+  - empty queue
+  - duplicate queue indexes if explicit indexes are allowed
+- update director start logic to accept a plan file instead of only built-in defaults
+- persist the normalized plan into director state so running directors remain inspectable
+- preserve backwards compatibility:
+  - if no plan file is supplied, keep the current default queue behavior
+- add dashboard visibility for:
+  - total planned campaigns
+  - current queue position
+  - pending queue entries
+  - completed / exhausted queue entries
+- add CLI options for plan-file startup and status inspection
+- ensure adoptable active campaigns still work when a matching plan entry already exists
+
+Suggested file touch list:
+
+- `src/trotters_trader/research_runtime.py`
+- `src/trotters_trader/cli.py`
+- `src/trotters_trader/dashboard.py`
+- `tests/test_research_runtime.py`
+- `tests/test_cli.py`
+- `tests/test_dashboard.py`
+- new plan fixture(s) under `tests/fixtures/` if useful
+
+Execution order:
+
+1. define and document the director plan schema
+2. implement plan loading and validation
+3. wire plan-file support into director startup
+4. persist normalized plan state for later inspection
+5. surface plan queue state in dashboard and status output
+6. add runtime, CLI, and dashboard tests
+7. run the full Step 3 test gate
+8. commit only after a clean working tree
+
+Definition of done:
+
+- a director can be started from an explicit plan file
+- the active and pending queue is visible without reading source code
+- malformed plan files fail early with clear errors
+- old behavior still works when no plan file is provided
+- tests cover happy path and invalid-plan path
 
 ### Step 4: Director Operator Controls
 
