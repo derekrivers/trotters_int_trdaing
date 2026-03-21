@@ -187,6 +187,8 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
     for attempt in range(SQLITE_INIT_MAX_ATTEMPTS):
         try:
             with _connect(paths) as connection:
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute("PRAGMA synchronous = NORMAL")
                 connection.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS jobs (
@@ -3141,8 +3143,6 @@ def _connect(paths: ResearchRuntimePaths):
     try:
         connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
         yield connection
         connection.commit()
     finally:
