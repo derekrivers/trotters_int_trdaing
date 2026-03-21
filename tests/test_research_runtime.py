@@ -271,6 +271,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         started = next(record for record in records if record["event_type"] == "campaign_started")
         self.assertEqual(started["campaign_id"], payload["campaign_id"])
         self.assertFalse(started["notification_requested"])
+        self.assertEqual(started["severity"], "info")
 
     def test_start_director_records_running_director_and_writes_spec(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
@@ -758,6 +759,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         stopped = next(record for record in records if record["event_type"] == "campaign_stopped")
         self.assertTrue(stopped["hook"]["executed"])
         self.assertTrue(stopped["hook"]["success"])
+        self.assertEqual(stopped["severity"], "warning")
 
     def test_campaign_manager_marks_campaign_failed_on_runtime_error(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
@@ -823,6 +825,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         ]
         failed = next(record for record in records if record["event_type"] == "campaign_failed")
         self.assertIn("boom", failed["message"])
+        self.assertEqual(failed["severity"], "error")
 
     def test_step_campaign_submits_focused_operability_jobs(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
@@ -1176,3 +1179,4 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         promoted = next(record for record in records if record["event_type"] == "strategy_promoted")
         self.assertEqual(promoted["campaign_id"], "campaign-promote")
         self.assertEqual(promoted["payload"]["selected_profile_name"], "candidate_profile")
+        self.assertEqual(promoted["severity"], "success")

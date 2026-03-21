@@ -25,8 +25,9 @@ class DashboardTests(unittest.TestCase):
                         "recorded_at_utc": "2026-03-21T16:00:00+00:00",
                         "campaign_id": "campaign-1",
                         "campaign_name": "broad-operability",
-                        "event_type": "campaign_finished",
-                        "message": "Campaign completed",
+                        "event_type": "strategy_promoted",
+                        "severity": "success",
+                        "message": "Strategy promoted and frozen for review",
                         "notification_requested": False,
                         "hook": {"success": None},
                     }
@@ -127,12 +128,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn(("Content-Type", "text/html; charset=utf-8"), headers)
         self.assertIn("Research Runtime Dashboard", body)
         self.assertIn("broad-operability", body)
-        self.assertIn("Campaign completed", body)
+        self.assertIn("Strategy promoted and frozen for review", body)
         self.assertIn("worker-01", body)
         self.assertIn("2026-03-21T16:00:30+00:00", body)
         self.assertIn("2026-03-21T16:01:00+00:00", body)
         self.assertIn("ago", body)
         self.assertIn("broad-operability-plan", body)
+        self.assertIn("Strategy promoted:", body)
+        self.assertIn("success", body)
         self.assertIn("Outcome Summary", body)
         self.assertIn("What Changed Since Last Check", body)
         self.assertIn("Recent Campaign Outcomes", body)
@@ -293,6 +296,40 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Stop Campaign", body)
         self.assertIn("Handoff", body)
         self.assertIn("Compare", body)
+
+    def test_campaign_detail_page_renders_exhausted_banner(self) -> None:
+        root = self._workspace_root("detail_exhausted")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch(
+                "trotters_trader.dashboard.campaign_status",
+                return_value={
+                    "campaign": {
+                        "campaign_id": "campaign-2",
+                        "campaign_name": "exhausted-operability",
+                        "config_path": "configs/eodhd_momentum.toml",
+                        "status": "exhausted",
+                        "phase": "stability_pivot",
+                        "latest_report_path": "runtime/catalog/program.md",
+                        "last_error": None,
+                        "state": {
+                            "final_decision": {
+                                "recommended_action": "exhausted",
+                                "reason": "stability_pivot_did_not_produce_viable_candidate",
+                            }
+                        },
+                    },
+                    "events": [],
+                    "jobs": [],
+                },
+            ):
+                status, _, body = self._invoke(app, "GET", "/campaigns/campaign-2")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("exhausted its search path", body)
 
     def test_campaign_handoff_page_renders_plain_english_summary(self) -> None:
         root = self._workspace_root("handoff")

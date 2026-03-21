@@ -323,7 +323,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     )
     job_rows = "".join(_job_row(job) for job in jobs[:20]) or "<tr><td colspan='7'>No jobs recorded</td></tr>"
     notification_rows = "".join(_notification_row(record) for record in notifications) or (
-        "<tr><td colspan='5'>No notifications yet</td></tr>"
+        "<tr><td colspan='6'>No notifications yet</td></tr>"
     )
     recent_campaign_rows = "".join(_campaign_outcome_row(campaign) for campaign in _recent_outcomes(all_campaigns)) or (
         "<tr><td colspan='6'>No recent campaign outcomes</td></tr>"
@@ -348,6 +348,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         <a class="button secondary" href="/api/overview.json">JSON</a>
       </div>
     </section>
+    {_notification_banner(notifications)}
     <section class="summary-grid">{summary_cards}</section>
     <section class="panel">
       <h2>Outcome Summary</h2>
@@ -379,7 +380,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
       <section class="panel">
         <h2>Recent Notifications</h2>
         <table>
-          <thead><tr><th>Time</th><th>Event</th><th>Campaign</th><th>Message</th><th>Hook</th></tr></thead>
+          <thead><tr><th>Time</th><th>Severity</th><th>Event</th><th>Campaign</th><th>Message</th><th>Hook</th></tr></thead>
           <tbody>{notification_rows}</tbody>
         </table>
       </section>
@@ -444,6 +445,7 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
 
     body = f"""
     {_flash_banner(flash)}
+    {_campaign_state_banner(campaign, state)}
     <section class="hero">
       <div>
         <p><a href="/">Back to overview</a></p>
@@ -594,6 +596,7 @@ def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int
 
     body = f"""
     {_flash_banner(flash)}
+    {_campaign_state_banner(campaign, state)}
     <section class="hero">
       <div>
         <p><a href="/campaigns/{quote(campaign_id)}">Back to campaign</a></p>
@@ -665,6 +668,7 @@ def _render_campaign_scorecard(payload: dict[str, object], *, refresh_seconds: i
 
     body = f"""
     {_flash_banner(flash)}
+    {_campaign_state_banner(campaign, state)}
     <section class="hero">
       <div>
         <p><a href="/campaigns/{quote(campaign_id)}/handoff">Back to handoff</a></p>
@@ -959,6 +963,8 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
       font-size: 0.82rem;
       white-space: nowrap;
     }}
+    .pill.info {{ background: var(--accent-soft); color: var(--accent); }}
+    .pill.success {{ background: #dceee8; color: #1e6a4c; }}
     .pill.warn {{ background: #f3e5bf; color: var(--warn); }}
     .pill.danger {{ background: #f1d7d7; color: var(--danger); }}
     .button {{
@@ -988,6 +994,10 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
       border: 1px solid #9ecbbb;
       color: var(--accent);
     }}
+    .flash.info {{ background: #dceee8; border-color: #9ecbbb; color: var(--accent); }}
+    .flash.success {{ background: #dceee8; border-color: #9ecbbb; color: #1e6a4c; }}
+    .flash.warn {{ background: #fff2d4; border-color: #e0c483; color: var(--warn); }}
+    .flash.danger {{ background: #f6dede; border-color: #d49b9b; color: var(--danger); }}
     form.inline {{
       display: flex;
       flex-wrap: wrap;
@@ -1108,6 +1118,7 @@ def _job_row(job: object) -> str:
 def _notification_row(record: object) -> str:
     if not isinstance(record, dict):
         return ""
+    severity = str(record.get("severity", "info"))
     hook = record.get("hook", {}) if isinstance(record.get("hook"), dict) else {}
     hook_text = "not requested"
     hook_class = ""
@@ -1127,6 +1138,7 @@ def _notification_row(record: object) -> str:
     return (
         "<tr>"
         f"<td>{_timestamp_with_age(record.get('recorded_at_utc'))}</td>"
+        f"<td>{_severity_pill(severity)}</td>"
         f"<td>{_status_pill(str(record.get('event_type', 'notification')))}</td>"
         f"<td>{campaign_link}</td>"
         f"<td>{escape(str(record.get('message', '')))}</td>"
@@ -1722,6 +1734,86 @@ def _flash_banner(message: str | None) -> str:
     if not message:
         return ""
     return f"<div class='flash'>{escape(message)}</div>"
+
+
+def _notification_banner(notifications: object) -> str:
+    if not isinstance(notifications, list):
+        return ""
+    record = next(
+        (
+            entry
+            for entry in notifications
+            if isinstance(entry, dict) and str(entry.get("severity", "info")).lower() in {"success", "warning", "error"}
+        ),
+        None,
+    )
+    if not isinstance(record, dict):
+        return ""
+    severity = str(record.get("severity", "info")).lower()
+    event_type = str(record.get("event_type", "notification"))
+    campaign_name = str(record.get("campaign_name", "unknown campaign"))
+    if event_type == "strategy_promoted":
+        message = (
+            f"Strategy promoted: {campaign_name} produced a frozen candidate for human review. "
+            "The next step is paper-trading review, not live trading."
+        )
+    elif event_type == "campaign_failed":
+        message = f"Campaign failed: {campaign_name} needs investigation before this branch is reused."
+    elif event_type == "campaign_stopped":
+        message = f"Campaign stopped: {campaign_name} will not advance until you restart or replace it."
+    elif event_type == "campaign_finished" and severity == "warning":
+        message = f"Campaign exhausted: {campaign_name} did not find a viable strategy in this branch."
+    else:
+        message = str(record.get("message", "") or event_type)
+    return _alert_banner(message, severity)
+
+
+def _campaign_state_banner(campaign: dict[str, object], state: dict[str, object]) -> str:
+    final_decision = state.get("final_decision", {}) if isinstance(state.get("final_decision"), dict) else {}
+    action = str(final_decision.get("recommended_action", "") or campaign.get("status", "")).lower()
+    campaign_name = str(campaign.get("campaign_name", "This campaign"))
+    if action == "freeze_candidate":
+        return _alert_banner(
+            f"{campaign_name} has promoted a strategy and frozen it for operator review. Move to paper-trading review, not live deployment.",
+            "success",
+        )
+    if action in {"exhausted"}:
+        return _alert_banner(
+            f"{campaign_name} exhausted its search path without producing a viable strategy. Treat this branch as finished unless you open a new idea.",
+            "warning",
+        )
+    if action in {"failed"}:
+        return _alert_banner(
+            f"{campaign_name} failed and needs investigation before it should be trusted again.",
+            "error",
+        )
+    if action in {"stopped"}:
+        return _alert_banner(
+            f"{campaign_name} was stopped by the operator and will not advance further.",
+            "warning",
+        )
+    return ""
+
+
+def _alert_banner(message: str, severity: str) -> str:
+    css = _severity_class(severity)
+    return f"<div class='flash {css}'>{escape(message)}</div>"
+
+
+def _severity_pill(value: str) -> str:
+    css = _severity_class(value)
+    return f"<span class='pill {css}'>{escape(value)}</span>"
+
+
+def _severity_class(value: str) -> str:
+    lowered = value.lower()
+    if lowered in {"error", "failed", "danger"}:
+        return "danger"
+    if lowered in {"warning", "warn", "stopped", "exhausted"}:
+        return "warn"
+    if lowered in {"success", "completed", "promoted"}:
+        return "success"
+    return "info"
 
 
 def _query_value(query: dict[str, list[str]], key: str) -> str | None:

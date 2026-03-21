@@ -2663,6 +2663,7 @@ def _emit_campaign_notification(
         if isinstance(value, str) and value
     }
     notification_command = _optional_text(spec.get("notification_command"))
+    severity = _notification_severity(event_type, payload)
     payload_stem = (
         f"{_timestamp_slug(recorded_at)}_{_safe_filename_component(campaign_name)}_"
         f"{_safe_filename_component(event_type)}_{uuid.uuid4().hex[:8]}"
@@ -2673,6 +2674,7 @@ def _emit_campaign_notification(
         "campaign_id": campaign_id,
         "campaign_name": campaign_name,
         "event_type": event_type,
+        "severity": severity,
         "message": message,
         "payload": payload,
         "payload_path": str(payload_path),
@@ -2703,6 +2705,7 @@ def _emit_campaign_notification(
             "TROTTERS_CAMPAIGN_ID": campaign_id,
             "TROTTERS_CAMPAIGN_NAME": campaign_name,
             "TROTTERS_EVENT_TYPE": event_type,
+            "TROTTERS_EVENT_SEVERITY": severity,
             "TROTTERS_EVENT_MESSAGE": message,
             "TROTTERS_EVENT_RECORDED_AT_UTC": recorded_at,
             "TROTTERS_NOTIFICATION_PAYLOAD_PATH": str(payload_path),
@@ -2745,6 +2748,26 @@ def _emit_campaign_notification(
     with (exports_dir / CAMPAIGN_NOTIFICATION_JSONL).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record))
         handle.write("\n")
+
+
+def _notification_severity(event_type: str, payload: dict[str, object]) -> str:
+    normalized = event_type.lower()
+    if normalized == "strategy_promoted":
+        return "success"
+    if normalized in {"campaign_failed"}:
+        return "error"
+    if normalized in {"campaign_stopped"}:
+        return "warning"
+    if normalized == "campaign_finished":
+        action = str(payload.get("recommended_action", "")).lower()
+        if action == "freeze_candidate":
+            return "success"
+        if action in {"exhausted", "failed", "stopped"}:
+            return "warning" if action != "failed" else "error"
+        return "success"
+    if normalized in {"stress_processed"}:
+        return "warning"
+    return "info"
 
 
 def _handle_campaign_runtime_error(
