@@ -62,6 +62,9 @@ class DashboardController:
     def campaign_detail(self, campaign_id: str) -> dict[str, object]:
         return campaign_status(self._paths, campaign_id)
 
+    def director_detail(self, director_id: str) -> dict[str, object]:
+        return director_status(self._paths, director_id)
+
     def stop_campaign(self, campaign_id: str, reason: str) -> dict[str, object]:
         return stop_campaign(self._paths, campaign_id, reason=reason)
 
@@ -105,6 +108,17 @@ class DashboardApp:
         if method == "GET" and path == "/":
             payload = self._controller.overview()
             html = _render_overview(payload, refresh_seconds=self._refresh_seconds, flash=_query_value(query, "flash"))
+            return self._html_response("200 OK", html)
+        if method == "GET" and path.startswith("/directors/"):
+            director_id = path.removeprefix("/directors/").strip("/")
+            if not director_id:
+                raise ValueError("Director id is required")
+            payload = self._controller.director_detail(director_id)
+            html = _render_director_detail(
+                payload,
+                refresh_seconds=self._refresh_seconds,
+                flash=_query_value(query, "flash"),
+            )
             return self._html_response("200 OK", html)
         if method == "GET" and path.startswith("/campaigns/"):
             if path.endswith("/handoff"):
@@ -165,6 +179,11 @@ class DashboardApp:
             if not campaign_id:
                 raise ValueError("Campaign id is required")
             return self._json_response(self._controller.campaign_detail(campaign_id))
+        if method == "GET" and path.startswith("/api/directors/"):
+            director_id = path.removeprefix("/api/directors/").strip("/")
+            if not director_id:
+                raise ValueError("Director id is required")
+            return self._json_response(self._controller.director_detail(director_id))
         return self._html_response(
             "404 Not Found",
             _render_layout(
@@ -246,7 +265,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         for label in ("queued", "running", "completed", "failed", "cancelled")
     )
     director_rows = "".join(_director_row(director) for director in directors) or (
-        "<tr><td colspan='5'>No active directors</td></tr>"
+        "<tr><td colspan='7'>No active directors</td></tr>"
     )
     campaign_rows = "".join(_campaign_row(campaign) for campaign in campaigns) or (
         "<tr><td colspan='6'>No active campaigns</td></tr>"
@@ -275,7 +294,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     <section class="panel">
       <h2>Active Directors</h2>
       <table>
-        <thead><tr><th>Name</th><th>Status</th><th>Current Campaign</th><th>Successful Campaign</th><th>Last Result</th></tr></thead>
+        <thead><tr><th>Name</th><th>Status</th><th>Plan</th><th>Progress</th><th>Current Campaign</th><th>Successful Campaign</th><th>Last Result</th></tr></thead>
         <tbody>{director_rows}</tbody>
       </table>
     </section>
@@ -387,6 +406,83 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
     </section>
     """
     return _render_layout(str(campaign.get("campaign_name", "Campaign")), body, refresh_seconds=refresh_seconds)
+
+
+def _render_director_detail(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
+    director = payload.get("director", {}) if isinstance(payload.get("director"), dict) else {}
+    state = director.get("state", {}) if isinstance(director.get("state"), dict) else {}
+    spec = director.get("spec", {}) if isinstance(director.get("spec"), dict) else {}
+    queue = state.get("campaign_queue", []) if isinstance(state.get("campaign_queue"), list) else []
+    events = payload.get("events", []) if isinstance(payload.get("events"), list) else []
+    campaigns = payload.get("campaigns", []) if isinstance(payload.get("campaigns"), list) else []
+    plan_name = str(spec.get("plan_name") or state.get("plan_name") or "unnamed_plan")
+    plan_source = str(spec.get("plan_source") or state.get("plan_source") or "unknown")
+    queue_rows = "".join(_director_queue_row(entry) for entry in queue if isinstance(entry, dict)) or (
+        "<tr><td colspan='8'>No queued campaigns recorded.</td></tr>"
+    )
+    event_rows = "".join(_director_event_row(event) for event in events[-30:][::-1]) or (
+        "<tr><td colspan='4'>No director events</td></tr>"
+    )
+    campaign_rows = "".join(_director_campaign_row(campaign) for campaign in campaigns) or (
+        "<tr><td colspan='6'>No campaigns recorded for this director.</td></tr>"
+    )
+
+    body = f"""
+    {_flash_banner(flash)}
+    <section class="hero">
+      <div>
+        <p><a href="/">Back to overview</a></p>
+        <h1>{escape(str(director.get("director_name", "Unknown director")))}</h1>
+        <p>Director id: <code>{escape(str(director.get("director_id", "")))}</code></p>
+      </div>
+      <div class="hero-links">
+        <a class="button secondary" href="/api/directors/{quote(str(director.get('director_id', '')))}">JSON</a>
+      </div>
+    </section>
+    <section class="summary-grid">
+      {_summary_card("status", str(director.get("status", "unknown")))}
+      {_summary_card("plan", plan_name)}
+      {_summary_card("queue progress", _director_progress_text(queue))}
+      {_summary_card("current campaign", str(director.get("current_campaign_id") or "-"))}
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Plan Metadata</h2>
+        <p><strong>Plan name:</strong> <code>{escape(plan_name)}</code></p>
+        <p><strong>Plan source:</strong> <code>{escape(plan_source)}</code></p>
+        <p><strong>Adopt active campaigns:</strong> {bool(spec.get("adopt_active_campaigns", True))}</p>
+        <p><strong>Default quality gate:</strong> <code>{escape(str(spec.get("quality_gate", "all")))}</code></p>
+      </section>
+      <section class="panel">
+        <h2>Final Result</h2>
+        <pre>{escape(json.dumps(state.get("final_result"), indent=2, default=str)) if state.get("final_result") is not None else "No final result yet."}</pre>
+      </section>
+    </section>
+    <section class="panel">
+      <h2>Plan Queue</h2>
+      <table>
+        <thead><tr><th>#</th><th>Entry</th><th>Config</th><th>Status</th><th>Campaign</th><th>Hours</th><th>Jobs</th><th>Outcome</th></tr></thead>
+        <tbody>{queue_rows}</tbody>
+      </table>
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Director Events</h2>
+        <table>
+          <thead><tr><th>Time</th><th>Event</th><th>Message</th><th>Payload</th></tr></thead>
+          <tbody>{event_rows}</tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h2>Campaigns</h2>
+        <table>
+          <thead><tr><th>Name</th><th>Status</th><th>Phase</th><th>Updated</th><th>Report</th><th>Action</th></tr></thead>
+          <tbody>{campaign_rows}</tbody>
+        </table>
+      </section>
+    </section>
+    """
+    return _render_layout(str(director.get("director_name", "Director")), body, refresh_seconds=refresh_seconds)
 
 
 def _render_campaign_handoff(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
@@ -861,11 +957,17 @@ def _campaign_row(campaign: object) -> str:
 def _director_row(director: object) -> str:
     payload = director if isinstance(director, dict) else {}
     state = payload.get("state", {}) if isinstance(payload.get("state"), dict) else {}
+    spec = payload.get("spec", {}) if isinstance(payload.get("spec"), dict) else {}
     final_result = state.get("final_result", {}) if isinstance(state.get("final_result"), dict) else {}
+    queue = state.get("campaign_queue", []) if isinstance(state.get("campaign_queue"), list) else []
+    director_id = str(payload.get("director_id", ""))
+    plan_name = str(spec.get("plan_name") or state.get("plan_name") or "unnamed_plan")
     return (
         "<tr>"
-        f"<td>{escape(str(payload.get('director_name', 'unknown')))}</td>"
+        f"<td><a href='/directors/{quote(director_id)}'>{escape(str(payload.get('director_name', 'unknown')))}</a></td>"
         f"<td>{_status_pill(str(payload.get('status', 'unknown')))}</td>"
+        f"<td><code>{escape(plan_name)}</code></td>"
+        f"<td>{escape(_director_progress_text(queue))}</td>"
         f"<td><code>{escape(str(payload.get('current_campaign_id', '') or '-'))}</code></td>"
         f"<td><code>{escape(str(payload.get('successful_campaign_id', '') or '-'))}</code></td>"
         f"<td>{escape(str(final_result.get('recommended_action', '-')))}</td>"
@@ -966,6 +1068,61 @@ def _campaign_job_row(job: object) -> str:
         f"<td>{_status_pill(str(job.get('status', 'unknown')))}</td>"
         f"<td>{escape(str(job.get('priority', '')))}</td>"
         f"<td>{_timestamp_with_age(job.get('updated_at'))}</td>"
+        "</tr>"
+    )
+
+
+def _director_queue_row(entry: object) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    campaign_id = str(entry.get("campaign_id") or "")
+    campaign_cell = (
+        f"<a href='/campaigns/{quote(campaign_id)}'><code>{escape(campaign_id)}</code></a>"
+        if campaign_id
+        else "-"
+    )
+    return (
+        "<tr>"
+        f"<td>{escape(str(entry.get('queue_index', '')))}</td>"
+        f"<td>{escape(str(entry.get('campaign_name') or entry.get('entry_name') or 'unknown'))}</td>"
+        f"<td><code>{escape(str(entry.get('config_path', '')))}</code></td>"
+        f"<td>{_status_pill(str(entry.get('status', 'pending')))}</td>"
+        f"<td>{campaign_cell}</td>"
+        f"<td>{escape(str(entry.get('campaign_max_hours', '-')))}</td>"
+        f"<td>{escape(str(entry.get('campaign_max_jobs', '-')))}</td>"
+        f"<td>{escape(str(entry.get('outcome') or '-'))}</td>"
+        "</tr>"
+    )
+
+
+def _director_event_row(event: object) -> str:
+    if not isinstance(event, dict):
+        return ""
+    payload = event.get("payload_json")
+    payload_text = payload if isinstance(payload, str) else json.dumps(payload, indent=2, default=str)
+    return (
+        "<tr>"
+        f"<td>{_timestamp_with_age(event.get('recorded_at_utc'))}</td>"
+        f"<td>{_status_pill(str(event.get('event_type', 'event')))}</td>"
+        f"<td>{escape(str(event.get('message', '')))}</td>"
+        f"<td><pre>{escape(payload_text)}</pre></td>"
+        "</tr>"
+    )
+
+
+def _director_campaign_row(campaign: object) -> str:
+    if not isinstance(campaign, dict):
+        return ""
+    campaign_id = str(campaign.get("campaign_id", ""))
+    report = escape(str(campaign.get("latest_report_path") or ""))
+    return (
+        "<tr>"
+        f"<td><a href='/campaigns/{quote(campaign_id)}'>{escape(str(campaign.get('campaign_name', campaign_id)))}</a></td>"
+        f"<td>{_status_pill(str(campaign.get('status', 'unknown')))}</td>"
+        f"<td>{escape(str(campaign.get('phase', 'unknown')))}</td>"
+        f"<td>{_timestamp_with_age(campaign.get('updated_at'))}</td>"
+        f"<td><code>{report or 'None'}</code></td>"
+        f"<td><a class='button secondary' href='/campaigns/{quote(campaign_id)}'>View</a></td>"
         "</tr>"
     )
 
@@ -1237,6 +1394,14 @@ def _scorecard_list(items: object, *, empty_message: str) -> str:
         return f"<p>{escape(empty_message)}</p>"
     joined = "".join(f"<li>{escape(item)}</li>" for item in values)
     return f"<ul>{joined}</ul>"
+
+
+def _director_progress_text(queue: object) -> str:
+    entries = [entry for entry in queue if isinstance(entry, dict)] if isinstance(queue, list) else []
+    if not entries:
+        return "0 / 0"
+    finished = sum(1 for entry in entries if str(entry.get("status", "")) in {"completed", "exhausted", "failed", "stopped"})
+    return f"{finished} / {len(entries)}"
 
 
 def _paragraph_list(lines: list[str]) -> str:

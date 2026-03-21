@@ -48,12 +48,15 @@ class CliTests(unittest.TestCase):
                 "configs/backtest.toml",
                 "--director-name",
                 "director-1",
+                "--director-plan-file",
+                "configs/directors/broad_operability.json",
             ]
         )
 
         self.assertEqual(args.command, "research-director-start")
         self.assertEqual(args.config, "configs/backtest.toml")
         self.assertEqual(args.director_name, "director-1")
+        self.assertEqual(args.director_plan_file, "configs/directors/broad_operability.json")
 
     def test_parser_accepts_research_director_stop_command(self) -> None:
         parser = _build_parser()

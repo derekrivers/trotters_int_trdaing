@@ -1,0 +1,29 @@
+{
+  "plan_name": "broad_operability",
+  "campaigns": [
+    {
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+      "campaign_name": "broad-operability-primary",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 120,
+      "shortlist_size": 3
+    },
+    {
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
+      "campaign_name": "broad-operability-sector-fallback",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 120,
+      "shortlist_size": 3
+    },
+    {
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+      "campaign_name": "broad-operability-benchmark-fallback",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 120,
+      "shortlist_size": 3
+    }
+  ]
+}

@@ -284,8 +284,61 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertIn("director_id", payload)
         status = director_status(paths, payload["director_id"])
         self.assertEqual(status["director"]["director_name"], "director-test")
+        self.assertEqual(status["director"]["spec"]["plan_name"], "default_broad_operability")
         spec_path = paths.director_specs_dir / f"{payload['director_id']}.json"
         self.assertTrue(spec_path.exists())
+
+    def test_start_director_accepts_valid_plan_payload(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        with patch(
+            "trotters_trader.research_runtime.step_director",
+            return_value={"outcome": "campaign_started"},
+        ):
+            payload = start_director(
+                paths,
+                director_name="director-plan",
+                plan_payload={
+                    "plan_name": "custom-plan",
+                    "campaigns": [
+                        {
+                            "config_path": "configs/backtest.toml",
+                            "campaign_name": "phase-one",
+                            "campaign_max_hours": 12,
+                            "campaign_max_jobs": 250,
+                            "stage_candidate_limit": 10,
+                            "shortlist_size": 2,
+                            "quality_gate": "pass_warn",
+                        }
+                    ],
+                },
+                plan_file_path="configs/directors/custom.json",
+            )
+
+        status = director_status(paths, payload["director_id"])
+        queue = status["director"]["state"]["campaign_queue"]
+        self.assertEqual(status["director"]["spec"]["plan_name"], "custom-plan")
+        self.assertEqual(status["director"]["spec"]["plan_source"], "configs/directors/custom.json")
+        self.assertEqual(queue[0]["campaign_name"], "phase-one")
+        self.assertEqual(queue[0]["campaign_max_jobs"], 250)
+        self.assertEqual(queue[0]["shortlist_size"], 2)
+
+    def test_start_director_rejects_missing_plan_config(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+
+        with self.assertRaisesRegex(ValueError, "missing config_path"):
+            start_director(
+                paths,
+                plan_payload={"campaigns": [{"campaign_name": "bad-entry"}]},
+            )
+
+    def test_start_director_rejects_nonexistent_plan_config(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+
+        with self.assertRaisesRegex(ValueError, "references missing config_path"):
+            start_director(
+                paths,
+                plan_payload={"campaigns": [{"config_path": "configs/does_not_exist.toml"}]},
+            )
 
     def test_step_director_launches_first_campaign(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
@@ -316,6 +369,11 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
                                     "queue_index": 0,
                                     "config_path": "configs/backtest.toml",
                                     "campaign_name": "director-1-backtest",
+                                    "campaign_max_hours": 12,
+                                    "campaign_max_jobs": 250,
+                                    "stage_candidate_limit": 10,
+                                    "shortlist_size": 2,
+                                    "quality_gate": "pass_warn",
                                     "status": "pending",
                                     "campaign_id": None,
                                     "completed_at": None,
@@ -337,7 +395,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         with patch(
             "trotters_trader.research_runtime.start_campaign",
             return_value={"campaign_id": "campaign-1", "campaign_name": "director-1-backtest"},
-        ):
+        ) as start_campaign_mock:
             payload = step_director(paths, "director-1")
 
         self.assertEqual(payload["outcome"], "campaign_started")
@@ -346,6 +404,13 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         queue = status["director"]["state"]["campaign_queue"]
         self.assertEqual(queue[0]["status"], "running")
         self.assertEqual(queue[0]["campaign_id"], "campaign-1")
+        start_campaign_mock.assert_called_once()
+        _, kwargs = start_campaign_mock.call_args
+        self.assertEqual(kwargs["quality_gate"], "pass_warn")
+        self.assertEqual(kwargs["max_hours"], 12.0)
+        self.assertEqual(kwargs["max_jobs"], 250)
+        self.assertEqual(kwargs["stage_candidate_limit"], 10)
+        self.assertEqual(kwargs["shortlist_size"], 2)
 
     def test_step_director_adopts_matching_active_campaign(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")

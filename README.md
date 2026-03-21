@@ -287,7 +287,7 @@ python -m trotters_trader.cli research-director-start \
 
 # Optional: provide an explicit queue instead of the built-in default plan
 # python -m trotters_trader.cli research-director-start \
-#   --director-plan-file runtime/research_runtime/director_specs/my_plan.json \
+#   --director-plan-file configs/directors/broad_operability.json \
 #   --runtime-root runtime/research_runtime \
 #   --catalog-output-dir runtime/catalog \
 #   --director-name broad-operability
@@ -324,11 +324,38 @@ Important campaign controls:
 - `research-director-status`: shows which campaign the director is currently supervising
 - `research-dashboard`: serves the local dashboard on `--dashboard-host` / `--dashboard-port`
 - the dashboard includes a `/guide` page for non-technical / non-trading users who want a high-level explanation of the application
+- the dashboard now includes `/directors/<director_id>` so the operator can inspect the full director queue and plan progress
 - `--director-plan-file`: supplies an explicit queue of campaign configs for the director
 - `--disable-director-adoption`: prevents the director from adopting an already-running matching campaign
 - `--stop-active-campaign`: when stopping a director, also stop its active campaign
 - `--keep-queued-jobs`: leaves already-queued jobs in place when stopping a campaign
 - `--stop-reason`: records why the operator stopped the campaign
+
+Director plan file shape:
+
+```json
+{
+  "plan_name": "broad_operability",
+  "campaigns": [
+    {
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+      "campaign_name": "broad-operability-primary",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 120,
+      "shortlist_size": 3,
+      "quality_gate": "all"
+    }
+  ]
+}
+```
+
+Plan-file notes:
+
+- `config_path` is required and must point to an existing config file
+- `plan_name` is optional but recommended for dashboard readability
+- per-entry overrides are optional; if omitted, the director-level defaults are used
+- a tracked example plan is available at [`configs/directors/broad_operability.json`](c:/Dev/TrottersIndependantTraders/configs/directors/broad_operability.json)
 
 Notification hooks:
 

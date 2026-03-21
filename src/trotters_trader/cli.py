@@ -415,6 +415,7 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
             notification_command=getattr(args, "notification_command", None),
             notify_events=notify_events,
             plan_payload=plan_payload,
+            plan_file_path=getattr(args, "director_plan_file", None),
             adopt_active_campaigns=not bool(getattr(args, "disable_director_adoption", False)),
         )
     if args.command == "research-director-step":

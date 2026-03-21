@@ -68,6 +68,12 @@ class DashboardTests(unittest.TestCase):
                                 "updated_at": "2026-03-21T16:01:00+00:00",
                             }
                         ],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "status": "running",
+                            }
+                        ],
                     },
                 ),
                 patch(
@@ -80,6 +86,20 @@ class DashboardTests(unittest.TestCase):
                             "phase": "stress_pack",
                             "updated_at": "2026-03-21T16:01:00+00:00",
                             "latest_report_path": "runtime/catalog/report.md",
+                        }
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.director_status",
+                    return_value={
+                        "director": {
+                            "director_id": "director-1",
+                            "director_name": "broad-operability-director",
+                            "status": "running",
+                            "current_campaign_id": "campaign-1",
+                            "successful_campaign_id": None,
+                            "spec": {"plan_name": "broad-operability-plan"},
+                            "state": {"campaign_queue": [{"status": "running"}, {"status": "pending"}]},
                         }
                     },
                 ),
@@ -97,6 +117,87 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("2026-03-21T16:00:30+00:00", body)
         self.assertIn("2026-03-21T16:01:00+00:00", body)
         self.assertIn("ago", body)
+        self.assertIn("broad-operability-plan", body)
+
+    def test_director_detail_page_renders_plan_queue(self) -> None:
+        root = self._workspace_root("director")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch(
+                "trotters_trader.dashboard.director_status",
+                return_value={
+                    "director": {
+                        "director_id": "director-1",
+                        "director_name": "broad-operability",
+                        "status": "running",
+                        "current_campaign_id": "campaign-1",
+                        "successful_campaign_id": None,
+                        "last_error": None,
+                        "spec": {
+                            "plan_name": "broad-operability-plan",
+                            "plan_source": "configs/directors/broad_operability.json",
+                            "adopt_active_campaigns": True,
+                            "quality_gate": "all",
+                        },
+                        "state": {
+                            "campaign_queue": [
+                                {
+                                    "queue_index": 0,
+                                    "campaign_name": "primary",
+                                    "entry_name": "primary",
+                                    "config_path": "configs/backtest.toml",
+                                    "status": "running",
+                                    "campaign_id": "campaign-1",
+                                    "campaign_max_hours": 24,
+                                    "campaign_max_jobs": 1500,
+                                    "outcome": None,
+                                },
+                                {
+                                    "queue_index": 1,
+                                    "campaign_name": "fallback",
+                                    "entry_name": "fallback",
+                                    "config_path": "configs/eodhd_momentum.toml",
+                                    "status": "pending",
+                                    "campaign_id": None,
+                                    "campaign_max_hours": 24,
+                                    "campaign_max_jobs": 1500,
+                                    "outcome": None,
+                                },
+                            ],
+                            "final_result": None,
+                        },
+                    },
+                    "events": [
+                        {
+                            "recorded_at_utc": "2026-03-21T16:00:00+00:00",
+                            "event_type": "campaign_started",
+                            "message": "Director started campaign campaign-1",
+                            "payload_json": "{\"campaign_id\": \"campaign-1\"}",
+                        }
+                    ],
+                    "campaigns": [
+                        {
+                            "campaign_id": "campaign-1",
+                            "campaign_name": "primary",
+                            "status": "running",
+                            "phase": "focused_operability",
+                            "updated_at": "2026-03-21T16:01:00+00:00",
+                            "latest_report_path": "runtime/catalog/program.md",
+                        }
+                    ],
+                },
+            ):
+                status, _, body = self._invoke(app, "GET", "/directors/director-1")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("broad-operability-plan", body)
+        self.assertIn("Plan Queue", body)
+        self.assertIn("primary", body)
+        self.assertIn("fallback", body)
+        self.assertIn("0 / 2", body)
 
     def test_campaign_detail_page_renders_state_and_events(self) -> None:
         root = self._workspace_root("detail")

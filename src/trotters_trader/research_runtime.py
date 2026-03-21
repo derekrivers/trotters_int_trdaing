@@ -69,6 +69,7 @@ DEFAULT_DIRECTOR_FALLBACK_CONFIGS = (
     "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
     "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
 )
+DIRECTOR_PLAN_QUALITY_GATES = {"all", "pass_warn", "pass"}
 
 
 @dataclass(frozen=True)
@@ -938,15 +939,23 @@ def start_director(
     notification_command: str | None = None,
     notify_events: tuple[str, ...] = DEFAULT_NOTIFICATION_EVENTS,
     plan_payload: object | None = None,
+    plan_file_path: str | None = None,
     adopt_active_campaigns: bool = True,
 ) -> dict[str, object]:
     initialize_runtime(paths)
     director_id = uuid.uuid4().hex
     now = _utcnow()
-    plan = _resolve_director_plan(config_path=config_path, plan_payload=plan_payload)
+    plan_resolution = _resolve_director_plan(
+        config_path=config_path,
+        plan_payload=plan_payload,
+        plan_file_path=plan_file_path,
+    )
+    plan = plan_resolution["campaigns"]
     resolved_name = director_name or f"research-director-{director_id[:8]}"
     spec = {
         "seed_config_path": config_path or plan[0]["config_path"],
+        "plan_name": plan_resolution["plan_name"],
+        "plan_source": plan_resolution["plan_source"],
         "plan": plan,
         "evaluation_profile": evaluation_profile,
         "quality_gate": quality_gate,
@@ -964,6 +973,13 @@ def start_director(
                 "queue_index": index,
                 "config_path": entry["config_path"],
                 "campaign_name": entry.get("campaign_name") or f"{resolved_name}-{Path(entry['config_path']).stem}",
+                "entry_name": entry.get("entry_name") or Path(entry["config_path"]).stem,
+                "evaluation_profile": entry.get("evaluation_profile"),
+                "quality_gate": entry.get("quality_gate"),
+                "campaign_max_hours": entry.get("campaign_max_hours"),
+                "campaign_max_jobs": entry.get("campaign_max_jobs"),
+                "stage_candidate_limit": entry.get("stage_candidate_limit"),
+                "shortlist_size": entry.get("shortlist_size"),
                 "status": "pending",
                 "campaign_id": None,
                 "completed_at": None,
@@ -971,6 +987,8 @@ def start_director(
             }
             for index, entry in enumerate(plan)
         ],
+        "plan_name": plan_resolution["plan_name"],
+        "plan_source": plan_resolution["plan_source"],
         "active_campaign_id": None,
         "successful_campaign_id": None,
         "final_result": None,
@@ -1000,7 +1018,17 @@ def start_director(
             f"Director '{resolved_name}' started",
             {"plan_length": len(plan), "seed_config_path": spec["seed_config_path"]},
         )
-    _write_director_spec(paths, director_id, {"director_id": director_id, "director_name": resolved_name, "spec": spec})
+    _write_director_spec(
+        paths,
+        director_id,
+        {
+            "director_id": director_id,
+            "director_name": resolved_name,
+            "plan_name": plan_resolution["plan_name"],
+            "plan_source": plan_resolution["plan_source"],
+            "spec": spec,
+        },
+    )
     step = step_director(paths, director_id)
     return {"director_id": director_id, "director_name": resolved_name, **step}
 
@@ -1177,12 +1205,14 @@ def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, ob
         launch_entry["config_path"],
         director_id=director.director_id,
         campaign_name=launch_entry["campaign_name"],
-        evaluation_profile=director.spec.get("evaluation_profile"),
-        quality_gate=str(director.spec.get("quality_gate", "all")),
-        max_hours=float(director.spec.get("max_hours", 24.0) or 24.0),
-        max_jobs=int(director.spec.get("max_jobs", 0) or 0),
-        stage_candidate_limit=int(director.spec.get("stage_candidate_limit", 0) or 0),
-        shortlist_size=int(director.spec.get("shortlist_size", 3) or 3),
+        evaluation_profile=_director_entry_value(launch_entry, "evaluation_profile", director.spec.get("evaluation_profile")),
+        quality_gate=str(_director_entry_value(launch_entry, "quality_gate", director.spec.get("quality_gate", "all"))),
+        max_hours=float(_director_entry_value(launch_entry, "campaign_max_hours", director.spec.get("max_hours", 24.0))),
+        max_jobs=int(_director_entry_value(launch_entry, "campaign_max_jobs", director.spec.get("max_jobs", 0))),
+        stage_candidate_limit=int(
+            _director_entry_value(launch_entry, "stage_candidate_limit", director.spec.get("stage_candidate_limit", 0))
+        ),
+        shortlist_size=int(_director_entry_value(launch_entry, "shortlist_size", director.spec.get("shortlist_size", 3))),
         notification_command=director.spec.get("notification_command"),
         notify_events=tuple(str(item) for item in director.spec.get("notify_events", DEFAULT_NOTIFICATION_EVENTS)),
     )
@@ -1244,7 +1274,12 @@ def director_manager_loop(
         time.sleep(max(poll_seconds, 0.1))
 
 
-def _resolve_director_plan(*, config_path: str | None, plan_payload: object | None) -> list[dict[str, str]]:
+def _resolve_director_plan(
+    *,
+    config_path: str | None,
+    plan_payload: object | None,
+    plan_file_path: str | None,
+) -> dict[str, object]:
     if plan_payload is None:
         seed = config_path or DEFAULT_DIRECTOR_PRIMARY_CONFIG
         ordered = [seed, *DEFAULT_DIRECTOR_FALLBACK_CONFIGS]
@@ -1254,33 +1289,91 @@ def _resolve_director_plan(*, config_path: str | None, plan_payload: object | No
             if candidate in seen:
                 continue
             seen.add(candidate)
-            plan.append({"config_path": candidate})
-        return plan
+            plan.append({"config_path": _validate_director_plan_config_path(candidate, 0)})
+        return {
+            "plan_name": "default_broad_operability",
+            "plan_source": "built_in_default",
+            "campaigns": plan,
+        }
     if isinstance(plan_payload, list):
         raw_entries = plan_payload
+        plan_name = "custom_director_plan"
     elif isinstance(plan_payload, dict):
         raw_entries = plan_payload.get("campaigns", [])
+        raw_plan_name = plan_payload.get("plan_name")
+        plan_name = (
+            raw_plan_name.strip()
+            if isinstance(raw_plan_name, str) and raw_plan_name.strip()
+            else "custom_director_plan"
+        )
     else:
         raise ValueError("Director plan must be a list or an object with a 'campaigns' list.")
-    plan: list[dict[str, str]] = []
+    plan: list[dict[str, object]] = []
     for index, entry in enumerate(raw_entries):
         if isinstance(entry, str):
-            plan.append({"config_path": entry})
+            plan.append({"config_path": _validate_director_plan_config_path(entry, index)})
             continue
         if isinstance(entry, dict):
             config_value = entry.get("config_path")
             if not isinstance(config_value, str) or not config_value.strip():
                 raise ValueError(f"Director plan entry {index} is missing config_path")
-            normalized = {"config_path": config_value.strip()}
-            campaign_name = entry.get("campaign_name")
-            if isinstance(campaign_name, str) and campaign_name.strip():
-                normalized["campaign_name"] = campaign_name.strip()
+            normalized: dict[str, object] = {
+                "config_path": _validate_director_plan_config_path(config_value.strip(), index)
+            }
+            for key in ("campaign_name", "entry_name", "evaluation_profile"):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    normalized[key] = value.strip()
+            quality_gate = entry.get("quality_gate")
+            if quality_gate is not None:
+                if not isinstance(quality_gate, str) or quality_gate.strip() not in DIRECTOR_PLAN_QUALITY_GATES:
+                    raise ValueError(
+                        f"Director plan entry {index} has invalid quality_gate; expected one of {sorted(DIRECTOR_PLAN_QUALITY_GATES)}"
+                    )
+                normalized["quality_gate"] = quality_gate.strip()
+            for key in ("campaign_max_hours", "campaign_max_jobs", "stage_candidate_limit", "shortlist_size"):
+                if key not in entry or entry.get(key) is None:
+                    continue
+                normalized[key] = _validate_director_plan_numeric_field(key, entry.get(key), index)
             plan.append(normalized)
             continue
         raise ValueError(f"Unsupported director plan entry at index {index}")
     if not plan:
         raise ValueError("Director plan must contain at least one campaign config.")
-    return plan
+    return {
+        "plan_name": plan_name,
+        "plan_source": str(plan_file_path) if plan_file_path else "inline_payload",
+        "campaigns": plan,
+    }
+
+
+def _validate_director_plan_config_path(config_path: str, index: int) -> str:
+    candidate = config_path.strip()
+    if not candidate:
+        raise ValueError(f"Director plan entry {index} is missing config_path")
+    if not Path(candidate).exists():
+        raise ValueError(f"Director plan entry {index} references missing config_path '{candidate}'")
+    return candidate
+
+
+def _validate_director_plan_numeric_field(field_name: str, value: object, index: int) -> int | float:
+    if field_name == "campaign_max_hours":
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Director plan entry {index} has invalid {field_name}") from exc
+        if numeric <= 0:
+            raise ValueError(f"Director plan entry {index} has invalid {field_name}; expected > 0")
+        return numeric
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Director plan entry {index} has invalid {field_name}") from exc
+    minimum = 1 if field_name == "shortlist_size" else 0
+    if numeric < minimum:
+        comparator = "> 0" if field_name == "shortlist_size" else ">= 0"
+        raise ValueError(f"Director plan entry {index} has invalid {field_name}; expected {comparator}")
+    return numeric
 
 
 def _write_director_spec(paths: ResearchRuntimePaths, director_id: str, payload: dict[str, object]) -> None:
@@ -1320,6 +1413,12 @@ def _next_director_queue_entry(queue: list[dict[str, object]]) -> dict[str, obje
         if str(entry.get("status", "pending")) == "pending":
             return entry
     return None
+
+
+def _director_entry_value(entry: dict[str, object], key: str, fallback: object) -> object:
+    if key in entry and entry.get(key) is not None:
+        return entry.get(key)
+    return fallback
 
 
 def _find_director_queue_entry(queue: list[dict[str, object]], queue_index: object) -> dict[str, object] | None:
