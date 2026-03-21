@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+runs/
+.env
+tests/.tmp_runtime/
+runtime/
+data/canonical/
+data/staging/
+data/features/
+data/coverage/
+data/raw/*
+!data/raw/.gitkeep

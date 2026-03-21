@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+runtime
+runs
+tests/.tmp_runtime
+data/raw
+data/canonical
+data/staging
+data/features
+data/coverage
