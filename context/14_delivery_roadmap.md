@@ -213,6 +213,52 @@ Status: not started, not immediate priority
 
 This should stay later. The current system is still a research platform, not a live trading system.
 
+## Phase 10: Operator Clarity And Promotion Handoff
+
+Status: in progress
+
+- make the system understandable to a non-trading operator
+- make successful promotion explicit and easy to notice
+- turn a promoted candidate into a clear human-review handoff, not just a technical artifact
+- externalize director policy so autonomous research is inspectable and adjustable without code edits
+- prepare the path from promoted candidate to paper-trading readiness without adding broker/live execution yet
+
+Why this matters:
+
+- the platform can now run background research autonomously, but operator understanding is still behind runtime capability
+- without a clearer handoff layer, a promoted strategy is still too technical for confident human review
+- the next practical stage after promotion should be paper-trading preparation, not immediate live trading
+
+Target outcomes:
+
+- the dashboard should explain what the system is doing in plain English
+- a successful strategy promotion should be visible as a dedicated event rather than hidden inside a generic completion flow
+- promoted candidates should have an operator-facing summary that explains what the strategy is, why it passed, and where it remains weak
+- the research director should move from a code-shaped queue toward an explicit, reviewable policy file
+- the repo should define the post-promotion path as paper-trading preparation, not immediate live deployment
+
+Scope of this phase:
+
+- promotion handoff pages and candidate scorecards
+- dashboard history and operator summaries
+- director plan files and operator controls such as pause/resume/skip
+- paper-trading preparation artifacts and daily decision export design
+
+Out of scope for this phase:
+
+- broker integration
+- real-money execution
+- LLM-driven runtime control
+- GitHub Actions / CI hardening
+
+Near-term sequencing inside Phase 10:
+
+1. promotion handoff dashboard pages and plain-English candidate scorecards
+2. director plan files plus pause/resume/skip controls
+3. dashboard history, success/failure summaries, and better operator observability
+4. paper-trading preparation docs and simulated daily outputs
+5. GitHub workflow automation later, after the operator and research flow are stable
+
 ## Current Recommended Build Target
 
 The correct target now is no longer “first backtest scaffold”.
@@ -223,6 +269,8 @@ It is:
 3. one strict split-validation workflow
 4. one basket-level risk-control layer
 5. one reproducible promotion path for future strategy changes
+6. one operator-readable promotion handoff
+7. one paper-trading-ready handoff boundary after promotion
 
 That is the next engineering baseline worth optimizing.
 
