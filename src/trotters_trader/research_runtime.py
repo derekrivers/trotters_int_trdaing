@@ -70,6 +70,10 @@ DEFAULT_DIRECTOR_FALLBACK_CONFIGS = (
     "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
 )
 DIRECTOR_PLAN_QUALITY_GATES = {"all", "pass_warn", "pass"}
+SQLITE_BUSY_TIMEOUT_MS = 30000
+SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
+SQLITE_INIT_MAX_ATTEMPTS = 5
+SQLITE_INIT_RETRY_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -179,120 +183,131 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
     paths.director_specs_dir.mkdir(parents=True, exist_ok=True)
     paths.catalog_output_dir.mkdir(parents=True, exist_ok=True)
-    with _connect(paths) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id TEXT PRIMARY KEY,
-                campaign_id TEXT,
-                command TEXT NOT NULL,
-                config_path TEXT NOT NULL,
-                spec_json TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                status TEXT NOT NULL,
-                attempt_count INTEGER NOT NULL DEFAULT 0,
-                max_attempts INTEGER NOT NULL DEFAULT 3,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                lease_expires_at TEXT,
-                leased_by TEXT,
-                started_at TEXT,
-                finished_at TEXT,
-                exit_code INTEGER,
-                output_root TEXT NOT NULL,
-                stdout_path TEXT,
-                stderr_path TEXT,
-                error_message TEXT,
-                input_dataset_ref TEXT,
-                feature_set_ref TEXT,
-                control_profile TEXT,
-                quality_gate TEXT NOT NULL DEFAULT 'all',
-                evaluation_profile TEXT,
-                result_json TEXT
-            );
-            CREATE TABLE IF NOT EXISTS job_attempts (
-                attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id TEXT NOT NULL,
-                attempt_number INTEGER NOT NULL,
-                worker_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT,
-                exit_code INTEGER,
-                stdout_path TEXT,
-                stderr_path TEXT,
-                error_message TEXT
-            );
-            CREATE TABLE IF NOT EXISTS workers (
-                worker_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                current_job_id TEXT,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS worker_heartbeats (
-                worker_id TEXT PRIMARY KEY,
-                heartbeat_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS artifacts (
-                artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id TEXT NOT NULL,
-                recorded_at_utc TEXT NOT NULL,
-                artifact_key TEXT NOT NULL,
-                artifact_type TEXT NOT NULL,
-                artifact_name TEXT NOT NULL,
-                primary_path TEXT NOT NULL,
-                metadata_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS campaigns (
-                campaign_id TEXT PRIMARY KEY,
-                director_id TEXT,
-                campaign_name TEXT NOT NULL,
-                config_path TEXT NOT NULL,
-                status TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                spec_json TEXT NOT NULL,
-                state_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                started_at TEXT,
-                finished_at TEXT,
-                latest_report_path TEXT,
-                last_error TEXT
-            );
-            CREATE TABLE IF NOT EXISTS campaign_events (
-                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                campaign_id TEXT NOT NULL,
-                recorded_at_utc TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                message TEXT NOT NULL,
-                payload_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS directors (
-                director_id TEXT PRIMARY KEY,
-                director_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                spec_json TEXT NOT NULL,
-                state_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                started_at TEXT,
-                finished_at TEXT,
-                current_campaign_id TEXT,
-                successful_campaign_id TEXT,
-                last_error TEXT
-            );
-            CREATE TABLE IF NOT EXISTS director_events (
-                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                director_id TEXT NOT NULL,
-                recorded_at_utc TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                message TEXT NOT NULL,
-                payload_json TEXT NOT NULL
-            );
-            """
-        )
-        _ensure_column(connection, "jobs", "campaign_id", "TEXT")
-        _ensure_column(connection, "campaigns", "director_id", "TEXT")
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(SQLITE_INIT_MAX_ATTEMPTS):
+        try:
+            with _connect(paths) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS jobs (
+                        job_id TEXT PRIMARY KEY,
+                        campaign_id TEXT,
+                        command TEXT NOT NULL,
+                        config_path TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        priority INTEGER NOT NULL DEFAULT 100,
+                        status TEXT NOT NULL,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        max_attempts INTEGER NOT NULL DEFAULT 3,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        lease_expires_at TEXT,
+                        leased_by TEXT,
+                        started_at TEXT,
+                        finished_at TEXT,
+                        exit_code INTEGER,
+                        output_root TEXT NOT NULL,
+                        stdout_path TEXT,
+                        stderr_path TEXT,
+                        error_message TEXT,
+                        input_dataset_ref TEXT,
+                        feature_set_ref TEXT,
+                        control_profile TEXT,
+                        quality_gate TEXT NOT NULL DEFAULT 'all',
+                        evaluation_profile TEXT,
+                        result_json TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS job_attempts (
+                        attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        attempt_number INTEGER NOT NULL,
+                        worker_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        started_at TEXT NOT NULL,
+                        finished_at TEXT,
+                        exit_code INTEGER,
+                        stdout_path TEXT,
+                        stderr_path TEXT,
+                        error_message TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS workers (
+                        worker_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        current_job_id TEXT,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+                        worker_id TEXT PRIMARY KEY,
+                        heartbeat_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS artifacts (
+                        artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        recorded_at_utc TEXT NOT NULL,
+                        artifact_key TEXT NOT NULL,
+                        artifact_type TEXT NOT NULL,
+                        artifact_name TEXT NOT NULL,
+                        primary_path TEXT NOT NULL,
+                        metadata_json TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS campaigns (
+                        campaign_id TEXT PRIMARY KEY,
+                        director_id TEXT,
+                        campaign_name TEXT NOT NULL,
+                        config_path TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        phase TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        state_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        started_at TEXT,
+                        finished_at TEXT,
+                        latest_report_path TEXT,
+                        last_error TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS campaign_events (
+                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        campaign_id TEXT NOT NULL,
+                        recorded_at_utc TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS directors (
+                        director_id TEXT PRIMARY KEY,
+                        director_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        state_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        started_at TEXT,
+                        finished_at TEXT,
+                        current_campaign_id TEXT,
+                        successful_campaign_id TEXT,
+                        last_error TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS director_events (
+                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        director_id TEXT NOT NULL,
+                        recorded_at_utc TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    );
+                    """
+                )
+                _ensure_column(connection, "jobs", "campaign_id", "TEXT")
+                _ensure_column(connection, "campaigns", "director_id", "TEXT")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == SQLITE_INIT_MAX_ATTEMPTS - 1:
+                raise
+            last_error = exc
+            time.sleep(SQLITE_INIT_RETRY_SECONDS * (attempt + 1))
+    if last_error is not None:
+        raise last_error
 
 
 def submit_jobs(paths: ResearchRuntimePaths, payload: object) -> dict[str, object]:
@@ -3121,9 +3136,13 @@ def _safe_filename_component(value: str) -> str:
 
 @contextmanager
 def _connect(paths: ResearchRuntimePaths):
-    connection = sqlite3.connect(paths.database_path)
+    connection = sqlite3.connect(paths.database_path, timeout=SQLITE_CONNECT_TIMEOUT_SECONDS)
     connection.row_factory = sqlite3.Row
     try:
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         yield connection
         connection.commit()
     finally:

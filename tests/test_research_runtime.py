@@ -58,6 +58,35 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertEqual(status["counts"].get("queued"), 1)
         self.assertEqual(status["jobs"][0]["output_root"], "job_outputs/job-1")
 
+    def test_initialize_runtime_enables_wal_mode(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+
+        initialize_runtime(paths)
+
+        with sqlite3.connect(paths.database_path) as connection:
+            mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+
+        self.assertEqual(str(mode).lower(), "wal")
+
+    def test_concurrent_initialize_runtime_calls_do_not_fail(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(initialize_runtime, paths) for _ in range(4)]
+            for future in futures:
+                future.result()
+
+        with sqlite3.connect(paths.database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+
+        self.assertIn("jobs", tables)
+        self.assertIn("campaigns", tables)
+
     def test_submit_preserves_explicit_posix_worker_paths(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         submit_jobs(
