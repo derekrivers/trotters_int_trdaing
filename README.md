@@ -313,6 +313,20 @@ python -m trotters_trader.cli research-status \
   --catalog-output-dir runtime/catalog
 ```
 
+Running locally overnight:
+
+- keep the computer powered on and keep Docker Desktop running
+- set Windows sleep to `Never` while plugged in if you want research to continue unattended
+- it is fine for the display to turn off; the important part is that the machine does not sleep
+- keep the compose stack up while research is active:
+
+```bash
+docker compose up -d --scale worker=4
+docker compose ps
+```
+
+If the machine restarts, the runtime state is still persisted. Bring Docker back up, then restart the stack with the same compose command and the coordinator/director should resume from saved state.
+
 Important campaign controls:
 
 - `--campaign-max-hours`: hard wall-clock budget for the campaign
