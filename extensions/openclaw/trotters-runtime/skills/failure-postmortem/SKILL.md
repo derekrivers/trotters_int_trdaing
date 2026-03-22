@@ -12,10 +12,18 @@ Rules:
 - Stay read-only. Do not take recovery actions.
 - Inspect `trotters_jobs` logs only when the failure pack still leaves the cause ambiguous.
 - Prefer repeatable failure classes over narrative prose.
-- Persist one machine-readable result with `trotters_summaries` using `summaryType: failure_postmortem_summary`.
+- Persist exactly one machine-readable result with `trotters_summaries` using `action: record` and `summaryType: failure_postmortem_summary`.
+- Use exact tool field names: `recommendedAction`, `artifactRefs`, `campaignId`, `directorId`, `suppressIfRecent`.
+- After the summary write attempt, end with one short confirmation sentence. Do not ask follow-up questions.
 
-Response contract:
+Required write shape:
 - `status: recorded|blocked`
 - `classification: service_health|campaign_failure|worker_failure|unknown|blocked`
+- `recommendedAction: <single next action>`
+- `message: <one sentence>`
 - `evidence: <short factual list>`
-- `recommended_action: <single next action>`
+- `artifactRefs: <artifact paths from the pack>`
+- `campaignId: <campaign id if present>`
+- `directorId: <director id if present>`
+- `fingerprint: postmortem:<campaign_id_or_runtime>:<classification>`
+- `suppressIfRecent: true`

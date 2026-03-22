@@ -242,6 +242,123 @@ await runTest("service restart surfaces non-allowlisted rejection from ops-bridg
   });
 });
 
+await runTest("review pack summarizes campaign notifications for triage agents", async () => {
+  await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+    const calls = [];
+    const originalFetch = global.fetch;
+    global.fetch = async (url, options) => {
+      calls.push({ url, options });
+      if (url === "https://research.example.test/api/v1/campaigns/campaign-1") {
+        return jsonResponse({
+          campaign: {
+            campaign_id: "campaign-1",
+            campaign_name: "broad-operability-primary",
+            status: "exhausted",
+            phase: "finalized",
+            director_id: "director-1",
+            latest_report_path: "/tmp/reports/campaign-1/promotion_summary.md",
+            finished_at: "2026-03-22T16:59:32Z",
+            state: {
+              final_decision: {
+                recommended_action: "promote",
+                selected_profile_name: "candidate-alpha",
+                paper_trade_ready: true,
+              },
+            },
+          },
+        });
+      }
+      if (url === "https://research.example.test/api/v1/notifications?campaign_id=campaign-1&limit=2") {
+        return jsonResponse({
+          notifications: [
+            {
+              campaign_id: "campaign-1",
+              event_type: "campaign_finished",
+              severity: "info",
+              message: "campaign exhausted cleanly",
+              recorded_at_utc: "2026-03-22T16:59:32Z",
+              payload_path: "runtime/notifications/campaign-1.json",
+              ignored_field: "ignored",
+            },
+            {
+              campaign_id: "campaign-1",
+              event_type: "promotion_ready",
+              severity: "warning",
+              message: "candidate needs manual review",
+              recorded_at_utc: "2026-03-22T17:00:00Z",
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    };
+
+    try {
+      const tools = registerTools({
+        apiBase: "https://research.example.test",
+        actor: "research-triage",
+      });
+      const result = await tools.trotters_review_pack.execute("call-7", {
+        action: "campaign_triage",
+        campaignId: "campaign-1",
+        limit: 2,
+      });
+
+      assert.equal(calls.length, 2);
+      assert.equal(result.details.pack_type, "campaign_triage");
+      assert.equal(result.details.status, "ok");
+      assert.deepEqual(result.details.notifications, [
+        {
+          campaign_id: "campaign-1",
+          event_type: "campaign_finished",
+          severity: "info",
+          message: "campaign exhausted cleanly",
+          recorded_at_utc: "2026-03-22T16:59:32Z",
+          payload_path: "runtime/notifications/campaign-1.json",
+        },
+        {
+          campaign_id: "campaign-1",
+          event_type: "promotion_ready",
+          severity: "warning",
+          message: "candidate needs manual review",
+          recorded_at_utc: "2026-03-22T17:00:00Z",
+        },
+      ]);
+      assert.equal(result.details.final_decision.recommended_action, "promote");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+await runTest("summary records normalize specialist agent defaults and contract fields", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "trotters-summaries-"));
+  try {
+    const tools = registerTools({
+      summaryRoot: root,
+      actor: "openclaw-supervisor",
+    });
+    const result = await tools.trotters_summaries.execute("call-8", {
+      action: "record",
+      summaryType: "campaign_triage_summary",
+      status: "exhausted",
+      classification: "needs_more_research",
+      recommendedAction: "continue_research",
+      message: "candidate needs more work",
+      evidence: ["/runtime/catalog/example/operator_scorecard.json"],
+      artifactRefs: ["operator_scorecard.json"],
+      campaignId: "campaign-2",
+    });
+
+    assert.equal(result.details.record.agent_id, "research-triage");
+    assert.equal(result.details.record.status, "recorded");
+    assert.equal(result.details.record.classification, "needs_followup");
+    assert.deepEqual(result.details.record.artifact_refs, ["/runtime/catalog/example/operator_scorecard.json"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 await runTest("runbook history records recoveries and escalations", async () => {
   await withRunbookFixture(
     {

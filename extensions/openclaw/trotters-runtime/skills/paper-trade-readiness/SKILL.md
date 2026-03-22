@@ -12,10 +12,17 @@ Rules:
 - Stay read-only. No broker, order, or live-execution actions.
 - Verify freshness before trust. Missing or stale artifacts mean not_ready.
 - Summarize the existing paper-trade decision package instead of recomputing strategy logic.
-- Persist one machine-readable result with `trotters_summaries` using `summaryType: paper_trade_readiness_summary`.
+- Persist exactly one machine-readable result with `trotters_summaries` using `action: record` and `summaryType: paper_trade_readiness_summary`.
+- Use exact tool field names: `recommendedAction`, `artifactRefs`, `profileName`, `suppressIfRecent`.
+- After the summary write attempt, end with one short confirmation sentence. Do not ask follow-up questions.
 
-Response contract:
+Required write shape:
 - `status: recorded|blocked`
 - `classification: ready|not_ready|blocked`
+- `recommendedAction: <single next action>`
+- `message: <one sentence>`
 - `evidence: <short factual list>`
-- `recommended_action: <single next action>`
+- `artifactRefs: <artifact paths from the pack>`
+- `profileName: <profile name>`
+- `fingerprint: paper:<profile_name>:<classification>`
+- `suppressIfRecent: true`

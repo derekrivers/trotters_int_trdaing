@@ -12,10 +12,17 @@ Rules:
 - Stay analysis-only. No runtime mutation.
 - Prefer operator scorecard, promotion decision, and paper-trade artifacts over raw experiment outputs.
 - If key artifacts are missing or stale, classify as blocked or research_only instead of inferring readiness.
-- Persist one machine-readable result with `trotters_summaries` using `summaryType: candidate_readiness_summary`.
+- Persist exactly one machine-readable result with `trotters_summaries` using `action: record` and `summaryType: candidate_readiness_summary`.
+- Use exact tool field names: `recommendedAction`, `artifactRefs`, `profileName`, `suppressIfRecent`.
+- After the summary write attempt, end with one short confirmation sentence. Do not ask follow-up questions.
 
-Response contract:
+Required write shape:
 - `status: recorded|blocked`
 - `classification: ready_for_paper_rehearsal|research_only|blocked`
+- `recommendedAction: <single next action>`
+- `message: <one sentence>`
 - `evidence: <short factual list>`
-- `recommended_action: <single next action>`
+- `artifactRefs: <artifact paths from the pack>`
+- `profileName: <profile name>`
+- `fingerprint: candidate:<profile_name>:<classification>`
+- `suppressIfRecent: true`

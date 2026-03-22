@@ -21,6 +21,34 @@ const SERVICE_ACTIONS = ["list", "restart"];
 const REVIEW_PACK_ACTIONS = ["campaign_triage", "candidate_review", "paper_trade_readiness", "failure_postmortem"];
 const SUMMARY_ACTIONS = ["latest", "list", "record"];
 const SUMMARY_TYPES = ["supervisor_incident_summary", "campaign_triage_summary", "candidate_readiness_summary", "paper_trade_readiness_summary", "failure_postmortem_summary"];
+const SUMMARY_DEFAULT_AGENT_IDS = {
+  campaign_triage_summary: "research-triage",
+  candidate_readiness_summary: "candidate-review",
+  paper_trade_readiness_summary: "paper-trade-readiness",
+  failure_postmortem_summary: "failure-postmortem",
+};
+const SPECIALIST_SUMMARY_RULES = {
+  campaign_triage_summary: {
+    defaultClassification: "needs_followup",
+    allowedClassifications: ["promising", "needs_followup", "dead_end", "blocked"],
+    aliases: { needs_more_research: "needs_followup", continue_research: "needs_followup", research_only: "needs_followup", exhausted: "dead_end", no_go: "dead_end" },
+  },
+  candidate_readiness_summary: {
+    defaultClassification: "research_only",
+    allowedClassifications: ["ready_for_paper_rehearsal", "research_only", "blocked"],
+    aliases: { ready: "ready_for_paper_rehearsal", not_ready: "research_only", needs_followup: "research_only" },
+  },
+  paper_trade_readiness_summary: {
+    defaultClassification: "not_ready",
+    allowedClassifications: ["ready", "not_ready", "blocked"],
+    aliases: { ready_for_paper_rehearsal: "ready", research_only: "not_ready", needs_followup: "not_ready" },
+  },
+  failure_postmortem_summary: {
+    defaultClassification: "unknown",
+    allowedClassifications: ["service_health", "campaign_failure", "worker_failure", "unknown", "blocked"],
+    aliases: { degraded: "service_health", runtime_failure: "service_health", failed: "campaign_failure", exhausted: "campaign_failure" },
+  },
+};
 const TERMINAL_STATUSES = new Set(["completed", "exhausted", "failed", "stopped"]);
 
 const plugin = {
@@ -680,6 +708,24 @@ function summarizeEntries(entries, keys) {
   return entries.slice(0, 10).map((entry) => summarizeEntry(entry, keys));
 }
 
+function summarizeNotifications(entries, limit) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const safeLimit = Math.max(1, Math.min(20, Math.trunc(numberOrDefault(limit, 5))));
+  return entries.slice(0, safeLimit).map((entry) =>
+    summarizeEntry(entry, [
+      "campaign_id",
+      "campaign_name",
+      "event_type",
+      "severity",
+      "message",
+      "recorded_at_utc",
+      "payload_path",
+    ]),
+  );
+}
+
 function summarizeEntry(value, keys) {
   return pickFields(value, keys);
 }
@@ -758,7 +804,7 @@ function createSummariesTool(cfg) {
       if (action === "list") return jsonResult(loadSummaryRecords(cfg, { summaryType: optionalString(params, "summaryType"), limit: numberOrDefault(params?.limit, 20) }));
       return jsonResult(writeSummaryRecord(cfg, {
         summaryType: requiredEnum(params, "summaryType", SUMMARY_TYPES),
-        agentId: optionalString(params, "agentId") || cfg.actor,
+        agentId: optionalString(params, "agentId"),
         status: requiredString(params, "status"),
         classification: requiredString(params, "classification"),
         recommendedAction: optionalString(params, "recommendedAction"),
@@ -937,24 +983,79 @@ function readJsonlTail(filePath, limit) { const value = typeof filePath === "str
 function loadLatestSummaries(cfg, { summaryType } = {}) { const latestDir = path.join(cfg.summaryRoot, "latest"); if (!fs.existsSync(latestDir)) return summaryType ? null : {}; if (summaryType) return readJsonFile(path.join(latestDir, `${summaryType}.json`)); const result = {}; for (const type of SUMMARY_TYPES) { const record = readJsonFile(path.join(latestDir, `${type}.json`)); if (record) result[type] = record; } return result; }
 function loadSummaryRecords(cfg, { summaryType = undefined, limit = 20 } = {}) { const index = readJsonFile(path.join(cfg.summaryRoot, "index.json")); const records = Array.isArray(index?.records) ? index.records : Array.isArray(index) ? index : []; return records.filter((record) => record && typeof record === "object" && (!summaryType || String(record.summary_type || "") === summaryType)).slice(0, Math.max(1, Math.trunc(limit))); }
 function writeSummaryRecord(cfg, input) {
-  const summaryType = requiredEnum({ summaryType: input.summaryType }, "summaryType", SUMMARY_TYPES);
+  const normalized = normalizeSummaryInput(cfg, input);
+  const summaryType = normalized.summaryType;
   const latestDir = path.join(cfg.summaryRoot, "latest");
   const typeDir = path.join(cfg.summaryRoot, summaryType);
   fs.mkdirSync(typeDir, { recursive: true });
   fs.mkdirSync(latestDir, { recursive: true });
   const existing = loadSummaryRecords(cfg, { limit: 500 });
-  if (input.suppressIfRecent && input.fingerprint) {
-    const duplicate = existing.find((record) => record.summary_type === summaryType && record.fingerprint === input.fingerprint && ageSeconds(record.recorded_at_utc) !== null && ageSeconds(record.recorded_at_utc) <= numberOrDefault(input.dedupeWindowMinutes, 360) * 60);
+  if (normalized.suppressIfRecent && normalized.fingerprint) {
+    const duplicate = existing.find((record) => record.summary_type === summaryType && record.fingerprint === normalized.fingerprint && ageSeconds(record.recorded_at_utc) !== null && ageSeconds(record.recorded_at_utc) <= numberOrDefault(normalized.dedupeWindowMinutes, 360) * 60);
     if (duplicate) return { suppressed: true, record: duplicate };
   }
   const recordedAt = new Date().toISOString();
-  const record = { summary_id: `${summaryType}-${crypto.randomUUID()}`, summary_type: summaryType, agent_id: input.agentId || cfg.actor, status: input.status || "recorded", classification: input.classification || "summary", recommended_action: input.recommendedAction || null, message: input.message || null, evidence: Array.isArray(input.evidence) ? input.evidence.slice(0, 12) : [], artifact_refs: Array.isArray(input.artifactRefs) ? input.artifactRefs.slice(0, 12) : [], incident_id: input.incidentId || null, campaign_id: input.campaignId || null, director_id: input.directorId || null, profile_name: input.profileName || null, fingerprint: input.fingerprint || null, recorded_at_utc: recordedAt };
+  const record = { summary_id: `${summaryType}-${crypto.randomUUID()}`, summary_type: summaryType, agent_id: normalized.agentId, status: normalized.status, classification: normalized.classification, recommended_action: normalized.recommendedAction || null, message: normalized.message || null, evidence: Array.isArray(normalized.evidence) ? normalized.evidence.slice(0, 12) : [], artifact_refs: normalizeArtifactRefs(normalized), incident_id: normalized.incidentId || null, campaign_id: normalized.campaignId || null, director_id: normalized.directorId || null, profile_name: normalized.profileName || null, fingerprint: normalized.fingerprint || null, recorded_at_utc: recordedAt };
   const slug = String(record.incident_id || record.campaign_id || record.director_id || record.profile_name || record.classification || "summary").toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "summary";
   const fileName = `${String(recordedAt).replace(/[:.]/g, "").replace(/\+00:00$/, "Z")}__${slug}.json`;
   fs.writeFileSync(path.join(typeDir, fileName), JSON.stringify(record, null, 2), "utf-8");
   fs.writeFileSync(path.join(latestDir, `${summaryType}.json`), JSON.stringify(record, null, 2), "utf-8");
   fs.writeFileSync(path.join(cfg.summaryRoot, "index.json"), JSON.stringify({ records: [record, ...existing].slice(0, 500) }, null, 2), "utf-8");
   return { suppressed: false, record };
+}
+
+function normalizeSummaryInput(cfg, input) {
+  const summaryType = requiredEnum({ summaryType: input.summaryType }, "summaryType", SUMMARY_TYPES);
+  const rule = SPECIALIST_SUMMARY_RULES[summaryType] || null;
+  const classification = normalizeSummaryClassification(summaryType, input.classification);
+  return {
+    ...input,
+    summaryType,
+    agentId: input.agentId || SUMMARY_DEFAULT_AGENT_IDS[summaryType] || cfg.actor,
+    status: normalizeSummaryStatus(rule, input.status, classification),
+    classification,
+  };
+}
+
+function normalizeSummaryStatus(rule, status, classification) {
+  const value = String(status || "").trim().toLowerCase();
+  if (value === "blocked" || classification === "blocked") {
+    return "blocked";
+  }
+  if (!rule) {
+    return value || "recorded";
+  }
+  return "recorded";
+}
+
+function normalizeSummaryClassification(summaryType, classification) {
+  const rule = SPECIALIST_SUMMARY_RULES[summaryType] || null;
+  const value = String(classification || "").trim().toLowerCase();
+  if (!rule) {
+    return value || "summary";
+  }
+  if (!value) {
+    return rule.defaultClassification;
+  }
+  if (value in rule.aliases) {
+    return rule.aliases[value];
+  }
+  if (rule.allowedClassifications.includes(value)) {
+    return value;
+  }
+  return value === "blocked" ? "blocked" : rule.defaultClassification;
+}
+
+function normalizeArtifactRefs(input) {
+  const provided = Array.isArray(input.artifactRefs) ? input.artifactRefs.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()) : [];
+  const evidencePaths = Array.isArray(input.evidence) ? input.evidence.filter((value) => typeof value === "string" && /[\/]/.test(value)).map((value) => value.trim()) : [];
+  if (!provided.length) {
+    return evidencePaths.slice(0, 12);
+  }
+  if (provided.some((value) => /[\/]/.test(value)) || !evidencePaths.length) {
+    return provided.slice(0, 12);
+  }
+  return evidencePaths.slice(0, 12);
 }
 function latestTerminalEntry(entries) { if (!Array.isArray(entries)) return null; return entries.filter((entry) => entry && typeof entry === "object" && TERMINAL_STATUSES.has(String(entry.status || "").toLowerCase())).sort((left, right) => timestampSortKey(right.updated_at || right.finished_at) - timestampSortKey(left.updated_at || left.finished_at))[0] || null; }
 function timestampSortKey(value) { const text = typeof value === "string" ? value.trim() : ""; if (!text) return 0; const parsed = Date.parse(text); return Number.isFinite(parsed) ? parsed : 0; }
