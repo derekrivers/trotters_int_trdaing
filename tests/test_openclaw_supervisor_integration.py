@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -59,7 +59,10 @@ class OpenClawSupervisorIntegrationTests(unittest.TestCase):
             config_dir.mkdir(parents=True, exist_ok=True)
             (extensions_dir / "trotters-runtime").mkdir(parents=True, exist_ok=True)
             bootstrap_dir.mkdir(parents=True, exist_ok=True)
-            (config_dir / "openclaw.json").write_text('{"agents":[]}\n', encoding="utf-8")
+            (config_dir / "openclaw.json").write_text(
+                json.dumps({"agents": [], "plugins": {"allow": ["trotters-runtime"], "load": {"paths": ["/home/node/.openclaw/extensions/trotters-runtime"]}}}) + "\n",
+                encoding="utf-8",
+            )
             (bootstrap_dir / "runtime-supervisor-message.txt").write_text("first line\nsecond line\n", encoding="utf-8")
 
             jobs_path = root / "jobs.json"
@@ -74,6 +77,7 @@ class OpenClawSupervisorIntegrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             log_path = root / "openclaw.log"
+            node_log_path = root / "node.log"
             bin_dir = root / "bin"
             bin_dir.mkdir(parents=True, exist_ok=True)
             self._write_executable(
@@ -132,6 +136,7 @@ class OpenClawSupervisorIntegrationTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     #!/bin/sh
+                    printf '%s\\n' "$*" >> "$TEST_NODE_LOG"
                     if [ "$#" -ge 2 ] && [ "$1" = "dist/index.js" ] && [ "$2" = "gateway" ]; then
                       sleep 1
                       exit 0
@@ -148,6 +153,7 @@ class OpenClawSupervisorIntegrationTests(unittest.TestCase):
                     "PATH": f"{bin_dir}:{env['PATH']}",
                     "TEST_OPENCLAW_JOBS_FILE": str(jobs_path),
                     "TEST_OPENCLAW_LOG": str(log_path),
+                    "TEST_NODE_LOG": str(node_log_path),
                     "TEST_REAL_NODE": real_node,
                     "OPENCLAW_GATEWAY_BIND": "0.0.0.0",
                     "OPENCLAW_GATEWAY_PORT": "18789",
@@ -179,13 +185,18 @@ class OpenClawSupervisorIntegrationTests(unittest.TestCase):
                 target_auth_file.read_text(encoding="utf-8"),
                 source_auth_file.read_text(encoding="utf-8"),
             )
-            self.assertTrue((state_root / "openclaw.json").exists())
+            copied_config = json.loads((state_root / "openclaw.json").read_text(encoding="utf-8"))
+            self.assertEqual(copied_config.get("plugins", {}).get("allow"), ["trotters-runtime"])
             self.assertIn("This workspace is active.", heartbeat_file.read_text(encoding="utf-8"))
 
             log_lines = log_path.read_text(encoding="utf-8").splitlines()
+            node_log_lines = node_log_path.read_text(encoding="utf-8").splitlines()
             self.assertTrue(any(line.startswith("cron remove old-1") for line in log_lines))
             self.assertTrue(any(line.startswith("cron remove old-2") for line in log_lines))
             self.assertEqual(sum(1 for line in log_lines if line.startswith("cron add")), 1)
+            gateway_start = next(line for line in node_log_lines if line.startswith("dist/index.js gateway"))
+            self.assertIn("--dev", gateway_start)
+            self.assertNotIn("--allow-unconfigured", gateway_start)
 
     def _write_executable(self, path: Path, content: str) -> None:
         path.write_text(content, encoding="utf-8")

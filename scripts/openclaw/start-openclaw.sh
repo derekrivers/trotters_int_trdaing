@@ -5,6 +5,7 @@ umask 022
 OPENCLAW_HOME="${HOME:-/home/node}"
 STATE_ROOT="${OPENCLAW_HOME}/.openclaw"
 CONFIG_TARGET="${STATE_ROOT}/openclaw.json"
+CONFIG_SOURCE="/opt/openclaw-config/openclaw.json"
 CRON_JOB_NAME="trotters-runtime-supervisor"
 SUPERVISOR_AGENT_ID="runtime-supervisor"
 SOURCE_AUTH_AGENT_ID="${OPENCLAW_SUPERVISOR_AUTH_SOURCE_AGENT:-dev}"
@@ -19,7 +20,23 @@ PLUGIN_STAGE_ROOT="$(mktemp -d /tmp/trotters-runtime-plugin.XXXXXX)"
 PLUGIN_STAGE_DIR="${PLUGIN_STAGE_ROOT}/trotters-runtime"
 
 mkdir -p "${STATE_ROOT}" "${STATE_ROOT}/trotters" "${TARGET_AUTH_DIR}" "${SUPERVISOR_WORKSPACE_DIR}"
-cp /opt/openclaw-config/openclaw.json "${CONFIG_TARGET}"
+node -e '
+const fs = require("node:fs");
+const sourcePath = process.argv[1];
+const targetPath = process.argv[2];
+const payload = JSON.parse(fs.readFileSync(sourcePath, "utf-8"));
+if (payload.plugins && typeof payload.plugins === "object" && !Array.isArray(payload.plugins)) {
+  const bootstrapPlugins = { ...payload.plugins };
+  delete bootstrapPlugins.allow;
+  delete bootstrapPlugins.load;
+  if (Object.keys(bootstrapPlugins).length === 0) {
+    delete payload.plugins;
+  } else {
+    payload.plugins = bootstrapPlugins;
+  }
+}
+fs.writeFileSync(targetPath, JSON.stringify(payload, null, 4), "utf-8");
+' "${CONFIG_SOURCE}" "${CONFIG_TARGET}"
 
 if [ ! -f "${SUPERVISOR_HEARTBEAT_FILE}" ]; then
   cat >"${SUPERVISOR_HEARTBEAT_FILE}" <<'EOF'
@@ -54,8 +71,9 @@ chmod -R u=rwX,go=rX "${INSTALLED_PLUGIN_DIR}"
 find "${INSTALLED_PLUGIN_DIR}" -type d -exec chmod 755 {} \;
 find "${INSTALLED_PLUGIN_DIR}" -type f -exec chmod 644 {} \;
 rm -rf "${PLUGIN_STAGE_ROOT}"
+cp "${CONFIG_SOURCE}" "${CONFIG_TARGET}"
 
-node dist/index.js gateway --bind "${OPENCLAW_GATEWAY_BIND}" --port "${OPENCLAW_GATEWAY_PORT}" --allow-unconfigured --dev &
+node dist/index.js gateway --bind "${OPENCLAW_GATEWAY_BIND}" --port "${OPENCLAW_GATEWAY_PORT}" --dev &
 GATEWAY_PID=$!
 
 ATTEMPTS=0

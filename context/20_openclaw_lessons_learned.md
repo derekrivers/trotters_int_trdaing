@@ -196,6 +196,19 @@ Every OpenClaw change should be verified in all of these layers:
 
 If only one layer is checked, regressions leak through.
 
+## 14. Explicit plugin trust has bootstrap-order constraints
+
+We tried to make plugin trust explicit with `plugins.allow`, but the gateway initially rejected the config because the custom plugin path did not exist yet at validation time.
+
+Observed behavior:
+- gateway startup failed with `plugins.allow: plugin not found`
+- adding `plugins.load.paths` alone still failed when the config was copied before the plugin install created the target path
+- the working solution was to stage a bootstrap-safe config first, install the plugin, then copy the final trusted config before starting the gateway
+
+Rule:
+- treat trusted plugin config as part of bootstrap sequencing, not just static JSON
+- if OpenClaw says a custom trusted plugin is missing, verify whether the plugin path exists at validation time before assuming the id is wrong
+
 ## Concrete Gotchas
 
 ### Encoding gotchas

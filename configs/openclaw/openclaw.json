@@ -1,104 +1,112 @@
 {
-    "agents":  {
-                   "defaults":  {
-                                    "workspace":  "/home/node/.openclaw/workspaces/runtime-supervisor",
-                                    "skipBootstrap":  true,
-                                    "model":  {
-                                                  "primary":  "openai/gpt-5-nano"
-                                              },
-                                    "models":  {
-                                                   "openai/gpt-5-nano":  {
-
-                                                                         }
-                                               }
-                                },
-                   "list":  [
-                                {
-                                    "id":  "runtime-supervisor",
-                                    "default":  true,
-                                    "workspace":  "/home/node/.openclaw/workspaces/runtime-supervisor",
-                                    "skills":  [
-                                                   "runtime-supervisor",
-                                                   "failure-investigator",
-                                                   "research-continuity",
-                                                   "service-recovery"
-                                               ],
-                                    "identity":  {
-                                                     "name":  "Trotters Runtime Supervisor",
-                                                     "theme":  "operator"
-                                                 }
-                                },
-                                {
-                                    "id":  "runtime-debug",
-                                    "workspace":  "/home/node/.openclaw/workspaces/runtime-debug",
-                                    "identity":  {
-                                                     "name":  "Trotters Runtime Debug",
-                                                     "theme":  "operator"
-                                                 }
-                                },
-                                {
-                                    "id":  "research-triage",
-                                    "workspace":  "/home/node/.openclaw/workspaces/research-triage",
-                                    "skills":  [
-                                                   "research-triage"
-                                               ],
-                                    "identity":  {
-                                                     "name":  "Trotters Research Triage",
-                                                     "theme":  "operator"
-                                                 }
-                                },
-                                {
-                                    "id":  "candidate-review",
-                                    "workspace":  "/home/node/.openclaw/workspaces/candidate-review",
-                                    "skills":  [
-                                                   "candidate-review"
-                                               ],
-                                    "identity":  {
-                                                     "name":  "Trotters Candidate Review",
-                                                     "theme":  "operator"
-                                                 }
-                                },
-                                {
-                                    "id":  "paper-trade-readiness",
-                                    "workspace":  "/home/node/.openclaw/workspaces/paper-trade-readiness",
-                                    "skills":  [
-                                                   "paper-trade-readiness"
-                                               ],
-                                    "identity":  {
-                                                     "name":  "Trotters Paper-Trade Readiness",
-                                                     "theme":  "operator"
-                                                 }
-                                },
-                                {
-                                    "id":  "failure-postmortem",
-                                    "workspace":  "/home/node/.openclaw/workspaces/failure-postmortem",
-                                    "skills":  [
-                                                   "failure-postmortem"
-                                               ],
-                                    "identity":  {
-                                                     "name":  "Trotters Failure Postmortem",
-                                                     "theme":  "operator"
-                                                 }
-                                }
-                            ]
-               },
-    "commands":  {
-                     "native":  "auto",
-                     "nativeSkills":  "auto",
-                     "restart":  true,
-                     "ownerDisplay":  "raw"
-                 },
-    "cron":  {
-                 "enabled":  true
-             },
-    "gateway":  {
-                    "mode":  "local",
-                    "bind":  "lan",
-                    "controlUi":  {
-                                      "allowedOrigins":  [
-                                                             "http://localhost:18789",
-                                                             "http://127.0.0.1:18789"
-                                                         ]
-                                  }
+    "agents": {
+        "defaults": {
+            "workspace": "/home/node/.openclaw/workspaces/runtime-supervisor",
+            "skipBootstrap": true,
+            "model": {
+                "primary": "openai/gpt-5-nano"
+            },
+            "models": {
+                "openai/gpt-5-nano": {}
+            }
+        },
+        "list": [
+            {
+                "id": "runtime-supervisor",
+                "default": true,
+                "workspace": "/home/node/.openclaw/workspaces/runtime-supervisor",
+                "skills": [
+                    "runtime-supervisor",
+                    "failure-investigator",
+                    "research-continuity",
+                    "service-recovery"
+                ],
+                "identity": {
+                    "name": "Trotters Runtime Supervisor",
+                    "theme": "operator"
                 }
+            },
+            {
+                "id": "runtime-debug",
+                "workspace": "/home/node/.openclaw/workspaces/runtime-debug",
+                "identity": {
+                    "name": "Trotters Runtime Debug",
+                    "theme": "operator"
+                }
+            },
+            {
+                "id": "research-triage",
+                "workspace": "/home/node/.openclaw/workspaces/research-triage",
+                "skills": [
+                    "research-triage"
+                ],
+                "identity": {
+                    "name": "Trotters Research Triage",
+                    "theme": "operator"
+                }
+            },
+            {
+                "id": "candidate-review",
+                "workspace": "/home/node/.openclaw/workspaces/candidate-review",
+                "skills": [
+                    "candidate-review"
+                ],
+                "identity": {
+                    "name": "Trotters Candidate Review",
+                    "theme": "operator"
+                }
+            },
+            {
+                "id": "paper-trade-readiness",
+                "workspace": "/home/node/.openclaw/workspaces/paper-trade-readiness",
+                "skills": [
+                    "paper-trade-readiness"
+                ],
+                "identity": {
+                    "name": "Trotters Paper-Trade Readiness",
+                    "theme": "operator"
+                }
+            },
+            {
+                "id": "failure-postmortem",
+                "workspace": "/home/node/.openclaw/workspaces/failure-postmortem",
+                "skills": [
+                    "failure-postmortem"
+                ],
+                "identity": {
+                    "name": "Trotters Failure Postmortem",
+                    "theme": "operator"
+                }
+            }
+        ]
+    },
+    "commands": {
+        "native": "auto",
+        "nativeSkills": "auto",
+        "restart": true,
+        "ownerDisplay": "raw"
+    },
+    "cron": {
+        "enabled": true
+    },
+    "plugins": {
+        "allow": [
+            "trotters-runtime"
+        ],
+        "load": {
+            "paths": [
+                "/home/node/.openclaw/extensions/trotters-runtime"
+            ]
+        }
+    },
+    "gateway": {
+        "mode": "local",
+        "bind": "lan",
+        "controlUi": {
+            "allowedOrigins": [
+                "http://localhost:18789",
+                "http://127.0.0.1:18789"
+            ]
+        }
+    }
 }

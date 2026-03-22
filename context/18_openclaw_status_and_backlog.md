@@ -12,11 +12,12 @@ The following pieces are implemented in the repo and runtime:
 
 - `research-api` exposes runtime status, directors, campaigns, jobs, artifacts, notifications, summaries, and dispatch telemetry
 - `ops-bridge` exists as a narrow internal control plane for allowlisted restarts and agent dispatches
-- the OpenClaw gateway loads the repo-managed `trotters-runtime` plugin
+- the OpenClaw gateway loads the repo-managed `trotters-runtime` plugin with explicit trusted plugin config in `runtime/openclaw/openclaw.json`
 - `runtime-supervisor` runs as the always-on operator
 - `research-triage`, `candidate-review`, `paper-trade-readiness`, and `failure-postmortem` exist as event-driven specialist agents
-- the gateway bootstrap keeps exactly one supervisor cron job and now seeds minimal supervisor workspace files
-- supervisor behavior has deterministic drill coverage for healthy-active, active-degraded, idle-after-exhausted, and failed-idle scenarios
+- the gateway bootstrap keeps exactly one supervisor cron job, stages a bootstrap-safe config before plugin install, then reapplies the final trusted plugin config, and seeds minimal supervisor workspace files
+- supervisor behavior now has deterministic drill coverage for healthy-active, active-degraded, repeated degraded cooldown, idle-after-exhausted, stale exhausted idle, and failed-idle scenarios
+- repeated degraded incidents now emit stable fingerprints and cooldown state so the supervisor can suppress restart/escalation churn deterministically
 - dispatch telemetry and agent summaries are surfaced in the dashboard and API
 
 ## Where The Stable Documentation Now Lives
@@ -39,28 +40,26 @@ The following items were earlier planning concerns and are now implemented:
 - dashboard visibility for summaries and dispatch telemetry
 - duplicate active directors and duplicate active director campaigns
 - supervisor auth and low-cost OpenAI model activation
+- repeated degraded-cycle cooldowns in the supervisor decision path
+- explicit OpenClaw plugin trust configuration for the custom runtime plugin
 
 ## Remaining Backlog
 
-### 1. Broader Supervisor Trust Drills
+### 1. Longer Running Live Supervisor Drills
 
-The current drill coverage is useful, but trust should be extended further with more end-to-end runtime scenarios, especially repeated degraded cycles and overnight behavior.
+The current drill harness covers the main decision classes, but we still do not have long-running overnight or multi-incident live rehearsals that prove behavior over time rather than in single-turn snapshots.
 
-### 2. Stronger Service-Action Cooldowns
+### 2. Stronger Service-Action Cooldowns Below The Supervisor Layer
 
-Restart limits exist, but service-health recovery policy can still be tightened around repeated incidents and clearer incident fingerprinting.
+The supervisor now cools down repeated incidents clearly, but the lower restart/control path could still be tightened further if we want service actions themselves to carry stronger incident-aware cooldown semantics.
 
 ### 3. Better Summary Quality From Specialist Agents
 
-The runtime now tolerates drift in summary calls, but the quality of the specialist output should keep improving so the summaries become more decision-ready and less generic.
+The runtime now normalizes missing recommended actions, but the content quality of specialist summaries can still improve so the operator sees less generic evidence and stronger next-step recommendations.
 
 ### 4. Better Operator Views For Candidate Progression
 
 The dashboard now shows agent summaries and dispatches, but the path from candidate emergence to paper-trade readiness could still be clearer for a non-developer operator.
-
-### 5. Explicit OpenClaw Plugin Trust Configuration
-
-The gateway still warns that `plugins.allow` is empty. The plugin is loading correctly, but production hygiene would be better with an explicit allowlist.
 
 ## Maintenance Rule
 
