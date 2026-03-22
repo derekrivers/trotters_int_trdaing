@@ -679,6 +679,7 @@ function summarizeOverviewPayload(payload, { notificationLimit, includeRaw }) {
         )
       : [],
   };
+  summary.supervisor_decision = buildSupervisorDecision(summary);
 
   if (!includeRaw) {
     return { summary };
@@ -699,6 +700,81 @@ function summarizeWorkers(workers) {
       summarizeEntry(worker, ["worker_id", "hostname", "status", "leased_job_id", "heartbeat_at"]),
     ),
   };
+}
+
+function buildSupervisorDecision(summary) {
+  const activeDirectors = Array.isArray(summary?.active_directors) ? summary.active_directors.length : 0;
+  const activeCampaigns = Array.isArray(summary?.active_campaigns) ? summary.active_campaigns.length : 0;
+  const workerCount = numberOrDefault(summary?.workers?.count, 0);
+  const healthStatus = String(summary?.health?.status || "").trim().toLowerCase();
+  const terminalEvent = String(summary?.most_recent_terminal?.event_type || "").trim().toLowerCase();
+  const terminalMessage = String(summary?.most_recent_terminal?.message || "").trim().toLowerCase();
+  const terminalSeverity = String(summary?.most_recent_terminal?.severity || "").trim().toLowerCase();
+  const hasActiveRuntime = activeDirectors > 0 || activeCampaigns > 0;
+
+  if (hasActiveRuntime) {
+    if (healthStatus === "healthy" && workerCount > 0) {
+      return {
+        classification: "active_healthy",
+        recommended_mode: "monitor_only",
+        reason: "Directors or campaigns are already active, workers are present, and health is healthy.",
+        preferred_tools: [],
+        blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
+      };
+    }
+    return {
+      classification: "active_degraded",
+      recommended_mode: "service_health_only",
+      reason: "Directors or campaigns are active, but health or worker signals indicate degradation.",
+      preferred_tools: ["trotters_service.list", "trotters_service.restart", "trotters_runbook.record_recovery", "trotters_runbook.record_escalation"],
+      blocked_mutations: ["trotters_director.start", "trotters_campaign.start"],
+    };
+  }
+
+  if (isFailureTerminalState(terminalEvent, terminalMessage, terminalSeverity)) {
+    return {
+      classification: "idle_investigate_failure",
+      recommended_mode: "investigate_before_action",
+      reason: "No active runtime is present and the latest terminal signal indicates a failed or stopped outcome.",
+      preferred_tools: ["trotters_review_pack", "trotters_jobs.list", "trotters_jobs.logs", "trotters_runbook.record_escalation"],
+      blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
+    };
+  }
+
+  if (isExhaustedTerminalState(terminalEvent, terminalMessage)) {
+    return {
+      classification: "idle_exhausted_ready_for_next",
+      recommended_mode: "advance_runbook",
+      reason: "No active runtime is present and the latest terminal signal exhausted cleanly.",
+      preferred_tools: ["trotters_runbook.next_work_item", "trotters_director.start", "trotters_runbook.record_recovery"],
+      blocked_mutations: [],
+    };
+  }
+
+  return {
+    classification: "idle_waiting_for_context",
+    recommended_mode: "inspect_runbook_or_wait",
+    reason: "No active runtime is present and there is no clear recent terminal signal to act on.",
+    preferred_tools: ["trotters_runbook.get"],
+    blocked_mutations: ["trotters_service.restart"],
+  };
+}
+
+function isFailureTerminalState(eventType, message, severity) {
+  if (["error", "critical"].includes(severity)) {
+    return true;
+  }
+  if (eventType.includes("failed") || eventType.includes("stopped")) {
+    return true;
+  }
+  return message.includes("failed") || message.includes("stopped");
+}
+
+function isExhaustedTerminalState(eventType, message) {
+  if (eventType.includes("finished") || eventType.includes("exhausted") || eventType.includes("promoted")) {
+    return true;
+  }
+  return message.includes("exhaust") || message.includes("promot");
 }
 
 function summarizeEntries(entries, keys) {
@@ -805,8 +881,8 @@ function createSummariesTool(cfg) {
       return jsonResult(writeSummaryRecord(cfg, {
         summaryType: requiredEnum(params, "summaryType", SUMMARY_TYPES),
         agentId: optionalString(params, "agentId"),
-        status: requiredString(params, "status"),
-        classification: requiredString(params, "classification"),
+        status: optionalString(params, "status"),
+        classification: optionalString(params, "classification"),
         recommendedAction: optionalString(params, "recommendedAction"),
         message: optionalString(params, "message"),
         evidence: optionalStringArray(params, "evidence"),

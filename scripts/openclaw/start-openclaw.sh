@@ -12,12 +12,22 @@ TARGET_AUTH_DIR="${STATE_ROOT}/agents/${SUPERVISOR_AGENT_ID}/agent"
 TARGET_AUTH_FILE="${TARGET_AUTH_DIR}/auth-profiles.json"
 SOURCE_AUTH_FILE="${STATE_ROOT}/agents/${SOURCE_AUTH_AGENT_ID}/agent/auth-profiles.json"
 SUPERVISOR_SESSIONS_FILE="${STATE_ROOT}/agents/${SUPERVISOR_AGENT_ID}/sessions/sessions.json"
+SUPERVISOR_WORKSPACE_DIR="${STATE_ROOT}/workspaces/${SUPERVISOR_AGENT_ID}"
+SUPERVISOR_HEARTBEAT_FILE="${SUPERVISOR_WORKSPACE_DIR}/HEARTBEAT.md"
 INSTALLED_PLUGIN_DIR="${STATE_ROOT}/extensions/trotters-runtime"
 PLUGIN_STAGE_ROOT="$(mktemp -d /tmp/trotters-runtime-plugin.XXXXXX)"
 PLUGIN_STAGE_DIR="${PLUGIN_STAGE_ROOT}/trotters-runtime"
 
-mkdir -p "${STATE_ROOT}" "${STATE_ROOT}/trotters" "${TARGET_AUTH_DIR}"
+mkdir -p "${STATE_ROOT}" "${STATE_ROOT}/trotters" "${TARGET_AUTH_DIR}" "${SUPERVISOR_WORKSPACE_DIR}"
 cp /opt/openclaw-config/openclaw.json "${CONFIG_TARGET}"
+
+if [ ! -f "${SUPERVISOR_HEARTBEAT_FILE}" ]; then
+  cat >"${SUPERVISOR_HEARTBEAT_FILE}" <<'EOF'
+# HEARTBEAT
+
+This workspace is active. Record terse operator state here only when explicitly asked.
+EOF
+fi
 
 # The supervisor runs in isolated cron sessions, so stale session metadata only
 # pins old providers/models and should not survive gateway restarts.

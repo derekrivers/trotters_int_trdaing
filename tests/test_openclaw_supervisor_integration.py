@@ -49,6 +49,7 @@ class OpenClawSupervisorIntegrationTests(unittest.TestCase):
             state_root = home / ".openclaw"
             source_auth_file = state_root / "agents" / "dev" / "agent" / "auth-profiles.json"
             target_auth_file = state_root / "agents" / "runtime-supervisor" / "agent" / "auth-profiles.json"
+            heartbeat_file = state_root / "workspaces" / "runtime-supervisor" / "HEARTBEAT.md"
             source_auth_file.parent.mkdir(parents=True, exist_ok=True)
             source_auth_file.write_text(json.dumps({"profiles": [{"provider": "openai"}]}), encoding="utf-8")
 
@@ -179,6 +180,7 @@ class OpenClawSupervisorIntegrationTests(unittest.TestCase):
                 source_auth_file.read_text(encoding="utf-8"),
             )
             self.assertTrue((state_root / "openclaw.json").exists())
+            self.assertIn("This workspace is active.", heartbeat_file.read_text(encoding="utf-8"))
 
             log_lines = log_path.read_text(encoding="utf-8").splitlines()
             self.assertTrue(any(line.startswith("cron remove old-1") for line in log_lines))

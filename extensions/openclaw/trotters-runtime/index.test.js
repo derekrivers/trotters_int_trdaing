@@ -115,6 +115,233 @@ await runTest("overview requests include auth and actor headers", async () => {
   });
 });
 
+await runTest("overview classifies a healthy active runtime as monitor only", async () => {
+  await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () =>
+      jsonResponse({
+        status: {
+          counts: { queued: 2, running: 4, completed: 18 },
+          workers: [{ worker_id: "worker-1", status: "running", heartbeat_at: "2026-03-22T18:25:00Z" }],
+        },
+        active_directors: [{ director_id: "director-1", director_name: "broad-operability-director", status: "running" }],
+        active_campaigns: [{ campaign_id: "campaign-1", campaign_name: "broad-operability-primary", status: "running" }],
+        notifications: [],
+        health: { status: "healthy", summary: "All services green." },
+      });
+
+    try {
+      const tools = registerTools({
+        apiBase: "https://research.example.test",
+        actor: "runtime-supervisor",
+      });
+      const result = await tools.trotters_overview.execute("call-healthy", {});
+      const decision = result.details.summary.supervisor_decision;
+
+      assert.equal(decision.classification, "active_healthy");
+      assert.equal(decision.recommended_mode, "monitor_only");
+      assert.deepEqual(decision.preferred_tools, []);
+      assert.deepEqual(decision.blocked_mutations, [
+        "trotters_director.start",
+        "trotters_campaign.start",
+        "trotters_service.restart",
+      ]);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+await runTest("overview classifies an active degraded runtime as service-health only", async () => {
+  await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () =>
+      jsonResponse({
+        status: {
+          counts: { queued: 9, running: 1, completed: 18 },
+          workers: [],
+        },
+        active_directors: [{ director_id: "director-1", director_name: "broad-operability-director", status: "running" }],
+        active_campaigns: [{ campaign_id: "campaign-1", campaign_name: "broad-operability-primary", status: "running" }],
+        notifications: [{ message: "workers missing", severity: "warning", recorded_at_utc: "2026-03-22T18:28:00Z" }],
+        health: { status: "degraded", summary: "Workers missing." },
+      });
+
+    try {
+      const tools = registerTools({
+        apiBase: "https://research.example.test",
+        actor: "runtime-supervisor",
+      });
+      const result = await tools.trotters_overview.execute("call-degraded", {});
+      const decision = result.details.summary.supervisor_decision;
+
+      assert.equal(decision.classification, "active_degraded");
+      assert.equal(decision.recommended_mode, "service_health_only");
+      assert.ok(decision.preferred_tools.includes("trotters_service.restart"));
+      assert.ok(decision.preferred_tools.includes("trotters_runbook.record_escalation"));
+      assert.deepEqual(decision.blocked_mutations, ["trotters_director.start", "trotters_campaign.start"]);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+await runTest("supervisor drill harness advances the runbook only after an exhausted idle runtime", async () => {
+  await withRunbookFixture(
+    {
+      work_queue: [
+        {
+          plan_id: "broad_operability",
+          plan_file: "configs/directors/broad_operability.json",
+          director_name: "broad-operability-director",
+        },
+      ],
+    },
+    async ({ runbookPath }) => {
+      await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async () =>
+          jsonResponse({
+            status: {
+              counts: { queued: 0, running: 0, completed: 24 },
+              workers: [],
+            },
+            active_directors: [],
+            active_campaigns: [],
+            notifications: [
+              {
+                campaign_id: "campaign-9",
+                event_type: "campaign_finished",
+                severity: "info",
+                message: "campaign exhausted cleanly",
+                recorded_at_utc: "2026-03-22T18:29:00Z",
+              },
+            ],
+            most_recent_terminal: {
+              campaign_id: "campaign-9",
+              event_type: "campaign_finished",
+              severity: "info",
+              message: "campaign exhausted cleanly",
+              recorded_at_utc: "2026-03-22T18:29:00Z",
+            },
+            health: { status: "healthy", summary: "Idle after clean completion." },
+          });
+
+        try {
+          const tools = registerTools({
+            apiBase: "https://research.example.test",
+            runbookPath,
+            actor: "runtime-supervisor",
+          });
+          const overview = await tools.trotters_overview.execute("call-idle-exhausted", {});
+          const nextItem = await tools.trotters_runbook.execute("call-next-item", { action: "next_work_item" });
+
+          assert.equal(overview.details.summary.supervisor_decision.classification, "idle_exhausted_ready_for_next");
+          assert.equal(overview.details.summary.supervisor_decision.recommended_mode, "advance_runbook");
+          assert.equal(nextItem.details.selected.plan_id, "broad_operability");
+          assert.equal(nextItem.details.selected.director_name, "broad-operability-director");
+        } finally {
+          global.fetch = originalFetch;
+        }
+      });
+    },
+  );
+});
+
+await runTest("supervisor drill harness requires investigation before acting on failed idle runtime", async () => {
+  await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+    const calls = [];
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      calls.push(url);
+      if (url === "https://research.example.test/api/v1/runtime/overview") {
+        return jsonResponse({
+          status: {
+            counts: { queued: 0, running: 0, failed: 3 },
+            workers: [],
+          },
+          active_directors: [],
+          active_campaigns: [],
+          notifications: [
+            {
+              campaign_id: "campaign-11",
+              event_type: "campaign_failed",
+              severity: "error",
+              message: "campaign failed due to runtime error",
+              recorded_at_utc: "2026-03-22T18:31:00Z",
+            },
+          ],
+          most_recent_terminal: {
+            campaign_id: "campaign-11",
+            event_type: "campaign_failed",
+            severity: "error",
+            message: "campaign failed due to runtime error",
+            recorded_at_utc: "2026-03-22T18:31:00Z",
+          },
+          health: { status: "degraded", summary: "Recent failed campaign." },
+        });
+      }
+      if (url === "https://research.example.test/api/v1/jobs?status=failed") {
+        return jsonResponse({
+          jobs: [
+            {
+              job_id: "job-99",
+              campaign_id: "campaign-11",
+              command: "backtest",
+              status: "failed",
+              error_message: "disk i/o error",
+              updated_at: "2026-03-22T18:31:04Z",
+            },
+          ],
+        });
+      }
+      if (url === "https://research.example.test/api/v1/notifications?limit=3") {
+        return jsonResponse({
+          notifications: [
+            {
+              campaign_id: "campaign-11",
+              event_type: "campaign_failed",
+              severity: "error",
+              message: "campaign failed due to runtime error",
+              recorded_at_utc: "2026-03-22T18:31:00Z",
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    };
+
+    try {
+      const tools = registerTools({
+        apiBase: "https://research.example.test",
+        actor: "runtime-supervisor",
+      });
+      const overview = await tools.trotters_overview.execute("call-idle-failed", {});
+      const postmortem = await tools.trotters_review_pack.execute("call-postmortem", {
+        action: "failure_postmortem",
+        limit: 3,
+      });
+
+      assert.equal(overview.details.summary.supervisor_decision.classification, "idle_investigate_failure");
+      assert.equal(overview.details.summary.supervisor_decision.recommended_mode, "investigate_before_action");
+      assert.ok(overview.details.summary.supervisor_decision.preferred_tools.includes("trotters_jobs.logs"));
+      assert.deepEqual(postmortem.details.failed_jobs, [
+        {
+          job_id: "job-99",
+          campaign_id: "campaign-11",
+          command: "backtest",
+          status: "failed",
+          error_message: "disk i/o error",
+          updated_at: "2026-03-22T18:31:04Z",
+        },
+      ]);
+      assert.equal(calls.filter((url) => url === "https://research.example.test/api/v1/runtime/overview").length, 2);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
 await runTest("director start resolves approved plan_id from the runbook", async () => {
   await withRunbookFixture(
     {
@@ -354,6 +581,28 @@ await runTest("summary records normalize specialist agent defaults and contract 
     assert.equal(result.details.record.status, "recorded");
     assert.equal(result.details.record.classification, "needs_followup");
     assert.deepEqual(result.details.record.artifact_refs, ["/runtime/catalog/example/operator_scorecard.json"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await runTest("summary records tolerate missing status and classification for specialist defaults", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "trotters-summaries-defaults-"));
+  try {
+    const tools = registerTools({
+      summaryRoot: root,
+      actor: "openclaw-supervisor",
+    });
+    const result = await tools.trotters_summaries.execute("call-9", {
+      action: "record",
+      summaryType: "failure_postmortem_summary",
+      message: "runtime issue captured",
+      evidence: ["worker heartbeats missing"],
+    });
+
+    assert.equal(result.details.record.status, "recorded");
+    assert.equal(result.details.record.classification, "unknown");
+    assert.equal(result.details.record.agent_id, "failure-postmortem");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
