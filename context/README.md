@@ -35,6 +35,7 @@ It is intentionally split by topic so new findings can be added without growing 
 - `19_openclaw_supervisor_next_steps.md`
 - `20_openclaw_lessons_learned.md`
 - `21_openclaw_agent_guide.md`
+- `22_openclaw_iteration_2_tasklist.md`
 
 ## Maintenance Rules
 
