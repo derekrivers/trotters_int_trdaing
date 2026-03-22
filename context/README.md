@@ -1,4 +1,4 @@
-# Project Context
+﻿# Project Context
 
 This directory is the working context base for the project.
 
@@ -31,6 +31,10 @@ It is intentionally split by topic so new findings can be added without growing 
 - `15_phase10_tasklist.md`
 - `16_paper_trading_preparation.md`
 - `17_paper_trade_readiness_review.md`
+- `18_runtime_agent_api_plan.md`
+- `19_openclaw_supervisor_next_steps.md`
+- `20_openclaw_lessons_learned.md`
+- `21_openclaw_agent_guide.md`
 
 ## Maintenance Rules
 

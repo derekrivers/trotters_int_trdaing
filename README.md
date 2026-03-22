@@ -241,9 +241,13 @@ The runtime stack can also run an `openclaw-gateway` container alongside the res
 What is wired today:
 
 - `research-api` is exposed on `http://localhost:8890`
+- `ops-bridge` runs on the internal Compose network and exposes narrow service restarts for the allowlisted runtime services only
 - `openclaw-gateway` runs on the same Compose network and receives `TROTTERS_API_BASE=http://research-api:8890`
+- `openclaw-gateway` also receives `TROTTERS_OPS_BRIDGE_TOKEN` so the supervisor plugin can call the internal ops bridge
 - OpenClaw persists its state under [`runtime/openclaw/`](c:/Dev/TrottersIndependantTraders/runtime/openclaw)
 - the repo-managed default OpenClaw config lives at [`configs/openclaw/openclaw.json`](c:/Dev/TrottersIndependantTraders/configs/openclaw/openclaw.json)
+- the curated supervisor runbook lives at [`trotters-runbook.json`](c:/Dev/TrottersIndependantTraders/configs/openclaw/trotters-runbook.json)
+- the local OpenClaw runtime plugin lives at [`index.js`](c:/Dev/TrottersIndependantTraders/extensions/openclaw/trotters-runtime/index.js)
 
 Required `.env` entries:
 
@@ -252,6 +256,13 @@ Required `.env` entries:
 - `OPENCLAW_GATEWAY_BIND`
 - `OPENCLAW_GATEWAY_PORT`
 - `OPENCLAW_GATEWAY_TOKEN`
+- `TROTTERS_OPS_BRIDGE_TOKEN`
+
+Runtime-supervisor model auth:
+
+- the supervisor cron loop needs model-provider credentials in the `openclaw-gateway` container before it can act autonomously
+- provide one supported provider key in `.env`, for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY`
+- alternatively, if you have already configured another local OpenClaw agent inside the same state volume, set `OPENCLAW_SUPERVISOR_AUTH_SOURCE_AGENT` and the gateway bootstrap will copy that agent's `auth-profiles.json` into `runtime-supervisor`
 
 The gateway is started by the main Compose file, so bringing up the runtime stack also starts OpenClaw:
 
@@ -265,6 +276,7 @@ Local endpoints:
 - OpenClaw control UI: `http://127.0.0.1:18789/`
 - OpenClaw canvas UI assets: `http://127.0.0.1:18789/__openclaw__/canvas/`
 - Research API: `http://localhost:8890`
+- Ops bridge: `http://ops-bridge:8891` on the internal Compose network only
 
 Authentication:
 
@@ -278,7 +290,9 @@ Operational notes:
 - the gateway is intentionally published on loopback only: `127.0.0.1:${OPENCLAW_GATEWAY_PORT}`
 - if you change [`configs/openclaw/openclaw.json`](c:/Dev/TrottersIndependantTraders/configs/openclaw/openclaw.json), restart the gateway with `docker compose up -d openclaw-gateway`
 - if the UI shows `pairing required`, approve the pending browser device from the gateway host with `docker compose exec openclaw-gateway openclaw devices list` and `docker compose exec openclaw-gateway openclaw devices approve <request_id>`
-- the current Compose wiring starts the gateway and passes the research API location and token to it, but tool/plugin wiring for autonomous runtime control is still the next step
+- the gateway startup now seeds a recurring isolated cron job named `trotters-runtime-supervisor`, so the default `runtime-supervisor` agent wakes every 2 minutes and checks the runtime without a manual prompt
+- the supervisor uses only the repo-managed `trotters-runtime` plugin tools and the curated runbook; it does not get raw Docker socket access
+- if provider auth is missing, the cron job still exists but each scheduled turn will fail fast with a `No API key found for provider ...` diagnostic until you add a model API key or copy an existing auth profile into the supervisor agent
 
 Suggested Docker Desktop resources for this repo:
 
