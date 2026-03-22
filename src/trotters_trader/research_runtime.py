@@ -496,6 +496,225 @@ def get_job(paths: ResearchRuntimePaths, job_id: str) -> ResearchJob:
         return _row_to_job(row)
 
 
+def job_status(
+    paths: ResearchRuntimePaths,
+    job_id: str | None = None,
+    *,
+    campaign_id: str | None = None,
+    status: str | None = None,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    with _connect(paths) as connection:
+        if job_id is None:
+            conditions: list[str] = []
+            parameters: list[object] = []
+            if campaign_id:
+                conditions.append("campaign_id = ?")
+                parameters.append(campaign_id)
+            if status:
+                conditions.append("status = ?")
+                parameters.append(status)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            jobs = [
+                dict(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT
+                        job_id,
+                        campaign_id,
+                        command,
+                        config_path,
+                        status,
+                        priority,
+                        attempt_count,
+                        max_attempts,
+                        leased_by,
+                        started_at,
+                        finished_at,
+                        exit_code,
+                        stdout_path,
+                        stderr_path,
+                        error_message,
+                        created_at,
+                        updated_at
+                    FROM jobs
+                    {where_clause}
+                    ORDER BY created_at ASC
+                    """,
+                    tuple(parameters),
+                ).fetchall()
+            ]
+            return {"jobs": jobs}
+
+        row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown job '{job_id}'")
+        attempts = [
+            dict(attempt_row)
+            for attempt_row in connection.execute(
+                """
+                SELECT
+                    attempt_id,
+                    attempt_number,
+                    worker_id,
+                    status,
+                    started_at,
+                    finished_at,
+                    exit_code,
+                    stdout_path,
+                    stderr_path,
+                    error_message
+                FROM job_attempts
+                WHERE job_id = ?
+                ORDER BY attempt_number ASC
+                """,
+                (job_id,),
+            ).fetchall()
+        ]
+        artifacts = [
+            {
+                **dict(artifact_row),
+                "metadata": _load_result_payload(artifact_row["metadata_json"]),
+            }
+            for artifact_row in connection.execute(
+                """
+                SELECT
+                    artifact_id,
+                    recorded_at_utc,
+                    artifact_key,
+                    artifact_type,
+                    artifact_name,
+                    primary_path,
+                    metadata_json
+                FROM artifacts
+                WHERE job_id = ?
+                ORDER BY recorded_at_utc ASC, artifact_id ASC
+                """,
+                (job_id,),
+            ).fetchall()
+        ]
+        return {
+            "job": {
+                "job_id": row["job_id"],
+                "campaign_id": row["campaign_id"],
+                "command": row["command"],
+                "config_path": row["config_path"],
+                "status": row["status"],
+                "priority": row["priority"],
+                "attempt_count": row["attempt_count"],
+                "max_attempts": row["max_attempts"],
+                "leased_by": row["leased_by"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "exit_code": row["exit_code"],
+                "output_root": row["output_root"],
+                "stdout_path": row["stdout_path"],
+                "stderr_path": row["stderr_path"],
+                "error_message": row["error_message"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "spec": _load_result_payload(row["spec_json"]),
+                "result": _load_result_payload(row["result_json"]),
+            },
+            "attempts": attempts,
+            "artifacts": artifacts,
+        }
+
+
+def read_job_log(
+    paths: ResearchRuntimePaths,
+    job_id: str,
+    *,
+    stream: str = "stderr",
+    tail_lines: int = 200,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    normalized_stream = stream.strip().lower()
+    if normalized_stream not in {"stdout", "stderr"}:
+        raise ValueError("stream must be 'stdout' or 'stderr'")
+    with _connect(paths) as connection:
+        row = connection.execute(
+            """
+            SELECT job_id, campaign_id, status, stdout_path, stderr_path, updated_at
+            FROM jobs
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown job '{job_id}'")
+    path_value = row["stdout_path"] if normalized_stream == "stdout" else row["stderr_path"]
+    normalized_tail = min(max(int(tail_lines), 1), 2000)
+    lines: list[str] = []
+    if isinstance(path_value, str) and path_value:
+        log_path = Path(path_value)
+        if log_path.exists():
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-normalized_tail:]
+    return {
+        "job_id": row["job_id"],
+        "campaign_id": row["campaign_id"],
+        "status": row["status"],
+        "stream": normalized_stream,
+        "path": path_value,
+        "tail_lines": normalized_tail,
+        "updated_at": row["updated_at"],
+        "lines": lines,
+    }
+
+
+def artifact_status(
+    paths: ResearchRuntimePaths,
+    *,
+    job_id: str | None = None,
+    campaign_id: str | None = None,
+    artifact_type: str | None = None,
+    limit: int = 200,
+) -> dict[str, object]:
+    initialize_runtime(paths)
+    conditions: list[str] = []
+    parameters: list[object] = []
+    if job_id:
+        conditions.append("artifacts.job_id = ?")
+        parameters.append(job_id)
+    if campaign_id:
+        conditions.append("jobs.campaign_id = ?")
+        parameters.append(campaign_id)
+    if artifact_type:
+        conditions.append("artifacts.artifact_type = ?")
+        parameters.append(artifact_type)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    normalized_limit = min(max(int(limit), 1), 1000)
+    parameters.append(normalized_limit)
+    with _connect(paths) as connection:
+        artifacts = [
+            {
+                **dict(row),
+                "metadata": _load_result_payload(row["metadata_json"]),
+            }
+            for row in connection.execute(
+                f"""
+                SELECT
+                    artifacts.artifact_id,
+                    artifacts.job_id,
+                    jobs.campaign_id,
+                    artifacts.recorded_at_utc,
+                    artifacts.artifact_key,
+                    artifacts.artifact_type,
+                    artifacts.artifact_name,
+                    artifacts.primary_path,
+                    artifacts.metadata_json
+                FROM artifacts
+                INNER JOIN jobs ON jobs.job_id = artifacts.job_id
+                {where_clause}
+                ORDER BY artifacts.recorded_at_utc DESC, artifacts.artifact_id DESC
+                LIMIT ?
+                """,
+                tuple(parameters),
+            ).fetchall()
+        ]
+    return {"artifacts": artifacts}
+
+
 def worker_loop(
     paths: ResearchRuntimePaths,
     worker_id: str,

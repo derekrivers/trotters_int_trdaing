@@ -1,0 +1,35 @@
+﻿{
+  "agents": {
+    "defaults": {
+      "workspace": "/home/node/.openclaw/workspace-dev",
+      "skipBootstrap": true
+    },
+    "list": [
+      {
+        "id": "dev",
+        "default": true,
+        "workspace": "/home/node/.openclaw/workspace-dev",
+        "identity": {
+          "name": "Trotters Agent",
+          "theme": "operator"
+        }
+      }
+    ]
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": [
+        "http://localhost:18789",
+        "http://127.0.0.1:18789"
+      ]
+    }
+  }
+}

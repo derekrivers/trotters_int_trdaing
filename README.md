@@ -234,6 +234,49 @@ docker compose down --remove-orphans
 
 The runtime stack now includes dedicated `campaign-manager` and `research-director` services. The campaign manager advances one campaign through focused tuning, pivots, and stress. The research director sits one level higher: it can launch the next approved campaign automatically when the previous one exhausts, and stop only when it finds a frozen candidate or the approved queue is exhausted. A separate `dashboard` service exposes a local operations view on `http://localhost:8888`.
 
+### OpenClaw
+
+The runtime stack can also run an `openclaw-gateway` container alongside the research services.
+
+What is wired today:
+
+- `research-api` is exposed on `http://localhost:8890`
+- `openclaw-gateway` runs on the same Compose network and receives `TROTTERS_API_BASE=http://research-api:8890`
+- OpenClaw persists its state under [`runtime/openclaw/`](c:/Dev/TrottersIndependantTraders/runtime/openclaw)
+- the repo-managed default OpenClaw config lives at [`configs/openclaw/openclaw.json`](c:/Dev/TrottersIndependantTraders/configs/openclaw/openclaw.json)
+
+Required `.env` entries:
+
+- `TROTTERS_API_TOKEN`
+- `OPENCLAW_IMAGE`
+- `OPENCLAW_GATEWAY_BIND`
+- `OPENCLAW_GATEWAY_PORT`
+- `OPENCLAW_GATEWAY_TOKEN`
+
+The gateway is started by the main Compose file, so bringing up the runtime stack also starts OpenClaw:
+
+```bash
+docker compose up --build -d --scale worker=6
+```
+
+Local endpoints:
+
+- OpenClaw gateway websocket: `ws://localhost:18789`
+- OpenClaw canvas UI: `http://localhost:18789/__openclaw__/canvas/`
+- Research API: `http://localhost:8890`
+
+Authentication:
+
+- the OpenClaw canvas path requires `Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>`
+- the research API requires `Authorization: Bearer <TROTTERS_API_TOKEN>` on all `/api/v1/*` routes
+
+Operational notes:
+
+- OpenClaw is not a normal HTTP app at `/`; simple browser or `curl` checks against the root path are not a useful health check
+- the gateway is intentionally published on loopback only: `127.0.0.1:${OPENCLAW_GATEWAY_PORT}`
+- if you change [`configs/openclaw/openclaw.json`](c:/Dev/TrottersIndependantTraders/configs/openclaw/openclaw.json), restart the gateway with `docker compose up -d openclaw-gateway`
+- the current Compose wiring starts the gateway and passes the research API location and token to it, but tool/plugin wiring for autonomous runtime control is still the next step
+
 Suggested Docker Desktop resources for this repo:
 
 - `5` workers: allocate at least `10 GiB` memory

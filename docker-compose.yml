@@ -11,6 +11,49 @@ x-runtime-service: &runtime-service
     - research_runtime:/runtime/research_runtime
 
 services:
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      - research-api
+    environment:
+      HOME: /home/node
+      NODE_ENV: production
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_BIND: ${OPENCLAW_GATEWAY_BIND}
+      OPENCLAW_GATEWAY_PORT: ${OPENCLAW_GATEWAY_PORT}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      TROTTERS_API_BASE: http://research-api:8890
+      TROTTERS_API_TOKEN: ${TROTTERS_API_TOKEN}
+    volumes:
+      - ./configs/openclaw:/opt/openclaw-config:ro
+      - ./runtime/openclaw:/home/node/.openclaw
+    ports:
+      - "127.0.0.1:${OPENCLAW_GATEWAY_PORT}:18789"
+    command:
+      [
+        "sh",
+        "-lc",
+        "mkdir -p /home/node/.openclaw && if [ ! -f /home/node/.openclaw/openclaw.json ]; then cp /opt/openclaw-config/openclaw.json /home/node/.openclaw/openclaw.json; fi && exec node dist/index.js gateway --bind ${OPENCLAW_GATEWAY_BIND} --port ${OPENCLAW_GATEWAY_PORT} --allow-unconfigured --dev"
+      ]
+  research-api:
+    <<: *runtime-service
+    environment:
+      TROTTERS_API_TOKEN: ${TROTTERS_API_TOKEN}
+    command:
+      - research-api
+      - --runtime-root
+      - /runtime/research_runtime
+      - --catalog-output-dir
+      - /runtime/catalog
+      - --api-host
+      - 0.0.0.0
+      - --api-port
+      - "8890"
+    ports:
+      - "8890:8890"
+    depends_on:
+      - coordinator
   dashboard:
     <<: *runtime-service
     command:

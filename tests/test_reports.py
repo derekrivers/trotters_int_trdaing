@@ -4,6 +4,7 @@ from datetime import date
 import unittest
 
 from trotters_trader.backtest import build_daily_decision_package, run_backtest
+from trotters_trader.catalog import load_catalog_entries
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.config import load_config
 from trotters_trader.experiments import run_promotion_check, run_universe_slice_sweep
@@ -239,6 +240,50 @@ class ReportTests(IsolatedWorkspaceTestCase):
         self.assertIn("## Next Steps", scorecard_text)
         self.assertIn("## Deltas", comparison_text)
         self.assertLessEqual(Path(artifacts["summary_md"]).parent.name.__len__(), 96)
+
+    def test_operability_program_report_recovers_from_malformed_catalog_line(self) -> None:
+        output_dir = self.temp_root / "runs"
+        catalog_dir = output_dir / "research_catalog"
+        catalog_dir.mkdir(parents=True, exist_ok=True)
+        (catalog_dir / "catalog.jsonl").write_text(
+            '{"recorded_at_utc":"2026-03-21T00:00:00+00:00","artifact_type":"run","artifact_name":"seed","profile_name":"seed_profile"}\n'
+            '{"broken": "line"\n',
+            encoding="utf-8",
+        )
+
+        artifacts = write_operability_program_report(
+            output_dir=output_dir,
+            report_name="operability_program_test",
+            control_row={
+                "run_name": "control_run",
+                "profile_name": "control_profile",
+                "strategy_family": "cross_sectional_momentum",
+                "validation_excess_return": 0.01,
+                "holdout_excess_return": -0.02,
+                "walkforward_pass_windows": 0,
+            },
+            focused_result={"decision": {"selected_run_name": "focused_run", "candidate_count": 1, "viable_candidate_count": 0}},
+            pivot_result=None,
+            shortlisted=[],
+            stress_results=[],
+            final_decision={
+                "recommended_action": "continue_research",
+                "reason": "campaign_in_progress",
+                "selected_run_name": None,
+                "selected_profile_name": None,
+                "selected_candidate_eligible": False,
+                "selected_stress_ok": False,
+                "pivot_used": False,
+            },
+        )
+
+        self.assertTrue(Path(artifacts["summary_md"]).exists())
+        entries = load_catalog_entries(output_dir)
+        artifact_types = {entry.get("artifact_type") for entry in entries}
+        self.assertIn("run", artifact_types)
+        self.assertIn("operability_program", artifact_types)
+        self.assertIn("operator_scorecard", artifact_types)
+        self.assertIn("candidate_comparison", artifact_types)
 
     def test_operability_scorecard_maps_exhausted_campaign_to_reject(self) -> None:
         scorecard = build_operability_scorecard(

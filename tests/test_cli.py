@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from trotters_trader.cli import _build_parser, execute_command
+from trotters_trader.cli import _build_parser, _handle_runtime_command, _runtime_target_warning, execute_command
 from tests.support import IsolatedWorkspaceTestCase
 
 
@@ -70,6 +70,7 @@ class CliTests(unittest.TestCase):
                 "director-1",
                 "--director-plan-file",
                 "configs/directors/broad_operability.json",
+                "--allow-host-runtime",
             ]
         )
 
@@ -77,6 +78,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.config, "configs/backtest.toml")
         self.assertEqual(args.director_name, "director-1")
         self.assertEqual(args.director_plan_file, "configs/directors/broad_operability.json")
+        self.assertTrue(args.allow_host_runtime)
 
     def test_parser_accepts_research_director_stop_command(self) -> None:
         parser = _build_parser()
@@ -104,6 +106,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "research-dashboard")
         self.assertEqual(args.dashboard_port, 9999)
 
+    def test_parser_accepts_research_api_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["research-api", "--api-port", "8891"])
+
+        self.assertEqual(args.command, "research-api")
+        self.assertEqual(args.api_port, 8891)
+
     def test_parser_accepts_campaign_notification_options(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(
@@ -118,6 +127,56 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.notification_command, "echo notify")
         self.assertEqual(args.notify_events, "campaign_finished,campaign_failed")
+
+    def test_runtime_target_warning_detects_local_runtime_when_compose_uses_named_volume(self) -> None:
+        warning = _runtime_target_warning(
+            "research-director-status",
+            "runtime/research_runtime",
+            cwd=Path("workspace"),
+            compose_text=(
+                "services:\n"
+                "  coordinator:\n"
+                "    volumes:\n"
+                "      - research_runtime:/runtime/research_runtime\n"
+                "volumes:\n"
+                "  research_runtime:\n"
+            ),
+        )
+
+        self.assertIsNotNone(warning)
+        self.assertIn("/runtime/research_runtime", str(warning))
+
+    def test_runtime_target_warning_ignores_container_runtime_path(self) -> None:
+        warning = _runtime_target_warning(
+            "research-director-status",
+            "/runtime/research_runtime",
+            cwd=Path("workspace"),
+            compose_text=(
+                "services:\n"
+                "  coordinator:\n"
+                "    volumes:\n"
+                "      - research_runtime:/runtime/research_runtime\n"
+                "volumes:\n"
+                "  research_runtime:\n"
+            ),
+        )
+
+        self.assertIsNone(warning)
+
+    def test_runtime_target_guard_blocks_mutating_commands_against_local_runtime(self) -> None:
+        args = argparse.Namespace(
+            command="research-director-start",
+            runtime_root="runtime/research_runtime",
+            catalog_output_dir="runs",
+            allow_host_runtime=False,
+        )
+
+        with patch(
+            "trotters_trader.cli._runtime_target_warning",
+            return_value="wrong runtime target",
+        ):
+            with self.assertRaisesRegex(ValueError, "wrong runtime target"):
+                _handle_runtime_command(args)
 
 
 class CliCommandExecutionTests(IsolatedWorkspaceTestCase):

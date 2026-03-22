@@ -1669,10 +1669,29 @@ def _runtime_health(
     directors: list[dict[str, object]],
 ) -> dict[str, object]:
     counts = status.get("counts", {}) if isinstance(status.get("counts"), dict) else {}
+    all_directors = [director for director in status.get("directors", []) if isinstance(director, dict)] if isinstance(status.get("directors"), list) else []
     workers = [worker for worker in status.get("workers", []) if isinstance(worker, dict)] if isinstance(status.get("workers"), list) else []
     jobs = [job for job in status.get("jobs", []) if isinstance(job, dict)] if isinstance(status.get("jobs"), list) else []
     queued = int(counts.get("queued", 0) or 0)
     running = int(counts.get("running", 0) or 0)
+    active_director_count = len(directors)
+    most_recent_director = max(
+        all_directors,
+        key=lambda director: _timestamp_sort_key(director.get("updated_at") or director.get("created_at")),
+        default=None,
+    )
+    most_recent_director_status = str(most_recent_director.get("status", "")).lower() if isinstance(most_recent_director, dict) else ""
+    most_recent_director_name = (
+        str(most_recent_director.get("director_name") or most_recent_director.get("director_id") or "unknown director")
+        if isinstance(most_recent_director, dict)
+        else "unknown director"
+    )
+    most_recent_director_age = (
+        _age_seconds(most_recent_director.get("updated_at") or most_recent_director.get("created_at"))
+        if isinstance(most_recent_director, dict)
+        else None
+    )
+    director_requires_attention = active_director_count == 0 and most_recent_director_status in {"failed", "stopped"}
     active_worker_count = sum(
         1
         for worker in workers
@@ -1755,6 +1774,22 @@ def _runtime_health(
             ),
         }
     )
+    checks.append(
+        {
+            "name": "director activity",
+            "status": "ok" if active_director_count > 0 else "warning",
+            "detail": (
+                f"{active_director_count} active director(s)."
+                if active_director_count > 0
+                else (
+                    f"No active directors. Most recent director {most_recent_director_name} "
+                    f"{most_recent_director_status or 'finished'} {_format_age_seconds(most_recent_director_age)}."
+                    if isinstance(most_recent_director, dict)
+                    else "No active directors. Start a director to submit the next campaign."
+                )
+            ),
+        }
+    )
     if running > 0:
         checks.append(
             {
@@ -1782,9 +1817,15 @@ def _runtime_health(
     elif running == 0 and queued == 0 and campaigns:
         overall = "warning"
         summary = "Research runtime is quiet: campaigns are active but no jobs are currently queued or running."
+    elif director_requires_attention:
+        overall = "warning"
+        summary = (
+            "Research runtime needs attention: no active directors remain after the latest director "
+            f"{most_recent_director_status}."
+        )
     elif running == 0 and queued == 0 and not campaigns and not directors:
         overall = "idle"
-        summary = "Research runtime is idle: there is no active campaign or queued work."
+        summary = "Research runtime is idle: there is no active director, active campaign, or queued work."
     return {"status": overall, "summary": summary, "checks": checks}
 
 

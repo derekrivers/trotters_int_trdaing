@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import time
 
 from trotters_trader.alpha_vantage import download_daily_series
+from trotters_trader.api import serve_api
 from trotters_trader.backtest import build_daily_decision_package, run_backtest
 from trotters_trader.catalog import load_catalog_entries
 from trotters_trader.canonical import materialize_canonical_data
@@ -129,8 +130,22 @@ RUNTIME_COMMANDS = [
     "research-director-status",
     "research-director-manager",
     "research-dashboard",
+    "research-api",
 ]
 ALL_COMMANDS = LEGACY_COMMANDS + RUNTIME_COMMANDS
+RUNTIME_MUTATION_COMMANDS = {
+    "research-submit",
+    "research-batch",
+    "research-campaign-start",
+    "research-campaign-step",
+    "research-campaign-stop",
+    "research-director-start",
+    "research-director-step",
+    "research-director-pause",
+    "research-director-resume",
+    "research-director-skip-next",
+    "research-director-stop",
+}
 
 
 def main() -> None:
@@ -342,7 +357,59 @@ def _parse_iso_date(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def _normalize_path(path: Path) -> str:
+    return os.path.normcase(str(path.resolve(strict=False)))
+
+
+def _compose_uses_container_runtime(*, cwd: Path | None = None, compose_text: str | None = None) -> bool:
+    workspace_root = cwd or Path.cwd()
+    if compose_text is None:
+        compose_path = workspace_root / "docker-compose.yml"
+        if not compose_path.exists():
+            return False
+        compose_text = compose_path.read_text(encoding="utf-8")
+    return "research_runtime:/runtime/research_runtime" in compose_text
+
+
+def _targets_local_workspace_runtime(runtime_root: str | os.PathLike[str], *, cwd: Path | None = None) -> bool:
+    workspace_root = cwd or Path.cwd()
+    target_path = Path(runtime_root)
+    if not target_path.is_absolute():
+        target_path = workspace_root / target_path
+    expected_path = workspace_root / "runtime" / "research_runtime"
+    return _normalize_path(target_path) == _normalize_path(expected_path)
+
+
+def _runtime_target_warning(
+    command: str,
+    runtime_root: str | os.PathLike[str],
+    *,
+    cwd: Path | None = None,
+    compose_text: str | None = None,
+) -> str | None:
+    if command not in RUNTIME_COMMANDS:
+        return None
+    if not _compose_uses_container_runtime(cwd=cwd, compose_text=compose_text):
+        return None
+    if not _targets_local_workspace_runtime(runtime_root, cwd=cwd):
+        return None
+    return (
+        "This workspace's Docker Compose stack stores the live runtime in the named volume mounted at "
+        "/runtime/research_runtime, but this command targets the local path runtime/research_runtime. "
+        "Running it on the host creates a separate runtime database that the containers and dashboard will not see. "
+        "Run the command inside the Compose stack or pass --allow-host-runtime if you intentionally want a separate local runtime."
+    )
+
+
+def _validate_runtime_target(args: argparse.Namespace) -> str | None:
+    warning = _runtime_target_warning(str(args.command), getattr(args, "runtime_root", ""))
+    if warning and str(args.command) in RUNTIME_MUTATION_COMMANDS and not bool(getattr(args, "allow_host_runtime", False)):
+        raise ValueError(warning)
+    return warning
+
+
 def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
+    warning = _validate_runtime_target(args)
     paths = runtime_paths(args.runtime_root, catalog_output_dir=args.catalog_output_dir)
     if args.command == "research-submit":
         if not args.spec:
@@ -379,6 +446,8 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
     if args.command == "research-status":
         status = runtime_status(paths)
         status["catalog_exports"] = export_runtime_catalog(paths)
+        if warning:
+            status["runtime_target_warning"] = warning
         return status
     if args.command == "research-campaign-start":
         if not args.config:
@@ -415,7 +484,10 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
             reason=str(getattr(args, "stop_reason", "operator_stop")),
         )
     if args.command == "research-campaign-status":
-        return campaign_status(paths, getattr(args, "campaign_id", None))
+        payload = campaign_status(paths, getattr(args, "campaign_id", None))
+        if warning:
+            payload["runtime_target_warning"] = warning
+        return payload
     if args.command == "research-campaign-manager":
         return campaign_manager_loop(paths, poll_seconds=args.poll_seconds, once=args.once)
     if args.command == "research-director-start":
@@ -469,7 +541,10 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
             reason=str(getattr(args, "stop_reason", "operator_stop")),
         )
     if args.command == "research-director-status":
-        return director_status(paths, getattr(args, "director_id", None))
+        payload = director_status(paths, getattr(args, "director_id", None))
+        if warning:
+            payload["runtime_target_warning"] = warning
+        return payload
     if args.command == "research-director-manager":
         return director_manager_loop(paths, poll_seconds=args.poll_seconds, once=args.once)
     if args.command == "research-dashboard":
@@ -478,6 +553,12 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
             host=args.dashboard_host,
             port=args.dashboard_port,
             refresh_seconds=args.dashboard_refresh_seconds,
+        )
+    if args.command == "research-api":
+        return serve_api(
+            paths,
+            host=args.api_host,
+            port=args.api_port,
         )
     if args.command == "research-coordinator":
         if args.once:
@@ -677,6 +758,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-date", type=_parse_iso_date)
     parser.add_argument("--runtime-root", default="runtime/research_runtime")
     parser.add_argument("--catalog-output-dir", default="runs")
+    parser.add_argument("--allow-host-runtime", action="store_true")
     parser.add_argument("--spec", help="JSON string or path to a JSON job spec.")
     parser.add_argument("--batch-preset", choices=BATCH_PRESETS, default="ranking")
     parser.add_argument("--exclude-control", action="store_true")
@@ -707,6 +789,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard-host", default="0.0.0.0")
     parser.add_argument("--dashboard-port", type=int, default=8888)
     parser.add_argument("--dashboard-refresh-seconds", type=int, default=10)
+    parser.add_argument("--api-host", default="0.0.0.0")
+    parser.add_argument("--api-port", type=int, default=8890)
     parser.add_argument("--once", action="store_true")
     return parser
 

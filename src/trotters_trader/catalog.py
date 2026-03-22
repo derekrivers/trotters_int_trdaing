@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
+import uuid
 
 
 def register_catalog_entry(output_dir: Path, entry: dict[str, object]) -> dict[str, str]:
@@ -32,10 +34,10 @@ def write_catalog_snapshot(output_dir: Path, entries: list[dict[str, object]]) -
     jsonl_content = "\n".join(json.dumps(entry) for entry in entries)
     if jsonl_content:
         jsonl_content += "\n"
-    jsonl_path.write_text(jsonl_content, encoding="utf-8")
-    json_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    _atomic_write_text(jsonl_path, jsonl_content)
+    _atomic_write_text(json_path, json.dumps(entries, indent=2))
     _write_catalog_csv(csv_path, entries)
-    latest_path.write_text(json.dumps(_latest_profile_artifacts(entries), indent=2), encoding="utf-8")
+    _atomic_write_text(latest_path, json.dumps(_latest_profile_artifacts(entries), indent=2))
 
     return {
         "catalog_jsonl": str(jsonl_path),
@@ -52,19 +54,45 @@ def load_catalog_entries(output_dir: Path) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     for line in jsonl_path.read_text(encoding="utf-8").splitlines():
         if line.strip():
-            entries.append(json.loads(line))
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                # Best-effort recovery for a previously interrupted write.
+                continue
+            if isinstance(payload, dict):
+                entries.append(payload)
     return entries
 
 
 def _write_catalog_csv(path: Path, entries: list[dict[str, object]]) -> None:
     if not entries:
-        path.write_text("", encoding="utf-8")
+        _atomic_write_text(path, "")
         return
     fieldnames = sorted({key for entry in entries for key in entry.keys()})
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(entries)
+    temp_path = _temporary_path(path)
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(entries)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    temp_path = _temporary_path(path)
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
+def _temporary_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
 
 
 def _latest_profile_artifacts(entries: list[dict[str, object]]) -> dict[str, dict[str, object]]:

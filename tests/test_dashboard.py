@@ -496,6 +496,59 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Research runtime looks stalled: jobs are marked running, but their progress signals are stale.", body)
         self.assertIn("running job(s) have not updated for more than 15 minutes", body)
 
+    def test_overview_flags_idle_runtime_when_latest_director_failed(self) -> None:
+        root = self._workspace_root("overview_health_no_director")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=5)
+            now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
+            with (
+                patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 0, "running": 0, "completed": 9, "failed": 1},
+                        "workers": [
+                            {
+                                "worker_id": "worker-01",
+                                "status": "idle",
+                                "current_job_id": None,
+                                "heartbeat_at": "2026-03-21T21:39:50+00:00",
+                            }
+                        ],
+                        "jobs": [],
+                        "campaigns": [
+                            {
+                                "campaign_id": "campaign-1",
+                                "campaign_name": "broad-operability",
+                                "status": "failed",
+                                "phase": "stability_pivot",
+                                "updated_at": "2026-03-21T21:38:00+00:00",
+                            }
+                        ],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "director_name": "broad-operability-director",
+                                "status": "failed",
+                                "updated_at": "2026-03-21T21:39:00+00:00",
+                            }
+                        ],
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn(
+            "Research runtime needs attention: no active directors remain after the latest director failed.",
+            body,
+        )
+        self.assertIn("director activity", body)
+        self.assertIn("No active directors. Most recent director broad-operability-director failed 1m ago.", body)
+
     def test_director_detail_page_renders_plan_queue(self) -> None:
         root = self._workspace_root("director")
         try:
