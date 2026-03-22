@@ -2,7 +2,8 @@
 
 This repository currently contains:
 
-- project context in [`context/`](c:/Users/derek/OneDrive/Documents/Development/TrottersIndependantTraders/context/README.md)
+- stable project context in [`context/README.md`](context/README.md)
+- active feature workflows in [`feature_workflows/README.md`](feature_workflows/README.md)
 - a Python scaffold for a simple historical backtesting bot in `src/`
 
 ## Current Scope
@@ -313,8 +314,9 @@ What runs in the background:
 - `research-director`: decides what campaign to run next and chains campaigns until a viable strategy is found or the approved queue is exhausted
 - `dashboard`: shows queue health, worker status, campaign detail, notifications, and stop controls
 - `dashboard` also includes a plain-English `/guide` page explaining the system, the terminology, and the intended path from research candidate to later paper/live trading
-- the paper-trading boundary and operator checklist are documented in [`context/16_paper_trading_preparation.md`](c:/Dev/TrottersIndependantTraders/context/16_paper_trading_preparation.md)
-- the dated go / no-go assessment for entering a paper-trading phase is documented in [`context/17_paper_trade_readiness_review.md`](c:/Dev/TrottersIndependantTraders/context/17_paper_trade_readiness_review.md)
+- the paper-trading boundary and current readiness state are documented in [`context/16_paper_trading_status.md`](context/16_paper_trading_status.md)
+- the current OpenClaw control-plane status is documented in [`context/18_openclaw_status_and_backlog.md`](context/18_openclaw_status_and_backlog.md)
+- the active next-iteration workflow queue lives in [`feature_workflows/00_program_board.md`](feature_workflows/00_program_board.md)
 
 Campaign phases currently follow this path:
 
@@ -483,7 +485,8 @@ configs/        Backtest configuration
 data/           Local input datasets
 src/            Application code
 tests/          Basic scaffold tests
-context/        Architecture and research context
+context/           Stable architecture and research context
+feature_workflows/ Active feature and job planning context
 ```
 
 ## Data Layers

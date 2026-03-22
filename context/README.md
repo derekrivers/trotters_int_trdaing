@@ -1,8 +1,9 @@
 # Project Context
 
-This directory is the maintained context base for the project.
+This directory is the maintained stable context base for the project.
 
-It should contain stable project knowledge and current high-level status notes, not every temporary execution checklist or vendor reference dump.
+It should contain durable project knowledge and current high-level status notes, not temporary feature execution checklists or rollout scratchpads.
+Active planning now lives under `feature_workflows/`.
 
 ## How to use this folder
 
@@ -11,6 +12,7 @@ It should contain stable project knowledge and current high-level status notes, 
 - Use `11_architecture_principles.md`, `12_backtesting_system_architecture.md`, and `13_domain_model.md` for software design context.
 - Use `16_paper_trading_status.md` for the current paper-trading boundary.
 - Use `20_openclaw_lessons_learned.md`, `21_openclaw_agent_guide.md`, and `18_openclaw_status_and_backlog.md` for OpenClaw context.
+- Use `../feature_workflows/README.md` and `../feature_workflows/00_program_board.md` for active feature and job planning.
 
 ## File Index
 
@@ -39,5 +41,6 @@ Vendor-specific reference dumps now live under `references/vendors/`.
 
 - Prefer primary sources over summaries.
 - Record dates when rules, rates, or terms are time-sensitive.
-- Treat this folder as maintained context, not a scratchpad for completed rollout notes.
+- Keep `context/` for stable reference only.
+- Put active feature planning and execution notes in `feature_workflows/`.
 - Keep `deep-research-report.md` as the original source artifact unless and until we replace it deliberately.

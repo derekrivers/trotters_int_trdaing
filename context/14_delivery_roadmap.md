@@ -217,51 +217,48 @@ This should stay later. The current system is still a research platform, not a l
 
 Status: in progress
 
-- make the system understandable to a non-trading operator
-- make successful promotion explicit and easy to notice
-- turn a promoted candidate into a clear human-review handoff, not just a technical artifact
-- externalize director policy so autonomous research is inspectable and adjustable without code edits
-- prepare the path from promoted candidate to paper-trading readiness without adding broker/live execution yet
+Phase 10 foundations are now materially implemented, but the phase is not finished.
 
-Why this matters:
+Implemented foundations:
 
-- the platform can now run background research autonomously, but operator understanding is still behind runtime capability
-- without a clearer handoff layer, a promoted strategy is still too technical for confident human review
-- the next practical stage after promotion should be paper-trading preparation, not immediate live trading
+- promotion handoff pages, candidate scorecards, and candidate comparison views exist
+- director plan files and pause/resume/skip controls exist
+- dashboard history, notification severity, and operator summaries exist
+- paper-trade decision export and readiness boundary artifacts exist
+- the OpenClaw operator layer now exists with one always-on supervisor, event-driven specialist agents, summaries, and dispatch telemetry
+- a basic GitHub Actions test workflow exists
 
-Target outcomes:
+Why the phase is still incomplete:
 
-- the dashboard should explain what the system is doing in plain English
-- a successful strategy promotion should be visible as a dedicated event rather than hidden inside a generic completion flow
-- promoted candidates should have an operator-facing summary that explains what the strategy is, why it passed, and where it remains weak
-- the research director should move from a code-shaped queue toward an explicit, reviewable policy file
-- the repo should define the post-promotion path as paper-trading preparation, not immediate live deployment
+- the main operator view still needs a clearer answer for the current best candidate and next action
+- paper trading still lacks separate rehearsal state, a daily runner, operator decision logging, and explicit hard blocking
+- OpenClaw repeated-incident trust and plugin-trust hygiene still need further hardening
+- the strongest `risk + sector` research branch is still not promoted or explicitly retired
 
-Scope of this phase:
+Active planning model:
 
-- promotion handoff pages and candidate scorecards
-- dashboard history and operator summaries
-- director plan files and operator controls such as pause/resume/skip
-- paper-trading preparation artifacts and daily decision export design
+- `context/` remains the stable reference layer
+- `feature_workflows/` is now the active planning and execution-context layer
 
-Out of scope for this phase:
+Current workflow order inside Phase 10:
+
+1. `FW-001_docs-and-planning-sync` (`done`)
+2. `FW-002_candidate-handoff-and-dashboard`
+3. `FW-003_paper-trading-rehearsal-core`
+4. `FW-004_openclaw-trust-hardening`
+5. `FW-005_risk-sector-promotion-program`
+
+Out of scope for the remaining Phase 10 work:
 
 - broker integration
 - real-money execution
-- LLM-driven runtime control
-- GitHub Actions / CI hardening
-
-Near-term sequencing inside Phase 10:
-
-1. promotion handoff dashboard pages and plain-English candidate scorecards
-2. director plan files plus pause/resume/skip controls
-3. dashboard history, success/failure summaries, and better operator observability
-4. paper-trading preparation docs and simulated daily outputs
-5. GitHub workflow automation later, after the operator and research flow are stable
+- broad autonomous live-trading control
+- a large refactor-only program detached from feature work
+- CI expansion beyond the current basic test workflow
 
 ## Current Recommended Build Target
 
-The correct target now is no longer “first backtest scaffold”.
+The correct target now is no longer "first backtest scaffold".
 It is:
 
 1. one credible UK equity research universe
