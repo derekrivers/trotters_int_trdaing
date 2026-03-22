@@ -351,6 +351,77 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertEqual(status["campaign"]["status"], "running")
         self.assertEqual(status["campaign"]["phase"], "focused_operability")
 
+    def test_start_campaign_reuses_existing_active_director_campaign(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with _db_connection(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO campaigns (
+                    campaign_id, director_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                    created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, 'running', 'focused_operability', ?, ?, ?, ?, ?)
+                """,
+                (
+                    "campaign-existing",
+                    "director-1",
+                    "autonomy-test",
+                    "configs/backtest.toml",
+                    json.dumps({"config_path": "configs/backtest.toml"}),
+                    json.dumps({"final_decision": None}),
+                    "2026-03-22T18:00:00+00:00",
+                    "2026-03-22T18:00:01+00:00",
+                    "2026-03-22T18:00:00+00:00",
+                ),
+            )
+
+        with patch("trotters_trader.research_runtime._prepare_campaign_inputs") as prepare_mock:
+            payload = start_campaign(
+                paths,
+                "configs/backtest.toml",
+                director_id="director-1",
+                campaign_name="autonomy-test",
+            )
+
+        self.assertEqual(payload["campaign_id"], "campaign-existing")
+        self.assertEqual(payload["outcome"], "campaign_already_active")
+        prepare_mock.assert_not_called()
+        status = runtime_status(paths)
+        active_campaigns = [row for row in status["campaigns"] if row["status"] in {"queued", "running"}]
+        self.assertEqual(len(active_campaigns), 1)
+
+    def test_start_campaign_rejects_second_active_campaign_for_director(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with _db_connection(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO campaigns (
+                    campaign_id, director_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                    created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, 'running', 'focused_operability', ?, ?, ?, ?, ?)
+                """,
+                (
+                    "campaign-existing",
+                    "director-1",
+                    "autonomy-test",
+                    "configs/backtest.toml",
+                    json.dumps({"config_path": "configs/backtest.toml"}),
+                    json.dumps({"final_decision": None}),
+                    "2026-03-22T18:00:00+00:00",
+                    "2026-03-22T18:00:01+00:00",
+                    "2026-03-22T18:00:00+00:00",
+                ),
+            )
+
+        with self.assertRaisesRegex(ValueError, "Director already has active campaign"):
+            start_campaign(
+                paths,
+                "configs/another.toml",
+                director_id="director-1",
+                campaign_name="another-test",
+            )
+
     def test_start_campaign_writes_notification_record(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         with (

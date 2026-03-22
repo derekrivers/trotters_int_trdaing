@@ -916,6 +916,11 @@ def start_campaign(
     notify_events: tuple[str, ...] = DEFAULT_NOTIFICATION_EVENTS,
 ) -> dict[str, object]:
     initialize_runtime(paths)
+    if director_id:
+        with _connect(paths) as connection:
+            existing_campaign = _find_active_campaign_for_director(connection, director_id, config_path)
+        if existing_campaign is not None:
+            return _campaign_step_payload(existing_campaign, "campaign_already_active")
     campaign_id = uuid.uuid4().hex
     now = _utcnow()
     config = load_config(config_path, evaluation_profile=evaluation_profile)
@@ -2031,6 +2036,34 @@ def _process_director_campaign_outcome(
         last_error=campaign.last_error,
     )
     return "director_failed"
+
+
+def _find_active_campaign_for_director(
+    connection: sqlite3.Connection,
+    director_id: str,
+    config_path: str,
+) -> ResearchCampaign | None:
+    rows = connection.execute(
+        """
+        SELECT campaign_id, config_path
+        FROM campaigns
+        WHERE director_id = ?
+          AND status IN ('queued', 'running')
+        ORDER BY updated_at DESC, created_at DESC
+        """,
+        (director_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    for row in rows:
+        if str(row['config_path']) == config_path:
+            return _get_campaign(connection, str(row['campaign_id']))
+    active = _get_campaign(connection, str(rows[0]['campaign_id']))
+    raise ValueError(
+        "Director already has active campaign "
+        f"'{active.campaign_id}' for config '{active.config_path}'. "
+        "Resolve that campaign before starting another."
+    )
 
 
 def _find_adoptable_campaign(connection: sqlite3.Connection, config_path: str) -> str | None:
