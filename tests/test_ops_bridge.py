@@ -24,6 +24,15 @@ class _FakeDockerClient:
                     "image": "trotters:latest",
                 }
             ],
+            "openclaw-gateway": [
+                {
+                    "container_id": "gateway001",
+                    "name": "/trottersindependanttraders-openclaw-gateway-1",
+                    "state": "running",
+                    "status": "Up 10 minutes",
+                    "image": "ghcr.io/openclaw/openclaw:2026.3.1",
+                }
+            ],
             "worker": [
                 {
                     "container_id": "worker001",
@@ -42,6 +51,7 @@ class _FakeDockerClient:
             ],
         }
         self.restarted: list[str] = []
+        self.exec_calls: list[dict[str, object]] = []
         self.socket_path = "/var/run/docker.sock"
 
     def self_project_name(self) -> str:
@@ -53,6 +63,27 @@ class _FakeDockerClient:
 
     def restart_container(self, container_id: str, *, timeout_seconds: int = 10) -> None:
         self.restarted.append(container_id)
+
+    def exec_command(
+        self,
+        container_id: str,
+        command: list[str],
+        *,
+        timeout_seconds: float = 180.0,
+    ) -> dict[str, object]:
+        self.exec_calls.append(
+            {
+                "container_id": container_id,
+                "command": list(command),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return {
+            "exec_id": "exec-1",
+            "exit_code": 0,
+            "running": False,
+            "output": json.dumps({"ok": True, "agent": command[3]}),
+        }
 
 
 class OpsBridgeTests(unittest.TestCase):
@@ -124,6 +155,65 @@ class OpsBridgeTests(unittest.TestCase):
         self.assertEqual(audit_payload["actor"], "openclaw-supervisor")
         self.assertEqual(audit_payload["path"], "/api/v1/services/worker/restart")
 
+    def test_dispatch_agent_rejects_non_allowlisted_agent(self) -> None:
+        root = self._workspace_root("agent_blocked")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            runbook_path = self._write_runbook(root)
+            controller = OpsBridgeController(paths, runbook_path=runbook_path, docker_client=_FakeDockerClient())
+            app = OpsBridgeApp(controller, auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(
+                app,
+                "POST",
+                "/api/v1/agents/runtime-supervisor/dispatch",
+                body=json.dumps({"message": "blocked"}).encode("utf-8"),
+                content_type="application/json",
+                headers=self._auth_headers(),
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "400 Bad Request")
+        self.assertIn("allowed dispatch list", payload["error"])
+
+    def test_dispatch_agent_executes_openclaw_agent_in_gateway_container(self) -> None:
+        root = self._workspace_root("agent_dispatch")
+        docker = _FakeDockerClient()
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            runbook_path = self._write_runbook(root)
+            controller = OpsBridgeController(paths, runbook_path=runbook_path, docker_client=docker)
+            app = OpsBridgeApp(controller, auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(
+                app,
+                "POST",
+                "/api/v1/agents/research-triage/dispatch",
+                body=json.dumps(
+                    {
+                        "message": "triage campaign-1",
+                        "campaign_id": "campaign-1",
+                        "event_type": "campaign_finished",
+                        "session_id": "research-triage-campaign-1",
+                    }
+                ).encode("utf-8"),
+                content_type="application/json",
+                headers=self._auth_headers(actor="runtime-notifier"),
+            )
+            audit_lines = controller.audit_path.read_text(encoding="utf-8").splitlines()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        audit_payload = json.loads(audit_lines[-1])
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["agent_id"], "research-triage")
+        self.assertEqual(docker.exec_calls[0]["container_id"], "gateway001")
+        self.assertIn("--agent", docker.exec_calls[0]["command"])
+        self.assertIn("research-triage", docker.exec_calls[0]["command"])
+        self.assertEqual(audit_payload["actor"], "runtime-notifier")
+        self.assertEqual(audit_payload["path"], "/api/v1/agents/research-triage/dispatch")
+
     def test_protected_route_requires_bearer_token(self) -> None:
         root = self._workspace_root("auth_required")
         try:
@@ -158,6 +248,7 @@ class OpsBridgeTests(unittest.TestCase):
                         "broad_primary": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml"
                     },
                     "service_allowlist": ["research-api", "worker"],
+                    "agent_allowlist": ["research-triage", "failure-postmortem"],
                     "limits": {
                         "max_same_item_recoveries": 2,
                         "recovery_window_hours": 12,

@@ -71,6 +71,33 @@ class DockerEngineClient:
             return {}
         return json.loads(data.decode("utf-8"))
 
+    def request_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, object] | list[object] | None = None,
+        expected_statuses: tuple[int, ...] = (200,),
+        timeout_seconds: float | None = None,
+    ) -> bytes:
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        connection = _UnixSocketHTTPConnection(
+            self._socket_path,
+            timeout=self._timeout_seconds if timeout_seconds is None else timeout_seconds,
+        )
+        try:
+            connection.request(method.upper(), path, body=body, headers=headers)
+            response = connection.getresponse()
+            data = response.read()
+        finally:
+            connection.close()
+        if response.status not in expected_statuses:
+            raise ValueError(f"Docker API {method.upper()} {path} returned {response.status}: {data.decode('utf-8', errors='replace')[:4000]}")
+        return data
+
     def request(
         self,
         method: str,
@@ -135,6 +162,48 @@ class DockerEngineClient:
             f"/containers/{quote(container_id, safe='')}/restart?t={int(timeout_seconds)}",
             expected_statuses=(204,),
         )
+
+    def exec_command(
+        self,
+        container_id: str,
+        command: list[str],
+        *,
+        timeout_seconds: float = 180.0,
+    ) -> dict[str, object]:
+        if not command:
+            raise ValueError("Docker exec command must not be empty")
+        payload = self.request_json(
+            "POST",
+            f"/containers/{quote(container_id, safe='')}/exec",
+            payload={
+                "AttachStdout": True,
+                "AttachStderr": True,
+                "Cmd": command,
+                "Tty": True,
+            },
+            expected_statuses=(201,),
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected Docker exec creation payload")
+        exec_id = str(payload.get("Id", "")).strip()
+        if not exec_id:
+            raise ValueError("Docker exec creation did not return an exec id")
+        output = self.request_raw(
+            "POST",
+            f"/exec/{quote(exec_id, safe='')}/start",
+            payload={"Detach": False, "Tty": True},
+            expected_statuses=(200,),
+            timeout_seconds=timeout_seconds,
+        )
+        inspect = self.request_json("GET", f"/exec/{quote(exec_id, safe='')}/json")
+        if not isinstance(inspect, dict):
+            raise ValueError("Unexpected Docker exec inspect payload")
+        return {
+            "exec_id": exec_id,
+            "exit_code": inspect.get("ExitCode"),
+            "running": inspect.get("Running"),
+            "output": output.decode("utf-8", errors="replace"),
+        }
 
 
 class OpsBridgeController:
@@ -215,6 +284,60 @@ class OpsBridgeController:
             "incident_id": _optional_text(payload.get("incident_id")),
             "counts_before_restart": counts,
             "limits": _limits_payload(runbook),
+        }
+
+    def dispatch_agent(self, agent_id: str, payload: dict[str, object]) -> dict[str, object]:
+        runbook = self._load_runbook()
+        normalized = agent_id.strip()
+        if normalized not in runbook.agent_allowlist:
+            raise ValueError(f"Agent '{agent_id}' is not in the allowed dispatch list")
+        message = _required_text(payload.get("message"), "message")
+        project_name = self._docker_client.self_project_name()
+        containers = self._docker_client.list_service_containers(project_name=project_name, service_name="openclaw-gateway")
+        container = next((entry for entry in containers if str(entry.get("state", "")).lower() == "running"), None)
+        if container is None:
+            raise ValueError("No running openclaw-gateway container found")
+        container_id = str(container.get("container_id", "")).strip()
+        if not container_id:
+            raise ValueError("openclaw-gateway container id is unavailable")
+        command = [
+            "openclaw",
+            "agent",
+            "--agent",
+            normalized,
+            "--message",
+            message,
+            "--json",
+            "--thinking",
+            _optional_text(payload.get("thinking")) or "low",
+            "--timeout",
+            str(int(payload.get("timeout_seconds", 180) or 180)),
+        ]
+        session_id = _optional_text(payload.get("session_id"))
+        if session_id:
+            command.extend(["--session-id", session_id])
+        execution = self._docker_client.exec_command(
+            container_id,
+            command,
+            timeout_seconds=float(payload.get("timeout_seconds", 180) or 180),
+        )
+        output_text = str(execution.get("output", ""))
+        try:
+            parsed_output = json.loads(output_text) if output_text.strip() else {}
+        except json.JSONDecodeError:
+            parsed_output = {"raw": output_text}
+        exit_code = execution.get("exit_code")
+        if exit_code not in (0, None):
+            raise ValueError(f"OpenClaw agent dispatch for '{normalized}' failed with exit code {exit_code}")
+        return {
+            "agent_id": normalized,
+            "project_name": project_name,
+            "container_id": container_id,
+            "session_id": session_id,
+            "event_type": _optional_text(payload.get("event_type")),
+            "campaign_id": _optional_text(payload.get("campaign_id")),
+            "result": parsed_output,
+            "exec": execution,
         }
 
     def _load_runbook(self) -> SupervisorRunbook:
@@ -319,6 +442,13 @@ class OpsBridgeApp:
             return self._json_response(self._controller.health())
         if method == "GET" and path == "/api/v1/services":
             return self._json_response(self._controller.list_services())
+        if path.startswith("/api/v1/agents/"):
+            agent_id, action = _resource_path(path, "/api/v1/agents/")
+            if action != "dispatch":
+                raise ValueError(f"Unknown agent action '{action}'")
+            if method != "POST":
+                raise ValueError("Only POST is supported for agent action routes")
+            return self._json_response(self._controller.dispatch_agent(agent_id, _json_body(body)))
         if path.startswith("/api/v1/services/"):
             service_name, action = _resource_path(path, "/api/v1/services/")
             if action != "restart":
@@ -461,6 +591,13 @@ def _json_error_response(
         [("Content-Type", "application/json; charset=utf-8"), *(extra_headers or [])],
         json.dumps({"error": message}, indent=2).encode("utf-8"),
     )
+
+
+def _required_text(value: object, label: str) -> str:
+    text = _optional_text(value)
+    if not text:
+        raise ValueError(f"{label} is required")
+    return text
 
 
 def _is_authorized(environ: dict[str, object], auth_token: str) -> bool:

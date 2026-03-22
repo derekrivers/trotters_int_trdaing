@@ -21,6 +21,12 @@
     "research-director",
     "worker"
   ],
+  "agent_allowlist": [
+    "research-triage",
+    "candidate-review",
+    "paper-trade-readiness",
+    "failure-postmortem"
+  ],
   "limits": {
     "max_same_item_recoveries": 2,
     "recovery_window_hours": 12,

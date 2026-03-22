@@ -13,6 +13,13 @@ DEFAULT_SERVICE_ALLOWLIST = (
     "worker",
 )
 
+DEFAULT_AGENT_ALLOWLIST = (
+    "research-triage",
+    "candidate-review",
+    "paper-trade-readiness",
+    "failure-postmortem",
+)
+
 
 @dataclass(frozen=True)
 class RunbookWorkItem:
@@ -38,6 +45,7 @@ class SupervisorRunbook:
     work_queue: tuple[RunbookWorkItem, ...]
     config_registry: dict[str, str]
     service_allowlist: tuple[str, ...]
+    agent_allowlist: tuple[str, ...]
     limits: RunbookLimits
 
 
@@ -86,6 +94,17 @@ def load_supervisor_runbook(path: Path | str) -> SupervisorRunbook:
     if not service_allowlist:
         raise ValueError("Supervisor runbook service_allowlist must not be empty")
 
+    raw_agents = payload.get("agent_allowlist", list(DEFAULT_AGENT_ALLOWLIST))
+    if not isinstance(raw_agents, list):
+        raise ValueError("Supervisor runbook agent_allowlist must be a list")
+    agent_allowlist = tuple(
+        agent.strip()
+        for agent in (str(entry) for entry in raw_agents)
+        if agent.strip()
+    )
+    if not agent_allowlist:
+        raise ValueError("Supervisor runbook agent_allowlist must not be empty")
+
     raw_limits = payload.get("limits", {})
     if raw_limits is None:
         raw_limits = {}
@@ -107,6 +126,7 @@ def load_supervisor_runbook(path: Path | str) -> SupervisorRunbook:
         work_queue=tuple(sorted(work_queue, key=lambda item: (item.priority, item.plan_id))),
         config_registry=config_registry,
         service_allowlist=service_allowlist,
+        agent_allowlist=agent_allowlist,
         limits=limits,
     )
 

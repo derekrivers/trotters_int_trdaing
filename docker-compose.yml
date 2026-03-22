@@ -3,6 +3,9 @@ x-runtime-service: &runtime-service
     context: .
     dockerfile: Dockerfile
   working_dir: /app
+  environment:
+    TROTTERS_OPS_BRIDGE_BASE: http://ops-bridge:8891
+    TROTTERS_OPS_BRIDGE_TOKEN: ${TROTTERS_OPS_BRIDGE_TOKEN}
   volumes:
     - ./configs:/app/configs:ro
     - ./data:/app/data:ro

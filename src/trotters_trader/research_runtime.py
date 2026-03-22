@@ -11,6 +11,9 @@ import sqlite3
 import subprocess
 import sys
 import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 import uuid
 
 from trotters_trader.catalog import write_catalog_snapshot
@@ -82,6 +85,11 @@ RETRYABLE_RUNTIME_ERROR_MARKERS = (
     "unterminated string",
     "jsondecodeerror",
 )
+AGENT_TRIGGER_EVENT_MAP = {
+    "campaign_finished": "research-triage",
+    "campaign_failed": "failure-postmortem",
+    "campaign_stopped": "failure-postmortem",
+}
 
 
 @dataclass(frozen=True)
@@ -3019,66 +3027,169 @@ def _emit_campaign_notification(
             "stderr_path": None,
             "error": None,
         },
+        "agent_dispatches": [],
     }
     payload_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-
-    if not notification_command or event_type not in notify_events:
-        with (exports_dir / CAMPAIGN_NOTIFICATION_JSONL).open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record))
-            handle.write("\n")
-        return
-
-    stdout_path = notifications_dir / f"{payload_stem}.stdout.log"
-    stderr_path = notifications_dir / f"{payload_stem}.stderr.log"
-    env = os.environ.copy()
-    env.update(
-        {
-            "TROTTERS_CAMPAIGN_ID": campaign_id,
-            "TROTTERS_CAMPAIGN_NAME": campaign_name,
-            "TROTTERS_EVENT_TYPE": event_type,
-            "TROTTERS_EVENT_SEVERITY": severity,
-            "TROTTERS_EVENT_MESSAGE": message,
-            "TROTTERS_EVENT_RECORDED_AT_UTC": recorded_at,
-            "TROTTERS_NOTIFICATION_PAYLOAD_PATH": str(payload_path),
-            "TROTTERS_RUNTIME_ROOT": str(paths.runtime_root),
-            "TROTTERS_CATALOG_OUTPUT_DIR": str(paths.catalog_output_dir),
-        }
-    )
-    try:
-        completed = subprocess.run(
-            notification_command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=Path.cwd(),
-            env=env,
-            check=False,
+    if notification_command and event_type in notify_events:
+        stdout_path = notifications_dir / f"{payload_stem}.stdout.log"
+        stderr_path = notifications_dir / f"{payload_stem}.stderr.log"
+        env = os.environ.copy()
+        env.update(
+            {
+                "TROTTERS_CAMPAIGN_ID": campaign_id,
+                "TROTTERS_CAMPAIGN_NAME": campaign_name,
+                "TROTTERS_EVENT_TYPE": event_type,
+                "TROTTERS_EVENT_SEVERITY": severity,
+                "TROTTERS_EVENT_MESSAGE": message,
+                "TROTTERS_EVENT_RECORDED_AT_UTC": recorded_at,
+                "TROTTERS_NOTIFICATION_PAYLOAD_PATH": str(payload_path),
+                "TROTTERS_RUNTIME_ROOT": str(paths.runtime_root),
+                "TROTTERS_CATALOG_OUTPUT_DIR": str(paths.catalog_output_dir),
+            }
         )
-        stdout_path.write_text(completed.stdout or "", encoding="utf-8")
-        stderr_path.write_text(completed.stderr or "", encoding="utf-8")
-        record["hook"] = {
-            "executed": True,
-            "success": completed.returncode == 0,
-            "exit_code": completed.returncode,
-            "stdout_path": str(stdout_path),
-            "stderr_path": str(stderr_path),
-            "error": None,
-        }
-    except Exception as exc:
-        stderr_path.write_text(str(exc), encoding="utf-8")
-        record["hook"] = {
-            "executed": True,
-            "success": False,
-            "exit_code": None,
-            "stdout_path": None,
-            "stderr_path": str(stderr_path),
-            "error": str(exc),
-        }
+        try:
+            completed = subprocess.run(
+                notification_command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=Path.cwd(),
+                env=env,
+                check=False,
+            )
+            stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+            stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+            record["hook"] = {
+                "executed": True,
+                "success": completed.returncode == 0,
+                "exit_code": completed.returncode,
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+                "error": None,
+            }
+        except Exception as exc:
+            stderr_path.write_text(str(exc), encoding="utf-8")
+            record["hook"] = {
+                "executed": True,
+                "success": False,
+                "exit_code": None,
+                "stdout_path": None,
+                "stderr_path": str(stderr_path),
+                "error": str(exc),
+            }
+    for dispatch in _agent_dispatch_specs(record):
+        record["agent_dispatches"].append(_dispatch_agent_trigger(dispatch))
     payload_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     with (exports_dir / CAMPAIGN_NOTIFICATION_JSONL).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record))
         handle.write("\n")
+
+
+def _agent_dispatch_specs(record: dict[str, object]) -> list[dict[str, object]]:
+    event_type = str(record.get("event_type", "") or "").strip().lower()
+    agent_id = AGENT_TRIGGER_EVENT_MAP.get(event_type)
+    if not agent_id:
+        return []
+    campaign_id = str(record.get("campaign_id", "") or "").strip()
+    campaign_name = str(record.get("campaign_name", "") or "").strip()
+    recorded_at = str(record.get("recorded_at_utc", "") or "").strip()
+    severity = str(record.get("severity", "") or "").strip()
+    message = str(record.get("message", "") or "").strip()
+    payload_path = str(record.get("payload_path", "") or "").strip()
+    if agent_id == "research-triage":
+        session_id = f"research-triage-{campaign_id}" if campaign_id else None
+        dispatch_message = (
+            f"Process a research-triage trigger for campaign {campaign_id or 'unknown'}"
+            f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
+            f"Severity: {severity or 'unknown'}. Message: {message or 'none'}. "
+            f"Notification payload: {payload_path or 'n/a'}. "
+            "Use `trotters_review_pack` with `action: campaign_triage` first. Then call "
+            "`trotters_summaries` with `action: record`, `summaryType: campaign_triage_summary`, "
+            "exact field names `status`, `classification`, `recommendedAction`, `message`, "
+            "`evidence`, `artifactRefs`, `campaignId`, `directorId`, `fingerprint`, and "
+            "`suppressIfRecent: true`. End with one short confirmation sentence and do not ask questions."
+        )
+    else:
+        session_id = f"failure-postmortem-{campaign_id}" if campaign_id else None
+        dispatch_message = (
+            f"Process a failure-postmortem trigger for campaign {campaign_id or 'unknown'}"
+            f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
+            f"Severity: {severity or 'unknown'}. Message: {message or 'none'}. "
+            f"Notification payload: {payload_path or 'n/a'}. "
+            "Use `trotters_review_pack` with `action: failure_postmortem` first. Then call "
+            "`trotters_summaries` with `action: record`, `summaryType: failure_postmortem_summary`, "
+            "exact field names `status`, `classification`, `recommendedAction`, `message`, "
+            "`evidence`, `artifactRefs`, `campaignId`, `directorId`, `fingerprint`, and "
+            "`suppressIfRecent: true`. End with one short confirmation sentence and do not ask questions."
+        )
+    return [
+        {
+            "agent_id": agent_id,
+            "campaign_id": campaign_id or None,
+            "event_type": event_type,
+            "session_id": session_id,
+            "message": dispatch_message,
+        }
+    ]
+
+
+def _dispatch_agent_trigger(dispatch: dict[str, object]) -> dict[str, object]:
+    base_url = str(os.environ.get("TROTTERS_OPS_BRIDGE_BASE", "") or "").strip()
+    token = str(os.environ.get("TROTTERS_OPS_BRIDGE_TOKEN", "") or "").strip()
+    if not base_url or not token:
+        return {
+            "agent_id": dispatch.get("agent_id"),
+            "attempted": False,
+            "success": False,
+            "error": "ops_bridge_not_configured",
+        }
+    agent_id = str(dispatch.get("agent_id", "") or "").strip()
+    payload = {
+        "message": str(dispatch.get("message", "") or ""),
+        "campaign_id": dispatch.get("campaign_id"),
+        "event_type": dispatch.get("event_type"),
+        "session_id": dispatch.get("session_id"),
+        "thinking": "low",
+        "timeout_seconds": 180,
+    }
+    request = Request(
+        f"{base_url}/api/v1/agents/{quote(agent_id)}/dispatch",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Request-Id": str(uuid.uuid4()),
+            "X-Trotters-Actor": "runtime-notifier",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=190) as response:
+            response_text = response.read().decode("utf-8", errors="replace")
+            response_payload = json.loads(response_text) if response_text.strip() else {}
+        return {
+            "agent_id": agent_id,
+            "attempted": True,
+            "success": True,
+            "response": response_payload,
+        }
+    except HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        return {
+            "agent_id": agent_id,
+            "attempted": True,
+            "success": False,
+            "status_code": exc.code,
+            "error": error_text or str(exc),
+        }
+    except (URLError, TimeoutError, ValueError) as exc:
+        return {
+            "agent_id": agent_id,
+            "attempted": True,
+            "success": False,
+            "error": str(exc),
+        }
 
 
 def _notification_severity(event_type: str, payload: dict[str, object]) -> str:

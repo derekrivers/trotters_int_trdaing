@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.research_runtime import (
+    _emit_campaign_notification,
     campaign_manager_loop,
     campaign_status,
     coordinator_cycle,
@@ -379,6 +380,43 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertEqual(started["campaign_id"], payload["campaign_id"])
         self.assertFalse(started["notification_requested"])
         self.assertEqual(started["severity"], "info")
+
+    def test_campaign_notifications_dispatch_specialist_agents_for_terminal_events(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        with patch(
+            "trotters_trader.research_runtime._dispatch_agent_trigger",
+            side_effect=lambda dispatch: {"agent_id": dispatch["agent_id"], "attempted": True, "success": True},
+        ) as dispatch_mock:
+            _emit_campaign_notification(
+                paths,
+                campaign_id="campaign-1",
+                campaign_name="broad-operability-primary",
+                event_type="campaign_finished",
+                message="Campaign finished with status exhausted",
+                payload={"recommended_action": "exhausted"},
+                spec={},
+            )
+            _emit_campaign_notification(
+                paths,
+                campaign_id="campaign-1",
+                campaign_name="broad-operability-primary",
+                event_type="campaign_failed",
+                message="Campaign failed",
+                payload={"reason": "campaign_runtime_error"},
+                spec={},
+            )
+
+        self.assertEqual(dispatch_mock.call_count, 2)
+        self.assertEqual(dispatch_mock.call_args_list[0].args[0]["agent_id"], "research-triage")
+        self.assertEqual(dispatch_mock.call_args_list[1].args[0]["agent_id"], "failure-postmortem")
+        notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
+        records = [
+            json.loads(line)
+            for line in notifications_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(records[0]["agent_dispatches"][0]["agent_id"], "research-triage")
+        self.assertEqual(records[1]["agent_dispatches"][0]["agent_id"], "failure-postmortem")
 
     def test_start_director_records_running_director_and_writes_spec(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
