@@ -180,6 +180,110 @@ await runTest("overview classifies an active degraded runtime as service-health 
       assert.ok(decision.preferred_tools.includes("trotters_service.restart"));
       assert.ok(decision.preferred_tools.includes("trotters_runbook.record_escalation"));
       assert.deepEqual(decision.blocked_mutations, ["trotters_director.start", "trotters_campaign.start"]);
+      assert.match(decision.incident_fingerprint, /^supervisor:/);
+      assert.equal(decision.cooldown_active, false);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+await runTest("overview suppresses repeated degraded runtime actions inside the incident cooldown", async () => {
+  await withRunbookFixture(
+    {
+      work_queue: [
+        {
+          plan_id: "broad_operability",
+          plan_file: "configs/directors/broad_operability.json",
+          director_name: "broad-operability-director",
+        },
+      ],
+    },
+    async ({ runbookPath, historyPath }) => {
+      const summaryRoot = path.join(path.dirname(historyPath), "agent_summaries");
+      await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async () =>
+          jsonResponse({
+            status: {
+              counts: { queued: 6, running: 1, completed: 18 },
+              workers: [],
+            },
+            active_directors: [{ director_id: "director-1", director_name: "broad-operability-director", status: "running" }],
+            active_campaigns: [{ campaign_id: "campaign-1", campaign_name: "broad-operability-primary", status: "running" }],
+            notifications: [{ message: "workers missing", severity: "warning", recorded_at_utc: "2026-03-22T18:28:00Z" }],
+            health: { status: "degraded", summary: "Workers missing." },
+          });
+
+        try {
+          const tools = registerTools({
+            apiBase: "https://research.example.test",
+            runbookPath,
+            runbookHistoryPath: historyPath,
+            summaryRoot,
+            actor: "runtime-supervisor",
+          });
+          const initial = await tools.trotters_overview.execute("call-degraded-first", {});
+          const fingerprint = initial.details.summary.supervisor_decision.incident_fingerprint;
+          const record = await tools.trotters_runbook.execute("call-record-escalation", {
+            action: "record_escalation",
+            planId: "broad_operability",
+            incidentId: "incident-repeat-1",
+            failureClass: "service_health",
+            fingerprint,
+            reason: "workers missing",
+          });
+          const repeated = await tools.trotters_overview.execute("call-degraded-repeat", {});
+          const decision = repeated.details.summary.supervisor_decision;
+
+          assert.equal(record.details.recorded.fingerprint, fingerprint);
+          assert.equal(decision.classification, "active_degraded_cooldown");
+          assert.equal(decision.recommended_mode, "service_health_cooldown");
+          assert.equal(decision.cooldown_active, true);
+          assert.ok(decision.cooldown_remaining_seconds > 0);
+          assert.ok(decision.blocked_mutations.includes("trotters_service.restart"));
+          assert.equal(decision.recent_incident.fingerprint, fingerprint);
+        } finally {
+          global.fetch = originalFetch;
+        }
+      });
+    },
+  );
+});
+
+await runTest("overview treats stale exhausted context as wait-or-inspect instead of advancing the runbook", async () => {
+  await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () =>
+      jsonResponse({
+        status: {
+          counts: { queued: 0, running: 0, completed: 24 },
+          workers: [],
+        },
+        active_directors: [],
+        active_campaigns: [],
+        notifications: [],
+        most_recent_terminal: {
+          campaign_id: "campaign-9",
+          event_type: "campaign_finished",
+          severity: "info",
+          message: "campaign exhausted cleanly",
+          recorded_at_utc: "2026-03-21T00:00:00Z",
+        },
+        health: { status: "healthy", summary: "Idle overnight." },
+      });
+
+    try {
+      const tools = registerTools({
+        apiBase: "https://research.example.test",
+        actor: "runtime-supervisor",
+      });
+      const result = await tools.trotters_overview.execute("call-idle-stale", {});
+      const decision = result.details.summary.supervisor_decision;
+
+      assert.equal(decision.classification, "idle_exhausted_stale_context");
+      assert.equal(decision.recommended_mode, "inspect_runbook_or_wait");
+      assert.ok(decision.blocked_mutations.includes("trotters_director.start"));
     } finally {
       global.fetch = originalFetch;
     }
@@ -570,7 +674,6 @@ await runTest("summary records normalize specialist agent defaults and contract 
       summaryType: "campaign_triage_summary",
       status: "exhausted",
       classification: "needs_more_research",
-      recommendedAction: "continue_research",
       message: "candidate needs more work",
       evidence: ["/runtime/catalog/example/operator_scorecard.json"],
       artifactRefs: ["operator_scorecard.json"],
@@ -580,6 +683,7 @@ await runTest("summary records normalize specialist agent defaults and contract 
     assert.equal(result.details.record.agent_id, "research-triage");
     assert.equal(result.details.record.status, "recorded");
     assert.equal(result.details.record.classification, "needs_followup");
+    assert.equal(result.details.record.recommended_action, "continue_research");
     assert.deepEqual(result.details.record.artifact_refs, ["/runtime/catalog/example/operator_scorecard.json"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -602,6 +706,7 @@ await runTest("summary records tolerate missing status and classification for sp
 
     assert.equal(result.details.record.status, "recorded");
     assert.equal(result.details.record.classification, "unknown");
+    assert.equal(result.details.record.recommended_action, "manual_investigation");
     assert.equal(result.details.record.agent_id, "failure-postmortem");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

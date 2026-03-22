@@ -21,6 +21,9 @@ const SERVICE_ACTIONS = ["list", "restart"];
 const REVIEW_PACK_ACTIONS = ["campaign_triage", "candidate_review", "paper_trade_readiness", "failure_postmortem"];
 const SUMMARY_ACTIONS = ["latest", "list", "record"];
 const SUMMARY_TYPES = ["supervisor_incident_summary", "campaign_triage_summary", "candidate_readiness_summary", "paper_trade_readiness_summary", "failure_postmortem_summary"];
+const SUPERVISOR_INCIDENT_SUMMARY_TYPE = "supervisor_incident_summary";
+const SUPERVISOR_INCIDENT_COOLDOWN_MINUTES = 30;
+const SUPERVISOR_EXHAUSTED_STALE_HOURS = 12;
 const SUMMARY_DEFAULT_AGENT_IDS = {
   campaign_triage_summary: "research-triage",
   candidate_readiness_summary: "candidate-review",
@@ -32,21 +35,25 @@ const SPECIALIST_SUMMARY_RULES = {
     defaultClassification: "needs_followup",
     allowedClassifications: ["promising", "needs_followup", "dead_end", "blocked"],
     aliases: { needs_more_research: "needs_followup", continue_research: "needs_followup", research_only: "needs_followup", exhausted: "dead_end", no_go: "dead_end" },
+    defaultRecommendedActions: { promising: "review_candidate", needs_followup: "continue_research", dead_end: "retire_branch", blocked: "inspect_campaign_inputs" },
   },
   candidate_readiness_summary: {
     defaultClassification: "research_only",
     allowedClassifications: ["ready_for_paper_rehearsal", "research_only", "blocked"],
     aliases: { ready: "ready_for_paper_rehearsal", not_ready: "research_only", needs_followup: "research_only" },
+    defaultRecommendedActions: { ready_for_paper_rehearsal: "prepare_paper_rehearsal", research_only: "continue_research", blocked: "resolve_candidate_blocker" },
   },
   paper_trade_readiness_summary: {
     defaultClassification: "not_ready",
     allowedClassifications: ["ready", "not_ready", "blocked"],
     aliases: { ready_for_paper_rehearsal: "ready", research_only: "not_ready", needs_followup: "not_ready" },
+    defaultRecommendedActions: { ready: "stage_paper_day", not_ready: "hold_paper_rehearsal", blocked: "resolve_paper_trade_blocker" },
   },
   failure_postmortem_summary: {
     defaultClassification: "unknown",
     allowedClassifications: ["service_health", "campaign_failure", "worker_failure", "unknown", "blocked"],
     aliases: { degraded: "service_health", runtime_failure: "service_health", failed: "campaign_failure", exhausted: "campaign_failure" },
+    defaultRecommendedActions: { service_health: "inspect_service_health", campaign_failure: "inspect_failed_campaign", worker_failure: "inspect_worker_pool", unknown: "manual_investigation", blocked: "inspect_postmortem_inputs" },
   },
 };
 const TERMINAL_STATUSES = new Set(["completed", "exhausted", "failed", "stopped"]);
@@ -109,7 +116,7 @@ function createOverviewTool(cfg) {
         path: "/api/v1/runtime/overview",
       });
       return jsonResult(
-        summarizeOverviewPayload(overview, {
+        summarizeOverviewPayload(cfg, overview, {
           notificationLimit: numberOrDefault(params?.notificationsLimit, 5),
           includeRaw: params?.includeRaw === true,
         }),
@@ -417,6 +424,9 @@ function createRunbookTool(cfg) {
         failureClass: {
           type: "string",
         },
+        fingerprint: {
+          type: "string",
+        },
         reason: {
           type: "string",
         },
@@ -449,18 +459,19 @@ function createRunbookTool(cfg) {
         plan_id: optionalString(params, "planId"),
         incident_id: incidentId,
         failure_class: optionalString(params, "failureClass"),
+        fingerprint: optionalString(params, "fingerprint") || buildRunbookIncidentFingerprint(params, incidentId),
         reason: optionalString(params, "reason"),
       };
       appendHistory(cfg, record);
       const incidentSummary = writeSummaryRecord(cfg, {
-        summaryType: "supervisor_incident_summary",
+        summaryType: SUPERVISOR_INCIDENT_SUMMARY_TYPE,
         agentId: "runtime-supervisor",
         status: action === "record_recovery" ? "recovered" : "escalated",
         classification: optionalString(params, "failureClass") || "runtime_incident",
         recommendedAction: action === "record_recovery" ? "continue_monitoring" : "manual_investigation",
         message: optionalString(params, "reason"),
         incidentId,
-        fingerprint: optionalString(params, "failureClass") || optionalString(params, "planId") || incidentId,
+        fingerprint: record.fingerprint,
         suppressIfRecent: true,
         dedupeWindowMinutes: 180
       });
@@ -632,7 +643,7 @@ function appendHistory(cfg, record) {
   fs.appendFileSync(cfg.runbookHistoryPath, `${JSON.stringify(record)}\n`, "utf-8");
 }
 
-function summarizeOverviewPayload(payload, { notificationLimit, includeRaw }) {
+function summarizeOverviewPayload(cfg, payload, { notificationLimit, includeRaw }) {
   const safeLimit = Math.max(1, Math.min(20, Math.trunc(numberOrDefault(notificationLimit, 5))));
   const summary = {
     health: pickFields(payload?.health, ["status", "summary", "reason", "healthy", "severity"]),
@@ -679,7 +690,7 @@ function summarizeOverviewPayload(payload, { notificationLimit, includeRaw }) {
         )
       : [],
   };
-  summary.supervisor_decision = buildSupervisorDecision(summary);
+  summary.supervisor_decision = buildSupervisorDecision(cfg, summary);
 
   if (!includeRaw) {
     return { summary };
@@ -702,7 +713,7 @@ function summarizeWorkers(workers) {
   };
 }
 
-function buildSupervisorDecision(summary) {
+function buildSupervisorDecision(cfg, summary) {
   const activeDirectors = Array.isArray(summary?.active_directors) ? summary.active_directors.length : 0;
   const activeCampaigns = Array.isArray(summary?.active_campaigns) ? summary.active_campaigns.length : 0;
   const workerCount = numberOrDefault(summary?.workers?.count, 0);
@@ -711,6 +722,10 @@ function buildSupervisorDecision(summary) {
   const terminalMessage = String(summary?.most_recent_terminal?.message || "").trim().toLowerCase();
   const terminalSeverity = String(summary?.most_recent_terminal?.severity || "").trim().toLowerCase();
   const hasActiveRuntime = activeDirectors > 0 || activeCampaigns > 0;
+  const degradedFingerprint = hasActiveRuntime ? buildSupervisorIncidentFingerprint("active_degraded", summary) : null;
+  const degradedCooldown = degradedFingerprint ? loadSupervisorIncidentCooldown(cfg, degradedFingerprint, SUPERVISOR_INCIDENT_COOLDOWN_MINUTES) : inactiveIncidentCooldown();
+  const exhaustedFingerprint = buildSupervisorIncidentFingerprint("idle_exhausted_ready_for_next", summary);
+  const exhaustedRecent = isRecentTerminal(summary?.most_recent_terminal, SUPERVISOR_EXHAUSTED_STALE_HOURS);
 
   if (hasActiveRuntime) {
     if (healthStatus === "healthy" && workerCount > 0) {
@@ -720,6 +735,29 @@ function buildSupervisorDecision(summary) {
         reason: "Directors or campaigns are already active, workers are present, and health is healthy.",
         preferred_tools: [],
         blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
+        incident_fingerprint: null,
+        cooldown_active: false,
+        cooldown_remaining_seconds: 0,
+        recent_incident: null,
+      };
+    }
+    if (degradedCooldown.active) {
+      return {
+        classification: "active_degraded_cooldown",
+        recommended_mode: "service_health_cooldown",
+        reason: "The same degraded runtime incident was already recorded recently; avoid repeating restart or escalation churn until the cooldown expires.",
+        preferred_tools: ["trotters_summaries.latest", "trotters_runbook.get"],
+        blocked_mutations: [
+          "trotters_director.start",
+          "trotters_campaign.start",
+          "trotters_service.restart",
+          "trotters_runbook.record_recovery",
+          "trotters_runbook.record_escalation",
+        ],
+        incident_fingerprint: degradedFingerprint,
+        cooldown_active: true,
+        cooldown_remaining_seconds: degradedCooldown.remainingSeconds,
+        recent_incident: degradedCooldown.record,
       };
     }
     return {
@@ -728,6 +766,10 @@ function buildSupervisorDecision(summary) {
       reason: "Directors or campaigns are active, but health or worker signals indicate degradation.",
       preferred_tools: ["trotters_service.list", "trotters_service.restart", "trotters_runbook.record_recovery", "trotters_runbook.record_escalation"],
       blocked_mutations: ["trotters_director.start", "trotters_campaign.start"],
+      incident_fingerprint: degradedFingerprint,
+      cooldown_active: false,
+      cooldown_remaining_seconds: 0,
+      recent_incident: degradedCooldown.record,
     };
   }
 
@@ -738,16 +780,38 @@ function buildSupervisorDecision(summary) {
       reason: "No active runtime is present and the latest terminal signal indicates a failed or stopped outcome.",
       preferred_tools: ["trotters_review_pack", "trotters_jobs.list", "trotters_jobs.logs", "trotters_runbook.record_escalation"],
       blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
+      incident_fingerprint: buildSupervisorIncidentFingerprint("idle_investigate_failure", summary),
+      cooldown_active: false,
+      cooldown_remaining_seconds: 0,
+      recent_incident: null,
     };
   }
 
-  if (isExhaustedTerminalState(terminalEvent, terminalMessage)) {
+  if (isExhaustedTerminalState(terminalEvent, terminalMessage) && exhaustedRecent) {
     return {
       classification: "idle_exhausted_ready_for_next",
       recommended_mode: "advance_runbook",
       reason: "No active runtime is present and the latest terminal signal exhausted cleanly.",
       preferred_tools: ["trotters_runbook.next_work_item", "trotters_director.start", "trotters_runbook.record_recovery"],
       blocked_mutations: [],
+      incident_fingerprint: exhaustedFingerprint,
+      cooldown_active: false,
+      cooldown_remaining_seconds: 0,
+      recent_incident: null,
+    };
+  }
+
+  if (isExhaustedTerminalState(terminalEvent, terminalMessage)) {
+    return {
+      classification: "idle_exhausted_stale_context",
+      recommended_mode: "inspect_runbook_or_wait",
+      reason: "The last exhausted terminal signal is stale, so do not advance the runbook automatically without fresher context.",
+      preferred_tools: ["trotters_runbook.get", "trotters_summaries.latest"],
+      blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
+      incident_fingerprint: exhaustedFingerprint,
+      cooldown_active: false,
+      cooldown_remaining_seconds: 0,
+      recent_incident: null,
     };
   }
 
@@ -757,7 +821,70 @@ function buildSupervisorDecision(summary) {
     reason: "No active runtime is present and there is no clear recent terminal signal to act on.",
     preferred_tools: ["trotters_runbook.get"],
     blocked_mutations: ["trotters_service.restart"],
+    incident_fingerprint: null,
+    cooldown_active: false,
+    cooldown_remaining_seconds: 0,
+    recent_incident: null,
   };
+}
+
+function buildSupervisorIncidentFingerprint(classification, summary) {
+  const healthStatus = String(summary?.health?.status || "unknown").trim().toLowerCase() || "unknown";
+  const workerCount = numberOrDefault(summary?.workers?.count, 0);
+  const directorKeys = Array.isArray(summary?.active_directors)
+    ? summary.active_directors.map((entry) => String(entry?.director_name || entry?.director_id || "").trim()).filter(Boolean).sort().slice(0, 4)
+    : [];
+  const campaignKeys = Array.isArray(summary?.active_campaigns)
+    ? summary.active_campaigns.map((entry) => String(entry?.campaign_name || entry?.campaign_id || "").trim()).filter(Boolean).sort().slice(0, 4)
+    : [];
+  const terminal = summary?.most_recent_terminal || {};
+  const pieces = [
+    `classification=${String(classification || "runtime").trim().toLowerCase() || "runtime"}`,
+    `health=${healthStatus}`,
+    `workers=${workerCount}`,
+    `directors=${directorKeys.join(",") || "-"}`,
+    `campaigns=${campaignKeys.join(",") || "-"}`,
+    `terminal=${String(terminal?.event_type || "-").trim().toLowerCase() || "-"}`,
+    `target=${String(terminal?.campaign_id || terminal?.campaign_name || "-").trim().toLowerCase() || "-"}`,
+  ];
+  return `supervisor:${pieces.join(":")}`;
+}
+
+function loadSupervisorIncidentCooldown(cfg, fingerprint, cooldownMinutes) {
+  if (!fingerprint) {
+    return inactiveIncidentCooldown();
+  }
+  const records = loadSummaryRecords(cfg, { summaryType: SUPERVISOR_INCIDENT_SUMMARY_TYPE, limit: 100 });
+  const matching = records.find((record) => record && record.fingerprint === fingerprint);
+  if (!matching) {
+    return inactiveIncidentCooldown();
+  }
+  const age = ageSeconds(matching.recorded_at_utc);
+  const windowSeconds = Math.max(60, Math.trunc(numberOrDefault(cooldownMinutes, SUPERVISOR_INCIDENT_COOLDOWN_MINUTES) * 60));
+  if (age === null || age > windowSeconds) {
+    return { active: false, remainingSeconds: 0, record: summarizeIncidentRecord(matching) };
+  }
+  return {
+    active: true,
+    remainingSeconds: Math.max(0, windowSeconds - age),
+    record: summarizeIncidentRecord(matching),
+  };
+}
+
+function inactiveIncidentCooldown() {
+  return { active: false, remainingSeconds: 0, record: null };
+}
+
+function summarizeIncidentRecord(record) {
+  return pickFields(record, ["summary_id", "status", "classification", "recommended_action", "message", "incident_id", "fingerprint", "recorded_at_utc"]);
+}
+
+function isRecentTerminal(terminal, maxAgeHours) {
+  const age = ageSeconds(terminal?.recorded_at_utc);
+  if (age === null) {
+    return false;
+  }
+  return age <= Math.max(1, Math.trunc(numberOrDefault(maxAgeHours, SUPERVISOR_EXHAUSTED_STALE_HOURS) * 3600));
 }
 
 function isFailureTerminalState(eventType, message, severity) {
@@ -1090,6 +1217,7 @@ function normalizeSummaryInput(cfg, input) {
     agentId: input.agentId || SUMMARY_DEFAULT_AGENT_IDS[summaryType] || cfg.actor,
     status: normalizeSummaryStatus(rule, input.status, classification),
     classification,
+    recommendedAction: normalizeSummaryRecommendedAction(rule, input.recommendedAction, classification),
   };
 }
 
@@ -1122,6 +1250,21 @@ function normalizeSummaryClassification(summaryType, classification) {
   return value === "blocked" ? "blocked" : rule.defaultClassification;
 }
 
+function normalizeSummaryRecommendedAction(rule, recommendedAction, classification) {
+  const value = String(recommendedAction || "").trim().toLowerCase();
+  if (value) {
+    return value;
+  }
+  const defaults = rule?.defaultRecommendedActions;
+  if (defaults && typeof defaults === "object") {
+    const fallback = defaults[classification];
+    if (typeof fallback === "string" && fallback.trim()) {
+      return fallback.trim();
+    }
+  }
+  return null;
+}
+
 function normalizeArtifactRefs(input) {
   const provided = Array.isArray(input.artifactRefs) ? input.artifactRefs.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()) : [];
   const evidencePaths = Array.isArray(input.evidence) ? input.evidence.filter((value) => typeof value === "string" && /[\/]/.test(value)).map((value) => value.trim()) : [];
@@ -1136,6 +1279,14 @@ function normalizeArtifactRefs(input) {
 function latestTerminalEntry(entries) { if (!Array.isArray(entries)) return null; return entries.filter((entry) => entry && typeof entry === "object" && TERMINAL_STATUSES.has(String(entry.status || "").toLowerCase())).sort((left, right) => timestampSortKey(right.updated_at || right.finished_at) - timestampSortKey(left.updated_at || left.finished_at))[0] || null; }
 function timestampSortKey(value) { const text = typeof value === "string" ? value.trim() : ""; if (!text) return 0; const parsed = Date.parse(text); return Number.isFinite(parsed) ? parsed : 0; }
 function ageSeconds(value) { const timestamp = timestampSortKey(value); if (!timestamp) return null; const delta = Date.now() - timestamp; return delta >= 0 ? Math.trunc(delta / 1000) : 0; }
+function buildRunbookIncidentFingerprint(params, incidentId) {
+  const failureClass = optionalString(params, "failureClass") || "runtime_incident";
+  const planId = optionalString(params, "planId") || "runtime";
+  const reason = optionalString(params, "reason") || "";
+  const reasonSlug = reason.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) || "none";
+  return `runbook:${failureClass}:${planId}:${reasonSlug || incidentId}`;
+}
+
 function jsonResult(payload) {
   return {
     content: [
