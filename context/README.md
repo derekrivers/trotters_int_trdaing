@@ -1,45 +1,43 @@
-﻿# Project Context
+# Project Context
 
-This directory is the working context base for the project.
+This directory is the maintained context base for the project.
 
-It is intentionally split by topic so new findings can be added without growing one large report file.
+It should contain stable project knowledge and current high-level status notes, not every temporary execution checklist or vendor reference dump.
 
 ## How to use this folder
 
-- Start with `00_project_overview.md` for scope, assumptions, and current direction.
-- Use `01_sources_ranked.md` for the primary source stack.
-- Use the topical files for rules, tax, execution, risk, strategy, and data pipeline notes.
-- Add new decisions, constraints, and validated findings to the relevant file instead of creating another monolithic report.
+- Start with `00_project_overview.md` for scope and current direction.
+- Use `01_sources_ranked.md` plus the core foundation notes for governance, execution, and data-pipeline context.
+- Use `11_architecture_principles.md`, `12_backtesting_system_architecture.md`, and `13_domain_model.md` for software design context.
+- Use `16_paper_trading_status.md` for the current paper-trading boundary.
+- Use `20_openclaw_lessons_learned.md`, `21_openclaw_agent_guide.md`, and `18_openclaw_status_and_backlog.md` for OpenClaw context.
 
 ## File Index
 
 - `00_project_overview.md`
 - `01_sources_ranked.md`
-- `02_regulatory_compliance.md`
-- `03_tax_treatment.md`
-- `04_market_microstructure.md`
-- `05_execution_best_practices.md`
-- `06_risk_management.md`
+- `02_legal_and_governance_constraints.md`
+- `04_execution_and_market_structure.md`
+- `06_risk_and_research_references.md`
 - `07_strategy_templates.md`
 - `08_data_pipelines_and_api_calls.md`
-- `09_contradictions_resolution.md`
-- `10_academic_and_industry_sources.md`
 - `11_architecture_principles.md`
 - `12_backtesting_system_architecture.md`
 - `13_domain_model.md`
 - `14_delivery_roadmap.md`
 - `15_phase10_tasklist.md`
-- `16_paper_trading_preparation.md`
-- `17_paper_trade_readiness_review.md`
-- `18_runtime_agent_api_plan.md`
-- `19_openclaw_supervisor_next_steps.md`
+- `16_paper_trading_status.md`
+- `18_openclaw_status_and_backlog.md`
 - `20_openclaw_lessons_learned.md`
 - `21_openclaw_agent_guide.md`
-- `22_openclaw_iteration_2_tasklist.md`
+
+## Moved Out Of Context
+
+Vendor-specific reference dumps now live under `references/vendors/`.
 
 ## Maintenance Rules
 
 - Prefer primary sources over summaries.
 - Record dates when rules, rates, or terms are time-sensitive.
-- Treat this folder as the maintained source of truth for the project context.
+- Treat this folder as maintained context, not a scratchpad for completed rollout notes.
 - Keep `deep-research-report.md` as the original source artifact unless and until we replace it deliberately.
