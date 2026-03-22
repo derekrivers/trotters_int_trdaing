@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "work_queue": [
+    {
+      "plan_id": "broad_operability",
+      "plan_file": "configs/directors/broad_operability.json",
+      "director_name": "broad-operability-director",
+      "enabled": true,
+      "priority": 1
+    }
+  ],
+  "config_registry": {
+    "broad_primary": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+    "broad_sector_pivot": "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
+    "broad_beta_pivot": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml"
+  },
+  "service_allowlist": [
+    "research-api",
+    "coordinator",
+    "campaign-manager",
+    "research-director",
+    "worker"
+  ],
+  "limits": {
+    "max_same_item_recoveries": 2,
+    "recovery_window_hours": 12,
+    "max_service_restarts_per_service_15m": 1,
+    "max_service_restarts_per_service_24h": 2
+  }
+}

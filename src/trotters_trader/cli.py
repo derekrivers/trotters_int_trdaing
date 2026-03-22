@@ -50,6 +50,7 @@ from trotters_trader.experiments import (
     write_experiment_comparison,
 )
 from trotters_trader.features import materialize_feature_set
+from trotters_trader.ops_bridge import serve_ops_bridge
 from trotters_trader.reports import write_paper_trade_decision_artifacts, write_promotion_artifacts
 from trotters_trader.research_runtime import (
     campaign_manager_loop,
@@ -131,6 +132,7 @@ RUNTIME_COMMANDS = [
     "research-director-manager",
     "research-dashboard",
     "research-api",
+    "research-ops-bridge",
 ]
 ALL_COMMANDS = LEGACY_COMMANDS + RUNTIME_COMMANDS
 RUNTIME_MUTATION_COMMANDS = {
@@ -560,6 +562,14 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
             host=args.api_host,
             port=args.api_port,
         )
+    if args.command == "research-ops-bridge":
+        return serve_ops_bridge(
+            paths,
+            runbook_path=args.runbook_file,
+            host=args.ops_host,
+            port=args.ops_port,
+            docker_socket_path=args.docker_socket_path,
+        )
     if args.command == "research-coordinator":
         if args.once:
             return coordinator_cycle(paths, lease_timeout_seconds=args.lease_timeout_seconds)
@@ -791,6 +801,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard-refresh-seconds", type=int, default=10)
     parser.add_argument("--api-host", default="0.0.0.0")
     parser.add_argument("--api-port", type=int, default=8890)
+    parser.add_argument("--ops-host", default="0.0.0.0")
+    parser.add_argument("--ops-port", type=int, default=8891)
+    parser.add_argument("--docker-socket-path", default="/var/run/docker.sock")
+    parser.add_argument("--runbook-file", default="configs/openclaw/trotters-runbook.json")
     parser.add_argument("--once", action="store_true")
     return parser
 

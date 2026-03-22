@@ -113,6 +113,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "research-api")
         self.assertEqual(args.api_port, 8891)
 
+    def test_parser_accepts_research_ops_bridge_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["research-ops-bridge", "--ops-port", "8892", "--runbook-file", "configs/openclaw/trotters-runbook.json"])
+
+        self.assertEqual(args.command, "research-ops-bridge")
+        self.assertEqual(args.ops_port, 8892)
+        self.assertEqual(args.runbook_file, "configs/openclaw/trotters-runbook.json")
+
     def test_parser_accepts_campaign_notification_options(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(
