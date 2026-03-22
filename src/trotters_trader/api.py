@@ -11,6 +11,7 @@ from urllib.parse import parse_qs
 import uuid
 from wsgiref.simple_server import make_server
 
+from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries, load_summary_records
 from trotters_trader.dashboard import _runtime_health
 from trotters_trader.research_runtime import (
@@ -75,6 +76,8 @@ class ApiController:
             "most_recent_terminal": most_recent_terminal,
             "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
             "agent_summaries": load_latest_summaries(self._paths.catalog_output_dir),
+            "agent_dispatches": load_dispatch_records(self._paths.catalog_output_dir, limit=10),
+            "agent_dispatch_summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=100),
         }
 
     def list_notifications(self, query: dict[str, list[str]]) -> dict[str, object]:
@@ -203,6 +206,23 @@ class ApiController:
             )
         }
 
+    def list_agent_dispatches(self, query: dict[str, list[str]]) -> dict[str, object]:
+        success_value = _query_value(query, "success")
+        success_filter = None
+        if success_value is not None:
+            success_filter = success_value.strip().lower() in {"1", "true", "yes", "ok"}
+        limit = _query_int(query, "limit", default=20)
+        return {
+            "agent_dispatches": load_dispatch_records(
+                self._paths.catalog_output_dir,
+                agent_id=_query_value(query, "agent_id"),
+                event_type=_query_value(query, "event_type"),
+                success=success_filter,
+                limit=limit,
+            ),
+            "summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=max(limit, 100)),
+        }
+
     def readiness(self) -> dict[str, object]:
         overview = self.overview()
         return {
@@ -309,6 +329,8 @@ class ApiApp:
             return self._json_response(self._controller.list_artifacts(query))
         if method == "GET" and path == "/api/v1/agent-summaries":
             return self._json_response(self._controller.list_agent_summaries(query))
+        if method == "GET" and path == "/api/v1/agent-dispatches":
+            return self._json_response(self._controller.list_agent_dispatches(query))
         if method == "GET" and path == "/api/v1/directors":
             return self._json_response(self._controller.list_directors())
         if method == "POST" and path == "/api/v1/directors":

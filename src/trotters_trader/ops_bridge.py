@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, quote
 import uuid
 from wsgiref.simple_server import make_server
 
+from trotters_trader.agent_dispatches import append_dispatch_record
 from trotters_trader.research_runtime import ResearchRuntimePaths
 from trotters_trader.supervisor_runbook import SupervisorRunbook, load_supervisor_runbook
 
@@ -326,6 +327,20 @@ class OpsBridgeController:
             parsed_output = json.loads(output_text) if output_text.strip() else {}
         except json.JSONDecodeError:
             parsed_output = {"raw": output_text}
+        event_type = _optional_text(payload.get("event_type"))
+        campaign_id = _optional_text(payload.get("campaign_id"))
+        profile_name = _optional_text(payload.get("profile_name"))
+        telemetry = _agent_dispatch_telemetry(
+            agent_id=normalized,
+            event_type=event_type,
+            campaign_id=campaign_id,
+            profile_name=profile_name,
+            session_id=session_id,
+            fingerprint=_optional_text(payload.get("fingerprint")),
+            parsed_output=parsed_output,
+            execution=execution,
+        )
+        append_dispatch_record(self._paths.catalog_output_dir, telemetry)
         exit_code = execution.get("exit_code")
         if exit_code not in (0, None):
             raise ValueError(f"OpenClaw agent dispatch for '{normalized}' failed with exit code {exit_code}")
@@ -334,10 +349,11 @@ class OpsBridgeController:
             "project_name": project_name,
             "container_id": container_id,
             "session_id": session_id,
-            "event_type": _optional_text(payload.get("event_type")),
-            "campaign_id": _optional_text(payload.get("campaign_id")),
+            "event_type": event_type,
+            "campaign_id": campaign_id,
             "result": parsed_output,
             "exec": execution,
+            "telemetry": telemetry,
         }
 
     def _load_runbook(self) -> SupervisorRunbook:
@@ -485,6 +501,52 @@ def serve_ops_bridge(
         print(f"Ops bridge listening on http://{host}:{port}", flush=True)
         server.serve_forever()
     return {"host": host, "port": port}
+
+
+def _agent_dispatch_telemetry(
+    *,
+    agent_id: str,
+    event_type: str | None,
+    campaign_id: str | None,
+    profile_name: str | None,
+    session_id: str | None,
+    fingerprint: str | None,
+    parsed_output: dict[str, object],
+    execution: dict[str, object],
+) -> dict[str, object]:
+    recorded_at = _utcnow()
+    result_payload = parsed_output.get("result") if isinstance(parsed_output.get("result"), dict) else {}
+    meta = result_payload.get("meta") if isinstance(result_payload.get("meta"), dict) else {}
+    agent_meta = meta.get("agentMeta") if isinstance(meta.get("agentMeta"), dict) else {}
+    usage = agent_meta.get("usage") if isinstance(agent_meta.get("usage"), dict) else {}
+    payloads = result_payload.get("payloads") if isinstance(result_payload.get("payloads"), list) else []
+    first_payload = payloads[0] if payloads and isinstance(payloads[0], dict) else {}
+    summary_text = str(first_payload.get("text", "") or "").strip()
+    return {
+        "dispatch_id": uuid.uuid4().hex,
+        "recorded_at_utc": recorded_at,
+        "agent_id": agent_id,
+        "event_type": event_type,
+        "campaign_id": campaign_id,
+        "profile_name": profile_name,
+        "session_id": session_id,
+        "fingerprint": fingerprint,
+        "attempted": True,
+        "success": execution.get("exit_code") in (0, None),
+        "suppressed": False,
+        "provider": _optional_text(agent_meta.get("provider")),
+        "model": _optional_text(agent_meta.get("model")),
+        "duration_ms": int(meta.get("durationMs", 0) or 0),
+        "prompt_tokens": int(agent_meta.get("promptTokens", 0) or 0),
+        "input_tokens": int(usage.get("input", 0) or 0),
+        "output_tokens": int(usage.get("output", 0) or 0),
+        "cache_read_tokens": int(usage.get("cacheRead", 0) or 0),
+        "cache_write_tokens": int(usage.get("cacheWrite", 0) or 0),
+        "total_tokens": int(usage.get("total", 0) or 0),
+        "response_summary": summary_text[:400] if summary_text else None,
+        "status_code": execution.get("exit_code"),
+        "error": None if execution.get("exit_code") in (0, None) else str(execution.get("output", "") or "")[:400],
+    }
 
 
 def _recent_restart_counts(audit_path: Path, service_name: str) -> dict[str, int]:

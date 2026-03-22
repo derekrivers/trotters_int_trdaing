@@ -385,7 +385,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         with patch(
             "trotters_trader.research_runtime._dispatch_agent_trigger",
-            side_effect=lambda dispatch: {"agent_id": dispatch["agent_id"], "attempted": True, "success": True},
+            side_effect=lambda _paths, dispatch: {"agent_id": dispatch["agent_id"], "attempted": True, "success": True},
         ) as dispatch_mock:
             _emit_campaign_notification(
                 paths,
@@ -405,10 +405,21 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
                 payload={"reason": "campaign_runtime_error"},
                 spec={},
             )
+            _emit_campaign_notification(
+                paths,
+                campaign_id="campaign-2",
+                campaign_name="broad-operability-primary",
+                event_type="strategy_promoted",
+                message="Candidate promoted",
+                payload={"selected_profile_name": "candidate-alpha", "recommended_action": "freeze_candidate"},
+                spec={},
+            )
 
-        self.assertEqual(dispatch_mock.call_count, 2)
-        self.assertEqual(dispatch_mock.call_args_list[0].args[0]["agent_id"], "research-triage")
-        self.assertEqual(dispatch_mock.call_args_list[1].args[0]["agent_id"], "failure-postmortem")
+        self.assertEqual(dispatch_mock.call_count, 4)
+        self.assertEqual(dispatch_mock.call_args_list[0].args[1]["agent_id"], "research-triage")
+        self.assertEqual(dispatch_mock.call_args_list[1].args[1]["agent_id"], "failure-postmortem")
+        self.assertEqual(dispatch_mock.call_args_list[2].args[1]["agent_id"], "candidate-review")
+        self.assertEqual(dispatch_mock.call_args_list[3].args[1]["agent_id"], "paper-trade-readiness")
         notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
         records = [
             json.loads(line)
@@ -417,6 +428,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         ]
         self.assertEqual(records[0]["agent_dispatches"][0]["agent_id"], "research-triage")
         self.assertEqual(records[1]["agent_dispatches"][0]["agent_id"], "failure-postmortem")
+        self.assertEqual([entry["agent_id"] for entry in records[2]["agent_dispatches"]], ["candidate-review", "paper-trade-readiness"])
 
     def test_start_director_records_running_director_and_writes_spec(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")

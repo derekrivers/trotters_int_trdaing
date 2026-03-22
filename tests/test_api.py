@@ -392,6 +392,43 @@ class ApiTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual(status, "200 OK")
         self.assertEqual(payload["agent_summaries"][0]["agent_id"], "candidate-review")
+
+    def test_agent_dispatches_route_returns_recent_telemetry(self) -> None:
+        root = self._workspace_root("agent_dispatches")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            telemetry_dir = paths.catalog_output_dir / "agent_telemetry"
+            telemetry_dir.mkdir(parents=True, exist_ok=True)
+            (telemetry_dir / "dispatches.jsonl").write_text(
+                "\n".join([
+                    json.dumps({
+                        "recorded_at_utc": "2026-03-22T12:10:00+00:00",
+                        "agent_id": "research-triage",
+                        "event_type": "campaign_finished",
+                        "success": True,
+                        "model": "gpt-5-nano",
+                        "total_tokens": 321,
+                    }),
+                    json.dumps({
+                        "recorded_at_utc": "2026-03-22T12:09:00+00:00",
+                        "agent_id": "failure-postmortem",
+                        "event_type": "campaign_failed",
+                        "success": False,
+                        "model": "gpt-5-nano",
+                        "total_tokens": 111,
+                    }),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(app, "GET", "/api/v1/agent-dispatches?limit=5", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["agent_dispatches"][0]["agent_id"], "research-triage")
+        self.assertEqual(payload["summary"]["totals"]["runs"], 2)
     def _invoke(
         self,
         app: ApiApp,

@@ -9,6 +9,7 @@ from typing import Callable
 from urllib.parse import parse_qs, quote, urlencode
 from wsgiref.simple_server import make_server
 
+from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries
 from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
@@ -62,6 +63,8 @@ class DashboardController:
             "active_campaigns": active_campaigns,
             "notifications": _load_notifications(self._paths, limit=25),
             "agent_summaries": load_latest_summaries(self._paths.catalog_output_dir),
+            "agent_dispatches": load_dispatch_records(self._paths.catalog_output_dir, limit=10),
+            "agent_dispatch_summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=100),
         }
 
     def campaign_detail(self, campaign_id: str) -> dict[str, object]:
@@ -297,6 +300,8 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     campaigns = payload.get("active_campaigns", []) if isinstance(payload.get("active_campaigns"), list) else []
     notifications = payload.get("notifications", []) if isinstance(payload.get("notifications"), list) else []
     agent_summaries = payload.get("agent_summaries", {}) if isinstance(payload.get("agent_summaries"), dict) else {}
+    agent_dispatches = payload.get("agent_dispatches", []) if isinstance(payload.get("agent_dispatches"), list) else []
+    agent_dispatch_summary = payload.get("agent_dispatch_summary", {}) if isinstance(payload.get("agent_dispatch_summary"), dict) else {}
     health = _runtime_health(status=status, campaigns=campaigns, directors=directors)
 
     summary_cards = "".join(
@@ -340,6 +345,27 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         for change in _recent_changes(all_campaigns, all_directors, notifications)
     ) or "<tr><td colspan='3'>No recent changes recorded</td></tr>"
     agent_summary_rows = "".join(_agent_summary_row(summary) for summary in agent_summaries.values() if isinstance(summary, dict)) or "<tr><td colspan='6'>No agent summaries yet</td></tr>"
+    decision_snapshot_cards = "".join(
+        _decision_snapshot_card(label, agent_summaries.get(summary_type))
+        for label, summary_type in [
+            ("Supervisor Incident", "supervisor_incident_summary"),
+            ("Campaign Triage", "campaign_triage_summary"),
+            ("Candidate Readiness", "candidate_readiness_summary"),
+            ("Paper-Trade Readiness", "paper_trade_readiness_summary"),
+            ("Failure Postmortem", "failure_postmortem_summary"),
+        ]
+    )
+    dispatch_rows = "".join(_agent_dispatch_row(record) for record in agent_dispatches if isinstance(record, dict)) or "<tr><td colspan='7'>No agent dispatches recorded yet</td></tr>"
+    dispatch_totals = agent_dispatch_summary.get("totals", {}) if isinstance(agent_dispatch_summary.get("totals"), dict) else {}
+    dispatch_summary_cards = "".join(
+        _summary_card(label, str(value))
+        for label, value in [
+            ("agent runs", dispatch_totals.get("runs", 0)),
+            ("dispatch successes", dispatch_totals.get("successes", 0)),
+            ("dispatch failures", dispatch_totals.get("failures", 0)),
+            ("dispatch tokens", dispatch_totals.get("total_tokens", 0)),
+        ]
+    )
 
     body = f"""
     {_flash_banner(flash)}
@@ -357,11 +383,25 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     {_health_panel(health)}
     <section class="summary-grid">{summary_cards}</section>
     <section class="panel">
+      <h2>Decision Snapshots</h2>
+      <p class="subtle">Latest operator-facing conclusion from each summary type.</p>
+      <section class="summary-grid">{decision_snapshot_cards}</section>
+    </section>
+    <section class="panel">
       <h2>Agent Summaries</h2>
       <p class="subtle">Latest low-cost outputs from the supervisor and specialist review agents.</p>
       <table>
         <thead><tr><th>Agent</th><th>Summary</th><th>Classification</th><th>Status</th><th>Action</th><th>Recorded</th></tr></thead>
         <tbody>{agent_summary_rows}</tbody>
+      </table>
+    </section>
+    <section class="panel">
+      <h2>Agent Dispatches</h2>
+      <p class="subtle">Recent specialist-agent runs and their cost envelope.</p>
+      <section class="summary-grid">{dispatch_summary_cards}</section>
+      <table>
+        <thead><tr><th>Agent</th><th>Event</th><th>Outcome</th><th>Model</th><th>Tokens</th><th>Duration</th><th>Recorded</th></tr></thead>
+        <tbody>{dispatch_rows}</tbody>
       </table>
     </section>
     <section class="panel">
@@ -1056,6 +1096,49 @@ def _agent_summary_row(summary: dict[str, object]) -> str:
         f"<td>{_timestamp_with_age(summary.get('recorded_at_utc'))}</td>"
         "</tr>"
     )
+
+def _decision_snapshot_card(label: str, summary: object) -> str:
+    if not isinstance(summary, dict):
+        return (
+            f"<section class='card'><h2>{escape(label)}</h2>"
+            "<p class='subtle'>No summary yet</p></section>"
+        )
+    context_bits = [
+        str(summary.get("campaign_id") or "").strip(),
+        str(summary.get("profile_name") or "").strip(),
+        str(summary.get("director_id") or "").strip(),
+    ]
+    context_text = " | ".join(bit for bit in context_bits if bit) or "-"
+    action = str(summary.get("recommended_action") or "-")
+    return (
+        f"<section class='card'><h2>{escape(label)}</h2>"
+        f"<div class='metric'>{escape(str(summary.get('classification') or '-'))}</div>"
+        f"<p><strong>Status:</strong> {escape(str(summary.get('status') or '-'))}</p>"
+        f"<p><strong>Action:</strong> {escape(action)}</p>"
+        f"<p><strong>Context:</strong> {escape(context_text)}</p>"
+        f"<p class='subtle'>{escape(str(summary.get('message') or '')[:180])}</p>"
+        f"<p class='subtle'>{_timestamp_with_age(summary.get('recorded_at_utc'))}</p>"
+        "</section>"
+    )
+
+
+def _agent_dispatch_row(record: dict[str, object]) -> str:
+    outcome = "suppressed" if bool(record.get("suppressed")) else "success" if bool(record.get("success")) else "failed" if record.get("success") is False else "pending"
+    model = str(record.get("model") or record.get("provider") or "-")
+    duration_ms = str(record.get("duration_ms") or "-")
+    tokens = str(record.get("total_tokens") or "-")
+    return (
+        "<tr>"
+        f"<td>{escape(str(record.get('agent_id', '-')))}</td>"
+        f"<td>{escape(str(record.get('event_type', '-')))}</td>"
+        f"<td>{_status_pill(outcome)}</td>"
+        f"<td>{escape(model)}</td>"
+        f"<td>{escape(tokens)}</td>"
+        f"<td>{escape(duration_ms)}</td>"
+        f"<td>{_timestamp_with_age(record.get('recorded_at_utc'))}</td>"
+        "</tr>"
+    )
+
 
 def _summary_card(label: str, value: str) -> str:    return f"<section class='card'><h2>{escape(label)}</h2><div class='metric'>{escape(value)}</div></section>"
 

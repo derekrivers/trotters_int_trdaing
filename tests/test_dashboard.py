@@ -1005,6 +1005,19 @@ class DashboardTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
+            telemetry_dir = paths.catalog_output_dir / "agent_telemetry"
+            telemetry_dir.mkdir(parents=True, exist_ok=True)
+            (telemetry_dir / "dispatches.jsonl").write_text(
+                json.dumps({
+                    "recorded_at_utc": "2026-03-22T12:06:00+00:00",
+                    "agent_id": "research-triage",
+                    "event_type": "campaign_finished",
+                    "success": True,
+                    "model": "gpt-5-nano",
+                    "total_tokens": 210,
+                }) + "\n",
+                encoding="utf-8",
+            )
             app = DashboardApp(DashboardController(paths), refresh_seconds=0)
             with (
                 patch("trotters_trader.dashboard.runtime_status", return_value={"counts": {}, "workers": [], "jobs": [], "campaigns": [], "directors": []}),
@@ -1016,8 +1029,11 @@ class DashboardTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         self.assertEqual(status, "200 OK")
+        self.assertIn("Decision Snapshots", body)
         self.assertIn("Agent Summaries", body)
+        self.assertIn("Agent Dispatches", body)
         self.assertIn("runtime-supervisor", body)
+        self.assertIn("research-triage", body)
         self.assertIn("service_health", body)
     def _invoke(
         self,

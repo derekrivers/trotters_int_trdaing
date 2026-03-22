@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 import json
@@ -82,7 +83,23 @@ class _FakeDockerClient:
             "exec_id": "exec-1",
             "exit_code": 0,
             "running": False,
-            "output": json.dumps({"ok": True, "agent": command[3]}),
+            "output": json.dumps({
+                "runId": "run-1",
+                "status": "ok",
+                "summary": "completed",
+                "result": {
+                    "payloads": [{"text": "triage done"}],
+                    "meta": {
+                        "durationMs": 321,
+                        "agentMeta": {
+                            "provider": "openai",
+                            "model": "gpt-5-nano",
+                            "promptTokens": 123,
+                            "usage": {"input": 11, "output": 7, "cacheRead": 5, "total": 23},
+                        },
+                    },
+                },
+            }),
         }
 
 
@@ -155,6 +172,42 @@ class OpsBridgeTests(unittest.TestCase):
         self.assertEqual(audit_payload["actor"], "openclaw-supervisor")
         self.assertEqual(audit_payload["path"], "/api/v1/services/worker/restart")
 
+    def test_restart_service_rejects_repeat_restart_inside_limit_window(self) -> None:
+        root = self._workspace_root("service_limit")
+        docker = _FakeDockerClient()
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            runbook_path = self._write_runbook(root)
+            controller = OpsBridgeController(paths, runbook_path=runbook_path, docker_client=docker)
+            controller.audit_path.parent.mkdir(parents=True, exist_ok=True)
+            controller.audit_path.write_text(
+                json.dumps(
+                    {
+                        "recorded_at_utc": datetime.now(UTC).isoformat(),
+                        "path": "/api/v1/services/worker/restart",
+                        "status": "200 OK",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            app = OpsBridgeApp(controller, auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(
+                app,
+                "POST",
+                "/api/v1/services/worker/restart",
+                body=json.dumps({"reason": "runtime_supervisor", "incident_id": "incident-2"}).encode("utf-8"),
+                content_type="application/json",
+                headers=self._auth_headers(actor="openclaw-supervisor"),
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "400 Bad Request")
+        self.assertIn("Restart limit reached", payload["error"])
+        self.assertEqual(docker.restarted, [])
+
     def test_dispatch_agent_rejects_non_allowlisted_agent(self) -> None:
         root = self._workspace_root("agent_blocked")
         try:
@@ -208,6 +261,8 @@ class OpsBridgeTests(unittest.TestCase):
         audit_payload = json.loads(audit_lines[-1])
         self.assertEqual(status, "200 OK")
         self.assertEqual(payload["agent_id"], "research-triage")
+        self.assertEqual(payload["telemetry"]["model"], "gpt-5-nano")
+        self.assertEqual(payload["telemetry"]["total_tokens"], 23)
         self.assertEqual(docker.exec_calls[0]["container_id"], "gateway001")
         self.assertIn("--agent", docker.exec_calls[0]["command"])
         self.assertIn("research-triage", docker.exec_calls[0]["command"])

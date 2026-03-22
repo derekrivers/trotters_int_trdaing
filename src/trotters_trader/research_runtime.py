@@ -16,6 +16,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 import uuid
 
+from trotters_trader.agent_dispatches import append_dispatch_record, has_recent_successful_dispatch
 from trotters_trader.catalog import write_catalog_snapshot
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.config import RuntimeOverrides, apply_runtime_overrides, load_config
@@ -86,10 +87,12 @@ RETRYABLE_RUNTIME_ERROR_MARKERS = (
     "jsondecodeerror",
 )
 AGENT_TRIGGER_EVENT_MAP = {
-    "campaign_finished": "research-triage",
-    "campaign_failed": "failure-postmortem",
-    "campaign_stopped": "failure-postmortem",
+    "campaign_finished": ("research-triage",),
+    "campaign_failed": ("failure-postmortem",),
+    "campaign_stopped": ("failure-postmortem",),
+    "strategy_promoted": ("candidate-review", "paper-trade-readiness"),
 }
+AGENT_DISPATCH_COOLDOWN_SECONDS = 1800
 
 
 @dataclass(frozen=True)
@@ -3079,7 +3082,7 @@ def _emit_campaign_notification(
                 "error": str(exc),
             }
     for dispatch in _agent_dispatch_specs(record):
-        record["agent_dispatches"].append(_dispatch_agent_trigger(dispatch))
+        record["agent_dispatches"].append(_dispatch_agent_trigger(paths, dispatch))
     payload_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     with (exports_dir / CAMPAIGN_NOTIFICATION_JSONL).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record))
@@ -3088,8 +3091,8 @@ def _emit_campaign_notification(
 
 def _agent_dispatch_specs(record: dict[str, object]) -> list[dict[str, object]]:
     event_type = str(record.get("event_type", "") or "").strip().lower()
-    agent_id = AGENT_TRIGGER_EVENT_MAP.get(event_type)
-    if not agent_id:
+    agent_ids = AGENT_TRIGGER_EVENT_MAP.get(event_type) or ()
+    if not agent_ids:
         return []
     campaign_id = str(record.get("campaign_id", "") or "").strip()
     campaign_name = str(record.get("campaign_name", "") or "").strip()
@@ -3097,59 +3100,123 @@ def _agent_dispatch_specs(record: dict[str, object]) -> list[dict[str, object]]:
     severity = str(record.get("severity", "") or "").strip()
     message = str(record.get("message", "") or "").strip()
     payload_path = str(record.get("payload_path", "") or "").strip()
-    if agent_id == "research-triage":
-        session_id = f"research-triage-{campaign_id}" if campaign_id else None
-        dispatch_message = (
-            f"Process a research-triage trigger for campaign {campaign_id or 'unknown'}"
-            f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
-            f"Severity: {severity or 'unknown'}. Message: {message or 'none'}. "
-            f"Notification payload: {payload_path or 'n/a'}. "
-            "Use `trotters_review_pack` with `action: campaign_triage` first. Then call "
-            "`trotters_summaries` with `action: record`, `summaryType: campaign_triage_summary`, "
-            "exact field names `status`, `classification`, `recommendedAction`, `message`, "
-            "`evidence`, `artifactRefs`, `campaignId`, `directorId`, `fingerprint`, and "
-            "`suppressIfRecent: true`. End with one short confirmation sentence and do not ask questions."
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    profile_name = _notification_profile_name(payload)
+    dispatches: list[dict[str, object]] = []
+    for agent_id in agent_ids:
+        if agent_id == "research-triage":
+            session_id = f"research-triage-{campaign_id}" if campaign_id else None
+            dispatch_message = (
+                f"Process a research-triage trigger for campaign {campaign_id or 'unknown'}"
+                f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
+                f"Severity: {severity or 'unknown'}. Message: {message or 'none'}. "
+                f"Notification payload: {payload_path or 'n/a'}. "
+                "Use `trotters_review_pack` with `action: campaign_triage` first. Then call "
+                "`trotters_summaries` with `action: record`, `summaryType: campaign_triage_summary`, "
+                "exact field names `status`, `classification`, `recommendedAction`, `message`, "
+                "`evidence`, `artifactRefs`, `campaignId`, `directorId`, `fingerprint`, and "
+                "`suppressIfRecent: true`. End with one short confirmation sentence and do not ask questions."
+            )
+        elif agent_id == "failure-postmortem":
+            session_id = f"failure-postmortem-{campaign_id}" if campaign_id else None
+            dispatch_message = (
+                f"Process a failure-postmortem trigger for campaign {campaign_id or 'unknown'}"
+                f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
+                f"Severity: {severity or 'unknown'}. Message: {message or 'none'}. "
+                f"Notification payload: {payload_path or 'n/a'}. "
+                "Use `trotters_review_pack` with `action: failure_postmortem` first. Then call "
+                "`trotters_summaries` with `action: record`, `summaryType: failure_postmortem_summary`, "
+                "exact field names `status`, `classification`, `recommendedAction`, `message`, "
+                "`evidence`, `artifactRefs`, `campaignId`, `directorId`, `fingerprint`, and "
+                "`suppressIfRecent: true`. End with one short confirmation sentence and do not ask questions."
+            )
+        elif agent_id == "candidate-review":
+            session_id = f"candidate-review-{profile_name or campaign_id}" if (profile_name or campaign_id) else None
+            dispatch_message = (
+                f"Process a candidate-review trigger for campaign {campaign_id or 'unknown'}"
+                f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
+                f"Profile: {profile_name or 'unknown'}. Severity: {severity or 'unknown'}. "
+                f"Notification payload: {payload_path or 'n/a'}. "
+                "Use `trotters_review_pack` with `action: candidate_review` first. Then call "
+                "`trotters_summaries` with `action: record`, `summaryType: candidate_readiness_summary`, "
+                "exact field names `status`, `classification`, `recommendedAction`, `message`, "
+                "`evidence`, `artifactRefs`, `profileName`, `fingerprint`, and `suppressIfRecent: true`. "
+                "End with one short confirmation sentence and do not ask questions."
+            )
+        else:
+            session_id = f"paper-trade-readiness-{profile_name or campaign_id}" if (profile_name or campaign_id) else None
+            dispatch_message = (
+                f"Process a paper-trade-readiness trigger for campaign {campaign_id or 'unknown'}"
+                f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
+                f"Profile: {profile_name or 'unknown'}. Severity: {severity or 'unknown'}. "
+                f"Notification payload: {payload_path or 'n/a'}. "
+                "Use `trotters_review_pack` with `action: paper_trade_readiness` first. Then call "
+                "`trotters_summaries` with `action: record`, `summaryType: paper_trade_readiness_summary`, "
+                "exact field names `status`, `classification`, `recommendedAction`, `message`, "
+                "`evidence`, `artifactRefs`, `profileName`, `fingerprint`, and `suppressIfRecent: true`. "
+                "End with one short confirmation sentence and do not ask questions."
+            )
+        dispatches.append(
+            {
+                "agent_id": agent_id,
+                "campaign_id": campaign_id or None,
+                "event_type": event_type,
+                "profile_name": profile_name,
+                "session_id": session_id,
+                "fingerprint": f"dispatch:{agent_id}:{event_type}:{profile_name or campaign_id or 'runtime'}",
+                "message": dispatch_message,
+            }
         )
-    else:
-        session_id = f"failure-postmortem-{campaign_id}" if campaign_id else None
-        dispatch_message = (
-            f"Process a failure-postmortem trigger for campaign {campaign_id or 'unknown'}"
-            f" ({campaign_name or 'unknown'}) after {event_type} at {recorded_at}. "
-            f"Severity: {severity or 'unknown'}. Message: {message or 'none'}. "
-            f"Notification payload: {payload_path or 'n/a'}. "
-            "Use `trotters_review_pack` with `action: failure_postmortem` first. Then call "
-            "`trotters_summaries` with `action: record`, `summaryType: failure_postmortem_summary`, "
-            "exact field names `status`, `classification`, `recommendedAction`, `message`, "
-            "`evidence`, `artifactRefs`, `campaignId`, `directorId`, `fingerprint`, and "
-            "`suppressIfRecent: true`. End with one short confirmation sentence and do not ask questions."
-        )
-    return [
-        {
-            "agent_id": agent_id,
-            "campaign_id": campaign_id or None,
-            "event_type": event_type,
-            "session_id": session_id,
-            "message": dispatch_message,
+    return dispatches
+
+
+def _dispatch_agent_trigger(paths: ResearchRuntimePaths, dispatch: dict[str, object]) -> dict[str, object]:
+    recorded_at = _utcnow()
+    agent_id = str(dispatch.get("agent_id", "") or "").strip()
+    fingerprint = str(dispatch.get("fingerprint", "") or "").strip()
+    base_record = {
+        "dispatch_id": uuid.uuid4().hex,
+        "recorded_at_utc": recorded_at,
+        "agent_id": agent_id,
+        "event_type": dispatch.get("event_type"),
+        "campaign_id": dispatch.get("campaign_id"),
+        "profile_name": dispatch.get("profile_name"),
+        "session_id": dispatch.get("session_id"),
+        "fingerprint": fingerprint,
+    }
+    if fingerprint and has_recent_successful_dispatch(
+        paths.catalog_output_dir,
+        fingerprint=fingerprint,
+        cooldown_seconds=AGENT_DISPATCH_COOLDOWN_SECONDS,
+    ):
+        suppressed = {
+            **base_record,
+            "attempted": False,
+            "success": None,
+            "suppressed": True,
+            "error": "dispatch_cooldown_active",
         }
-    ]
-
-
-def _dispatch_agent_trigger(dispatch: dict[str, object]) -> dict[str, object]:
+        append_dispatch_record(paths.catalog_output_dir, suppressed)
+        return suppressed
     base_url = str(os.environ.get("TROTTERS_OPS_BRIDGE_BASE", "") or "").strip()
     token = str(os.environ.get("TROTTERS_OPS_BRIDGE_TOKEN", "") or "").strip()
     if not base_url or not token:
-        return {
-            "agent_id": dispatch.get("agent_id"),
+        result = {
+            **base_record,
             "attempted": False,
             "success": False,
+            "suppressed": False,
             "error": "ops_bridge_not_configured",
         }
-    agent_id = str(dispatch.get("agent_id", "") or "").strip()
+        append_dispatch_record(paths.catalog_output_dir, result)
+        return result
     payload = {
         "message": str(dispatch.get("message", "") or ""),
         "campaign_id": dispatch.get("campaign_id"),
         "event_type": dispatch.get("event_type"),
         "session_id": dispatch.get("session_id"),
+        "profile_name": dispatch.get("profile_name"),
+        "fingerprint": dispatch.get("fingerprint"),
         "thinking": "low",
         "timeout_seconds": 180,
     }
@@ -3168,28 +3235,73 @@ def _dispatch_agent_trigger(dispatch: dict[str, object]) -> dict[str, object]:
         with urlopen(request, timeout=190) as response:
             response_text = response.read().decode("utf-8", errors="replace")
             response_payload = json.loads(response_text) if response_text.strip() else {}
-        return {
-            "agent_id": agent_id,
+        result = {
+            **base_record,
             "attempted": True,
             "success": True,
+            "suppressed": False,
+            **_extract_agent_dispatch_metrics(response_payload),
             "response": response_payload,
         }
+        return result
     except HTTPError as exc:
         error_text = exc.read().decode("utf-8", errors="replace")
-        return {
-            "agent_id": agent_id,
+        result = {
+            **base_record,
             "attempted": True,
             "success": False,
+            "suppressed": False,
             "status_code": exc.code,
             "error": error_text or str(exc),
         }
+        append_dispatch_record(paths.catalog_output_dir, result)
+        return result
     except (URLError, TimeoutError, ValueError) as exc:
-        return {
-            "agent_id": agent_id,
+        result = {
+            **base_record,
             "attempted": True,
             "success": False,
+            "suppressed": False,
             "error": str(exc),
         }
+        append_dispatch_record(paths.catalog_output_dir, result)
+        return result
+
+
+def _notification_profile_name(payload: dict[str, object]) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    direct = str(payload.get("selected_profile_name") or payload.get("profile_name") or "").strip()
+    if direct:
+        return direct
+    promotion = payload.get("promotion_decision") if isinstance(payload.get("promotion_decision"), dict) else None
+    profile = promotion.get("profile") if isinstance(promotion, dict) and isinstance(promotion.get("profile"), dict) else None
+    nested = str((profile or {}).get("profile_name") or (promotion or {}).get("profile_name") or "").strip()
+    return nested or None
+
+
+def _extract_agent_dispatch_metrics(response_payload: dict[str, object]) -> dict[str, object]:
+    result_payload = response_payload.get("result") if isinstance(response_payload.get("result"), dict) else {}
+    nested_result = result_payload.get("result") if isinstance(result_payload.get("result"), dict) else {}
+    meta = nested_result.get("meta") if isinstance(nested_result.get("meta"), dict) else {}
+    agent_meta = meta.get("agentMeta") if isinstance(meta.get("agentMeta"), dict) else {}
+    usage = agent_meta.get("usage") if isinstance(agent_meta.get("usage"), dict) else {}
+    payloads = nested_result.get("payloads") if isinstance(nested_result.get("payloads"), list) else []
+    first_payload = payloads[0] if payloads and isinstance(payloads[0], dict) else {}
+    summary_text = str(first_payload.get("text", "") or "").strip()
+    return {
+        "provider": str(agent_meta.get("provider", "") or "") or None,
+        "model": str(agent_meta.get("model", "") or "") or None,
+        "duration_ms": int(meta.get("durationMs", 0) or 0),
+        "prompt_tokens": int(agent_meta.get("promptTokens", 0) or 0),
+        "input_tokens": int(usage.get("input", 0) or 0),
+        "output_tokens": int(usage.get("output", 0) or 0),
+        "cache_read_tokens": int(usage.get("cacheRead", 0) or 0),
+        "cache_write_tokens": int(usage.get("cacheWrite", 0) or 0),
+        "total_tokens": int(usage.get("total", 0) or 0),
+        "response_summary": summary_text[:400] if summary_text else None,
+    }
+
 
 
 def _notification_severity(event_type: str, payload: dict[str, object]) -> str:
