@@ -1156,6 +1156,60 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("runtime-supervisor", body)
         self.assertIn("research-triage", body)
         self.assertIn("service_health", body)
+
+    def test_overview_renders_paper_rehearsal_panel(self) -> None:
+        root = self._workspace_root("paper_rehearsal")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            paper_root = paths.catalog_output_dir / "paper_trading"
+            paper_root.mkdir(parents=True, exist_ok=True)
+            (paper_root / "state.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "active_profile": None,
+                    "portfolio": {"initialized": False, "cash": 0.0, "nav": 0.0, "holdings": []},
+                    "current_day_status": "blocked",
+                }),
+                encoding="utf-8",
+            )
+            (paper_root / "days.jsonl").write_text(
+                json.dumps({
+                    "day_id": "paper-day-1",
+                    "recorded_at_utc": "2026-03-22T12:30:00+00:00",
+                    "status": "blocked",
+                    "profile_name": "",
+                    "decision_date": "",
+                    "next_trade_date": "",
+                    "summary": "Paper-trading rehearsal is blocked.",
+                    "block_reasons": [{"code": "no_promoted_candidate", "message": "No promoted frozen candidate is available for paper-trading rehearsal."}],
+                }) + "\n",
+                encoding="utf-8",
+            )
+            (paper_root / "operator_actions.jsonl").write_text(
+                json.dumps({
+                    "action_id": "paper-action-1",
+                    "recorded_at_utc": "2026-03-22T12:30:01+00:00",
+                    "action": "blocked",
+                    "actor": "system",
+                    "day_id": "paper-day-1",
+                    "reason": "No promoted frozen candidate is available for paper-trading rehearsal.",
+                }) + "\n",
+                encoding="utf-8",
+            )
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch("trotters_trader.dashboard.runtime_status", return_value={"counts": {}, "workers": [], "jobs": [], "campaigns": [], "directors": []}),
+                patch("trotters_trader.dashboard.campaign_status", return_value={"campaign": {}}),
+                patch("trotters_trader.dashboard.director_status", return_value={"director": {}}),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Paper Rehearsal", body)
+        self.assertIn("No promoted frozen candidate is available for paper-trading rehearsal.", body)
+        self.assertIn("Operator Decisions", body)
     def _invoke(
         self,
         app: DashboardApp,

@@ -76,6 +76,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["active_directors"][0]["director_id"], "director-1")
         self.assertEqual(payload["notifications"][0]["campaign_id"], "campaign-1")
         self.assertEqual(payload["most_recent_terminal"]["director"], None)
+        self.assertIn("paper_rehearsal", payload)
 
     def test_runtime_overview_includes_most_recent_terminal_summary(self) -> None:
         root = self._workspace_root("overview_terminal")
@@ -534,6 +535,102 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertEqual(payload["agent_dispatches"][0]["agent_id"], "research-triage")
         self.assertEqual(payload["summary"]["totals"]["runs"], 2)
+
+    def test_paper_trading_status_route_returns_latest_day_and_action(self) -> None:
+        root = self._workspace_root("paper_status")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            paper_root = paths.catalog_output_dir / "paper_trading"
+            paper_root.mkdir(parents=True, exist_ok=True)
+            (paper_root / "state.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "portfolio": {"initialized": False, "cash": 0.0, "nav": 0.0, "holdings": []},
+                    "current_day_status": "blocked",
+                }),
+                encoding="utf-8",
+            )
+            (paper_root / "days.jsonl").write_text(
+                json.dumps({
+                    "day_id": "paper-day-1",
+                    "status": "blocked",
+                    "summary": "Paper-trading rehearsal is blocked.",
+                }) + "\n",
+                encoding="utf-8",
+            )
+            (paper_root / "operator_actions.jsonl").write_text(
+                json.dumps({
+                    "action_id": "paper-action-1",
+                    "action": "blocked",
+                    "actor": "system",
+                    "day_id": "paper-day-1",
+                }) + "\n",
+                encoding="utf-8",
+            )
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(app, "GET", "/api/v1/paper-trading/status", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["latest_day"]["day_id"], "paper-day-1")
+        self.assertEqual(payload["latest_action"]["action"], "blocked")
+
+    def test_paper_trading_actions_route_records_operator_action(self) -> None:
+        root = self._workspace_root("paper_action")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            paper_root = paths.catalog_output_dir / "paper_trading"
+            day_dir = paper_root / "days" / "paper-day-1"
+            day_dir.mkdir(parents=True, exist_ok=True)
+            (day_dir / "paper_trade_decision.json").write_text(
+                json.dumps({
+                    "current_nav": 100000.0,
+                    "target_holdings": [
+                        {
+                            "instrument": "ABC",
+                            "projected_quantity": 10,
+                            "reference_close": 100.0,
+                            "projected_weight": 0.01,
+                        }
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            (paper_root / "state.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "portfolio": {"initialized": False, "cash": 0.0, "nav": 0.0, "holdings": []},
+                }),
+                encoding="utf-8",
+            )
+            (paper_root / "days.jsonl").write_text(
+                json.dumps({
+                    "day_id": "paper-day-1",
+                    "status": "ready",
+                    "decision_date": "2026-03-22",
+                    "profile_name": "sample_sma",
+                    "artifact_paths": {"decision_json": str((day_dir / "paper_trade_decision.json").resolve())},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(
+                app,
+                "POST",
+                "/api/v1/paper-trading/actions",
+                body=json.dumps({"action": "accepted", "day_id": "paper-day-1", "actor": "api-test", "reason": "accepted"}).encode("utf-8"),
+                content_type="application/json",
+                headers=self._auth_headers(),
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "201 Created")
+        self.assertEqual(payload["action"]["action"], "accepted")
+        self.assertTrue(payload["state"]["portfolio"]["initialized"])
     def _invoke(
         self,
         app: ApiApp,

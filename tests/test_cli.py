@@ -46,6 +46,42 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.config, "configs/backtest.toml")
         self.assertEqual(str(args.reference_date), "2026-03-21")
 
+    def test_parser_accepts_paper_trade_runner_command_without_config(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "paper-trade-runner",
+                "--catalog-output-dir",
+                "runtime/catalog",
+                "--reference-date",
+                "2026-03-22",
+            ]
+        )
+
+        self.assertEqual(args.command, "paper-trade-runner")
+        self.assertEqual(args.catalog_output_dir, "runtime/catalog")
+        self.assertEqual(str(args.reference_date), "2026-03-22")
+
+    def test_parser_accepts_paper_trade_action_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "paper-trade-action",
+                "--catalog-output-dir",
+                "runtime/catalog",
+                "--paper-action",
+                "accepted",
+                "--day-id",
+                "paper-day-1",
+                "--action-reason",
+                "accepted for rehearsal",
+            ]
+        )
+
+        self.assertEqual(args.command, "paper-trade-action")
+        self.assertEqual(args.paper_action, "accepted")
+        self.assertEqual(args.day_id, "paper-day-1")
+
     def test_parser_accepts_research_campaign_start_command(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(["research-campaign-start"])
@@ -208,6 +244,24 @@ class CliCommandExecutionTests(IsolatedWorkspaceTestCase):
         warnings = payload["decision_package"].get("warnings", [])
         self.assertTrue(any("rehearsal" in str(warning).lower() for warning in warnings))
         self.assertTrue(any("stale" in str(warning).lower() for warning in warnings))
+
+    def test_execute_command_runs_blocked_paper_trade_runner_without_config(self) -> None:
+        payload = execute_command(
+            "paper-trade-runner",
+            None,
+            "",
+            scope_data_paths=False,
+            prepare_data=False,
+            command_args=argparse.Namespace(
+                catalog_output_dir=str(self.temp_root / "catalog"),
+                reference_date=date(2026, 3, 22),
+                config=None,
+                evaluation_profile=None,
+            ),
+        )
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["day"]["block_reasons"][0]["code"], "no_promoted_candidate")
 
 
 if __name__ == "__main__":

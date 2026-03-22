@@ -11,6 +11,7 @@ from wsgiref.simple_server import make_server
 
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries
+from trotters_trader.paper_rehearsal import paper_rehearsal_status
 from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
     campaign_status,
@@ -67,6 +68,7 @@ class DashboardController:
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "notifications": _load_notifications(self._paths, limit=25),
+            "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
             "current_best_candidate": _build_current_best_candidate(
                 self._paths,
                 status=status,
@@ -352,6 +354,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         if isinstance(payload.get("current_best_candidate"), dict)
         else {}
     )
+    paper_rehearsal = payload.get("paper_rehearsal", {}) if isinstance(payload.get("paper_rehearsal"), dict) else {}
     agent_summaries = payload.get("agent_summaries", {}) if isinstance(payload.get("agent_summaries"), dict) else {}
     agent_dispatches = payload.get("agent_dispatches", []) if isinstance(payload.get("agent_dispatches"), list) else []
     agent_dispatch_summary = payload.get("agent_dispatch_summary", {}) if isinstance(payload.get("agent_dispatch_summary"), dict) else {}
@@ -434,6 +437,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     </section>
     {_notification_banner(notifications, campaigns=campaigns, directors=directors)}
     {_health_panel(health)}
+    {_paper_rehearsal_section(paper_rehearsal)}
     {_current_best_candidate_section(current_best_candidate)}
     <section class="summary-grid">{summary_cards}</section>
     <section class="panel">
@@ -600,6 +604,58 @@ def _current_best_candidate_section(summary: dict[str, object]) -> str:
         <thead><tr><th>Summary</th><th>Classification</th><th>Status</th><th>Action</th><th>Recorded</th></tr></thead>
         <tbody>{supporting_rows}</tbody>
       </table>
+    </section>
+    """
+
+
+def _paper_rehearsal_section(summary: dict[str, object]) -> str:
+    state = summary.get("state") if isinstance(summary.get("state"), dict) else {}
+    latest_day = summary.get("latest_day") if isinstance(summary.get("latest_day"), dict) else {}
+    latest_action = summary.get("latest_action") if isinstance(summary.get("latest_action"), dict) else {}
+    portfolio = state.get("portfolio") if isinstance(state.get("portfolio"), dict) else {}
+    recent_days = summary.get("recent_days") if isinstance(summary.get("recent_days"), list) else []
+    recent_actions = summary.get("recent_actions") if isinstance(summary.get("recent_actions"), list) else []
+    day_rows = "".join(_paper_day_row(day) for day in recent_days if isinstance(day, dict)) or "<tr><td colspan='6'>No paper-trading days recorded yet.</td></tr>"
+    action_rows = "".join(_paper_action_row(action) for action in recent_actions if isinstance(action, dict)) or "<tr><td colspan='5'>No operator actions recorded yet.</td></tr>"
+    latest_action_text = (
+        f"{latest_action.get('action', 'unknown')} at {latest_action.get('recorded_at_utc', '-')}"
+        if latest_action
+        else "none"
+    )
+    latest_block_reason = ""
+    if latest_day:
+        block_reasons = latest_day.get("block_reasons", []) if isinstance(latest_day.get("block_reasons"), list) else []
+        if block_reasons and isinstance(block_reasons[0], dict):
+            latest_block_reason = str(block_reasons[0].get("message", "") or "")
+
+    return f"""
+    <section class="panel">
+      <h2>Paper Rehearsal</h2>
+      <p class="subtle">Operational rehearsal state for the current promoted candidate, separate from research runtime state.</p>
+      <section class="summary-grid">
+        {_summary_card("paper day", str(latest_day.get("status", "none") or "none"))}
+        {_summary_card("profile", str((state.get("active_profile", {}) if isinstance(state.get("active_profile"), dict) else {}).get("profile_name", "none")))}
+        {_summary_card("portfolio", "initialized" if bool(portfolio.get("initialized", False)) else "not initialized")}
+        {_summary_card("last action", latest_action_text)}
+      </section>
+      <p><strong>Latest paper summary:</strong> {escape(str(latest_day.get("summary", "") or "No paper-trading day has been generated yet."))}</p>
+      {f"<p><strong>Current block:</strong> {escape(latest_block_reason)}</p>" if latest_block_reason else ""}
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Recent Paper Days</h2>
+        <table>
+          <thead><tr><th>Recorded</th><th>Status</th><th>Profile</th><th>Decision Date</th><th>Next Trade</th><th>Summary</th></tr></thead>
+          <tbody>{day_rows}</tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h2>Operator Decisions</h2>
+        <table>
+          <thead><tr><th>Recorded</th><th>Action</th><th>Actor</th><th>Day</th><th>Reason</th></tr></thead>
+          <tbody>{action_rows}</tbody>
+        </table>
+      </section>
     </section>
     """
 
@@ -1806,6 +1862,31 @@ def _operator_supporting_summary_row(label: str, summary: object) -> str:
         f"<td>{escape(str(details.get('status', 'unknown')))}</td>"
         f"<td>{escape(str(details.get('recommended_action', 'unknown')))}</td>"
         f"<td>{escape(str(details.get('recorded_at_utc', '') or '-'))}</td>"
+        "</tr>"
+    )
+
+
+def _paper_day_row(day: dict[str, object]) -> str:
+    return (
+        "<tr>"
+        f"<td>{escape(str(day.get('recorded_at_utc', '') or '-'))}</td>"
+        f"<td>{escape(str(day.get('status', 'unknown')))}</td>"
+        f"<td>{escape(str(day.get('profile_name', '') or '-'))}</td>"
+        f"<td>{escape(str(day.get('decision_date', '') or '-'))}</td>"
+        f"<td>{escape(str(day.get('next_trade_date', '') or '-'))}</td>"
+        f"<td>{escape(str(day.get('summary', '') or '-'))}</td>"
+        "</tr>"
+    )
+
+
+def _paper_action_row(action: dict[str, object]) -> str:
+    return (
+        "<tr>"
+        f"<td>{escape(str(action.get('recorded_at_utc', '') or '-'))}</td>"
+        f"<td>{escape(str(action.get('action', 'unknown')))}</td>"
+        f"<td>{escape(str(action.get('actor', 'unknown')))}</td>"
+        f"<td>{escape(str(action.get('day_id', '') or '-'))}</td>"
+        f"<td>{escape(str(action.get('reason', '') or '-'))}</td>"
         "</tr>"
     )
 

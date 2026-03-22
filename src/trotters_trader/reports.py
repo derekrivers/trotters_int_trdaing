@@ -389,7 +389,7 @@ def write_paper_trade_decision_artifacts(
     ] if isinstance(decision_package, dict) else []
 
     json_path.write_text(json.dumps(decision_package, indent=2), encoding="utf-8")
-    markdown_path.write_text(_render_paper_trade_decision_markdown(decision_package), encoding="utf-8")
+    markdown_path.write_text(render_paper_trade_decision_markdown(decision_package), encoding="utf-8")
     _write_csv(targets_csv_path, target_rows)
 
     warnings = decision_package.get("warnings", []) if isinstance(decision_package, dict) else []
@@ -415,6 +415,10 @@ def write_paper_trade_decision_artifacts(
         "decision_md": str(markdown_path),
         "targets_csv": str(targets_csv_path),
     }
+
+
+def render_paper_trade_decision_markdown(decision_package: dict[str, object]) -> str:
+    return _render_paper_trade_decision_markdown(decision_package)
 
 
 def build_operability_scorecard(

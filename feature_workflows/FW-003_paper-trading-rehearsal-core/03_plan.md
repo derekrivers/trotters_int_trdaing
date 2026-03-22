@@ -10,9 +10,10 @@
 
 ## Interface Changes
 
-- new persisted paper-trading state artifact or state directory
-- new operator decision log artifact or table
-- new CLI entrypoint for the daily paper runner
+- new persisted paper-trading state directory under `catalog_output_dir / paper_trading`
+- new operator decision log artifact set under the same rehearsal root
+- new CLI entrypoints for the daily paper runner, rehearsal status, and operator action recording
+- new API route for paper-trading status and a mutation route for operator action recording
 
 ## Acceptance Criteria
 
@@ -22,8 +23,8 @@
 
 ## Rollout And Check Order
 
-1. define the state and decision schemas
-2. add the runner
-3. add operator action recording
+1. define the state and decision schemas in a dedicated module
+2. add the runner and blocked-state rules
+3. add operator action recording and portfolio-state updates
 4. expose the result in operator surfaces
-5. run targeted tests and live smoke checks
+5. run targeted tests and live smoke checks against the real catalog state

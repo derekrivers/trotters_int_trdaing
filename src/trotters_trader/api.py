@@ -14,6 +14,7 @@ from wsgiref.simple_server import make_server
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries, load_summary_records
 from trotters_trader.dashboard import _runtime_health
+from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action
 from trotters_trader.reports import build_campaign_operator_summary
 from trotters_trader.research_runtime import (
     DEFAULT_NOTIFICATION_EVENTS,
@@ -77,6 +78,7 @@ class ApiController:
             "notifications": notifications,
             "most_recent_terminal": most_recent_terminal,
             "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
+            "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
             "current_best_candidate": _build_current_best_candidate(
                 self._paths,
                 active_campaigns=active_campaigns,
@@ -231,6 +233,22 @@ class ApiController:
             "summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=max(limit, 100)),
         }
 
+    def paper_rehearsal_status(self, query: dict[str, list[str]]) -> dict[str, object]:
+        return paper_rehearsal_status(
+            self._paths.catalog_output_dir,
+            limit=_query_int(query, "limit", default=10),
+        )
+
+    def record_paper_rehearsal_action(self, payload: dict[str, object]) -> dict[str, object]:
+        return record_paper_trade_action(
+            self._paths.catalog_output_dir,
+            action=str(payload.get("action", "")),
+            day_id=_optional_text(payload.get("day_id")),
+            actor=_optional_text(payload.get("actor")) or "api_operator",
+            reason=_optional_text(payload.get("reason")),
+            override_note=_optional_text(payload.get("override_note")),
+        )
+
     def readiness(self) -> dict[str, object]:
         overview = self.overview()
         return {
@@ -339,6 +357,10 @@ class ApiApp:
             return self._json_response(self._controller.list_agent_summaries(query))
         if method == "GET" and path == "/api/v1/agent-dispatches":
             return self._json_response(self._controller.list_agent_dispatches(query))
+        if method == "GET" and path == "/api/v1/paper-trading/status":
+            return self._json_response(self._controller.paper_rehearsal_status(query))
+        if method == "POST" and path == "/api/v1/paper-trading/actions":
+            return self._json_response(self._controller.record_paper_rehearsal_action(_json_body(body)), status="201 Created")
         if method == "GET" and path == "/api/v1/directors":
             return self._json_response(self._controller.list_directors())
         if method == "POST" and path == "/api/v1/directors":

@@ -51,6 +51,7 @@ from trotters_trader.experiments import (
 )
 from trotters_trader.features import materialize_feature_set
 from trotters_trader.ops_bridge import serve_ops_bridge
+from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action, run_paper_trade_runner
 from trotters_trader.reports import write_paper_trade_decision_artifacts, write_promotion_artifacts
 from trotters_trader.research_runtime import (
     campaign_manager_loop,
@@ -109,6 +110,9 @@ LEGACY_COMMANDS = [
     "starter-tranche",
     "operability-program",
     "paper-trade-decision",
+    "paper-trade-runner",
+    "paper-trade-status",
+    "paper-trade-action",
 ]
 RUNTIME_COMMANDS = [
     "research-coordinator",
@@ -159,6 +163,20 @@ def main() -> None:
         print(json.dumps(payload, indent=2, default=str))
         return
 
+    if args.command in {"paper-trade-runner", "paper-trade-status", "paper-trade-action"}:
+        config = None if not args.config else load_config(args.config, evaluation_profile=args.evaluation_profile)
+        payload = execute_command(
+            command=args.command,
+            config=config,
+            config_path=args.config or "",
+            quality_gate=args.quality_gate,
+            scope_data_paths=False,
+            prepare_data=False,
+            command_args=args,
+        )
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
     if not args.config:
         parser.error("--config is required for this command")
 
@@ -184,6 +202,26 @@ def execute_command(
     prepare_data: bool = True,
     command_args: argparse.Namespace | None = None,
 ) -> dict[str, object]:
+    if command == "paper-trade-status":
+        return paper_rehearsal_status(Path(getattr(command_args, "catalog_output_dir", "runs")))
+    if command == "paper-trade-action":
+        return record_paper_trade_action(
+            Path(getattr(command_args, "catalog_output_dir", "runs")),
+            action=str(getattr(command_args, "paper_action", "")),
+            day_id=getattr(command_args, "day_id", None),
+            actor=str(getattr(command_args, "actor", "operator")),
+            reason=getattr(command_args, "action_reason", None),
+            override_note=getattr(command_args, "override_note", None),
+        )
+    if command == "paper-trade-runner":
+        explicit_config_path = config_path if config is not None and config_path else getattr(command_args, "config", None)
+        return run_paper_trade_runner(
+            Path(getattr(command_args, "catalog_output_dir", "runs")),
+            config_path=explicit_config_path,
+            reference_date=getattr(command_args, "reference_date", None),
+            evaluation_profile=getattr(command_args, "evaluation_profile", None),
+        )
+
     if command == "download-alpha-vantage":
         return download_daily_series(
             config.data,
@@ -769,6 +807,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-root", default="runtime/research_runtime")
     parser.add_argument("--catalog-output-dir", default="runs")
     parser.add_argument("--allow-host-runtime", action="store_true")
+    parser.add_argument("--paper-action", choices=["accepted", "skipped", "overridden"])
+    parser.add_argument("--day-id")
+    parser.add_argument("--actor", default="operator")
+    parser.add_argument("--action-reason")
+    parser.add_argument("--override-note")
     parser.add_argument("--spec", help="JSON string or path to a JSON job spec.")
     parser.add_argument("--batch-preset", choices=BATCH_PRESETS, default="ranking")
     parser.add_argument("--exclude-control", action="store_true")

@@ -6,7 +6,7 @@
 
 ## Status
 
-- `ready`
+- `done`
 
 ## Dependency Chain
 
@@ -23,3 +23,11 @@
 
 - one commit for paper state and daily runner
 - one commit for operator action logging and surfaces if the change set is large
+
+## Delivered
+
+- added a separate `paper_rehearsal.py` state layer under `catalog_output_dir / paper_trading`
+- added a `paper-trade-runner` CLI command that resolves the promoted candidate or records an explicit blocked paper day
+- added a `paper-trade-action` CLI command that records `accepted`, `skipped`, or `overridden` operator decisions and updates paper portfolio state on acceptance
+- exposed paper rehearsal state through the API and dashboard overview
+- kept research artifacts immutable by storing rehearsal state and day records outside the research runtime database
