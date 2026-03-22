@@ -1,0 +1,62 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
+      - "configs/**"
+      - "docker-compose.test.yml"
+      - "Dockerfile"
+      - "Dockerfile.test"
+      - "extensions/**"
+      - "pyproject.toml"
+      - "scripts/**"
+      - "src/**"
+      - "tests/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
+      - "configs/**"
+      - "docker-compose.test.yml"
+      - "Dockerfile"
+      - "Dockerfile.test"
+      - "extensions/**"
+      - "pyproject.toml"
+      - "scripts/**"
+      - "src/**"
+      - "tests/**"
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  docker-test-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run Test Suite In Docker
+        run: docker compose -f docker-compose.test.yml run --build --rm test-runner
+
+      - name: Clean Up Test Containers
+        if: always()
+        run: docker compose -f docker-compose.test.yml down --remove-orphans --volumes
