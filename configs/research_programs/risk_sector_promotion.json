@@ -1,0 +1,74 @@
+{
+  "program_id": "risk_sector_promotion_program",
+  "title": "Risk + Sector Promotion Program",
+  "strategy_family": "cross_sectional_momentum",
+  "objective": "Test whether the broad momentum branch can recover promotion-grade walk-forward robustness by keeping the gross-exposure risk seed and then adding a sector-cap follow-up without giving back the holdout improvement.",
+  "branch_rationale": "This branch replaced the older broad momentum and regime-overlay paths because queued risk and sector work produced the best repo-backed holdout direction seen so far, even though promotion policy was still failing.",
+  "positive_hypotheses": [
+    "The gross65_deploy20_n8_w09_cb12 risk seed materially improved holdout behaviour versus the earlier broad beta control and is the right control for this family.",
+    "The sec3 follow-up is the strongest recorded sector path for this family and is the last defined attempt to recover validation and walk-forward evidence without abandoning the holdout gain."
+  ],
+  "seed_stack": [
+    {
+      "label": "Broad control",
+      "profile_name": "momentum_broad_candidate_beta_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+      "rationale": "Reference broad candidate family before the risk branch."
+    },
+    {
+      "label": "Risk seed",
+      "profile_name": "momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12",
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+      "rationale": "Best holdout-improving risk branch and current family control."
+    },
+    {
+      "label": "Sector follow-up",
+      "profile_name": "momentum_broad_candidate_risk_sector_sec3",
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
+      "rationale": "Strongest combined split result on the risk-seed family and the final defined follow-up before retirement."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "risk_seed",
+      "label": "Risk Seed",
+      "profile_name": "momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12",
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+      "purpose": "Lock the best risk-controlled seed and use it as the branch control."
+    },
+    {
+      "step_id": "sector_follow_up",
+      "label": "Sector Follow-Up",
+      "profile_name": "momentum_broad_candidate_risk_sector_sec3",
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
+      "purpose": "Restore validation and walk-forward strength while preserving the improved holdout profile from the risk seed."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "risk_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard"
+      ]
+    },
+    {
+      "step_id": "sector_follow_up",
+      "artifacts": [
+        "promotion",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "Any step in the branch passes the existing promotion policy and remains acceptable for downstream paper-trading preparation."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The final sector follow-up has a recorded promotion decision and still fails the policy, especially on walk-forward, validation, or holdout thresholds."
+    }
+  ]
+}

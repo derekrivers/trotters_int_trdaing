@@ -53,6 +53,7 @@ from trotters_trader.features import materialize_feature_set
 from trotters_trader.ops_bridge import serve_ops_bridge
 from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action, run_paper_trade_runner
 from trotters_trader.reports import write_paper_trade_decision_artifacts, write_promotion_artifacts
+from trotters_trader.research_programs import load_research_program_definition, write_research_program_artifacts
 from trotters_trader.research_runtime import (
     campaign_manager_loop,
     campaign_status,
@@ -109,6 +110,7 @@ LEGACY_COMMANDS = [
     "construction-sweep",
     "starter-tranche",
     "operability-program",
+    "research-program-report",
     "paper-trade-decision",
     "paper-trade-runner",
     "paper-trade-status",
@@ -164,7 +166,7 @@ def main() -> None:
         return
 
     if args.command in {"paper-trade-runner", "paper-trade-status", "paper-trade-action"}:
-        config = None if not args.config else load_config(args.config, evaluation_profile=args.evaluation_profile)
+        config = _load_command_config(args)
         payload = execute_command(
             command=args.command,
             config=config,
@@ -177,10 +179,23 @@ def main() -> None:
         print(json.dumps(payload, indent=2, default=str))
         return
 
+    if args.command == "research-program-report":
+        payload = execute_command(
+            command=args.command,
+            config=None,
+            config_path="",
+            quality_gate=args.quality_gate,
+            scope_data_paths=False,
+            prepare_data=False,
+            command_args=args,
+        )
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
     if not args.config:
         parser.error("--config is required for this command")
 
-    config = load_config(args.config, evaluation_profile=args.evaluation_profile)
+    config = _load_command_config(args)
     payload = execute_command(
         command=args.command,
         config=config,
@@ -202,6 +217,14 @@ def execute_command(
     prepare_data: bool = True,
     command_args: argparse.Namespace | None = None,
 ) -> dict[str, object]:
+    if command == "research-program-report":
+        program_file = getattr(command_args, "program_file", None)
+        if not program_file:
+            raise ValueError("research-program-report requires --program-file")
+        return write_research_program_artifacts(
+            output_dir=Path(getattr(command_args, "catalog_output_dir", "runs")),
+            definition=load_research_program_definition(Path(program_file)),
+        )
     if command == "paper-trade-status":
         return paper_rehearsal_status(Path(getattr(command_args, "catalog_output_dir", "runs")))
     if command == "paper-trade-action":
@@ -806,7 +829,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-date", type=_parse_iso_date)
     parser.add_argument("--runtime-root", default="runtime/research_runtime")
     parser.add_argument("--catalog-output-dir", default="runs")
+    parser.add_argument("--output-dir-override")
     parser.add_argument("--allow-host-runtime", action="store_true")
+    parser.add_argument("--program-file")
     parser.add_argument("--paper-action", choices=["accepted", "skipped", "overridden"])
     parser.add_argument("--day-id")
     parser.add_argument("--actor", default="operator")
@@ -850,6 +875,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runbook-file", default="configs/openclaw/trotters-runbook.json")
     parser.add_argument("--once", action="store_true")
     return parser
+
+
+def _load_command_config(args: argparse.Namespace):
+    if not getattr(args, "config", None):
+        return None
+    config = load_config(args.config, evaluation_profile=args.evaluation_profile)
+    output_dir_override = getattr(args, "output_dir_override", None)
+    if output_dir_override:
+        config = apply_runtime_overrides(
+            config,
+            RuntimeOverrides(output_dir=Path(output_dir_override)),
+        )
+    return config
 
 
 if __name__ == "__main__":

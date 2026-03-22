@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from trotters_trader.cli import _build_parser, _handle_runtime_command, _runtime_target_warning, execute_command
+from trotters_trader.cli import _build_parser, _handle_runtime_command, _load_command_config, _runtime_target_warning, execute_command
 from tests.support import IsolatedWorkspaceTestCase
 
 
@@ -29,6 +29,22 @@ class CliTests(unittest.TestCase):
         args = parser.parse_args(["operability-program"])
 
         self.assertEqual(args.command, "operability-program")
+
+    def test_parser_accepts_research_program_report_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "research-program-report",
+                "--program-file",
+                "configs/research_programs/risk_sector_promotion.json",
+                "--catalog-output-dir",
+                "runtime/catalog",
+            ]
+        )
+
+        self.assertEqual(args.command, "research-program-report")
+        self.assertEqual(args.program_file, "configs/research_programs/risk_sector_promotion.json")
+        self.assertEqual(args.catalog_output_dir, "runtime/catalog")
 
     def test_parser_accepts_paper_trade_decision_command(self) -> None:
         parser = _build_parser()
@@ -224,6 +240,17 @@ class CliTests(unittest.TestCase):
 
 
 class CliCommandExecutionTests(IsolatedWorkspaceTestCase):
+    def test_load_command_config_applies_output_dir_override(self) -> None:
+        args = argparse.Namespace(
+            config="configs/backtest.toml",
+            evaluation_profile=None,
+            output_dir_override=str(self.temp_root / "catalog"),
+        )
+
+        config = _load_command_config(args)
+
+        self.assertEqual(config.run.output_dir, self.temp_root / "catalog")
+
     def test_execute_command_writes_paper_trade_decision_artifacts(self) -> None:
         config = self.isolated_config(Path("configs/backtest.toml"))
 
