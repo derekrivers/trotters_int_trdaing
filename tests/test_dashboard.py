@@ -988,6 +988,37 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(dict(headers)["Location"], "/campaigns/campaign-1?flash=Campaign+stop+requested")
         stop_mock.assert_called_once()
 
+    def test_overview_renders_agent_summaries_panel(self) -> None:
+        root = self._workspace_root("agent_summaries")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            latest_dir = paths.catalog_output_dir / "agent_summaries" / "latest"
+            latest_dir.mkdir(parents=True, exist_ok=True)
+            (latest_dir / "supervisor_incident_summary.json").write_text(
+                json.dumps({
+                    "summary_type": "supervisor_incident_summary",
+                    "agent_id": "runtime-supervisor",
+                    "classification": "service_health",
+                    "status": "escalated",
+                    "recommended_action": "manual_investigation",
+                    "recorded_at_utc": "2026-03-22T12:05:00+00:00",
+                }),
+                encoding="utf-8",
+            )
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch("trotters_trader.dashboard.runtime_status", return_value={"counts": {}, "workers": [], "jobs": [], "campaigns": [], "directors": []}),
+                patch("trotters_trader.dashboard.campaign_status", return_value={"campaign": {}}),
+                patch("trotters_trader.dashboard.director_status", return_value={"director": {}}),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Agent Summaries", body)
+        self.assertIn("runtime-supervisor", body)
+        self.assertIn("service_health", body)
     def _invoke(
         self,
         app: DashboardApp,
@@ -1023,3 +1054,4 @@ class DashboardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

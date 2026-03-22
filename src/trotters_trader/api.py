@@ -11,6 +11,7 @@ from urllib.parse import parse_qs
 import uuid
 from wsgiref.simple_server import make_server
 
+from trotters_trader.agent_summaries import load_latest_summaries, load_summary_records
 from trotters_trader.dashboard import _runtime_health
 from trotters_trader.research_runtime import (
     DEFAULT_NOTIFICATION_EVENTS,
@@ -48,33 +49,43 @@ class ApiController:
 
     def overview(self) -> dict[str, object]:
         status = runtime_status(self._paths)
-        active_director_ids = [
-            str(director.get("director_id", ""))
+        active_directors = [
+            _detail_or_summary(
+                lambda director_id=str(director.get("director_id", "")): director_status(self._paths, director_id).get("director", {}),
+                director,
+            )
             for director in status.get("directors", [])
             if isinstance(director, dict) and str(director.get("status", "")).lower() in {"queued", "running", "paused"}
         ]
-        active_directors = [
-            director_status(self._paths, director_id).get("director", {})
-            for director_id in active_director_ids
-            if director_id
-        ]
-        active_campaign_ids = [
-            str(campaign.get("campaign_id", ""))
+        active_campaigns = [
+            _detail_or_summary(
+                lambda campaign_id=str(campaign.get("campaign_id", "")): campaign_status(self._paths, campaign_id).get("campaign", {}),
+                campaign,
+            )
             for campaign in status.get("campaigns", [])
             if isinstance(campaign, dict) and str(campaign.get("status", "")).lower() in {"queued", "running"}
         ]
-        active_campaigns = [
-            campaign_status(self._paths, campaign_id).get("campaign", {})
-            for campaign_id in active_campaign_ids
-            if campaign_id
-        ]
         notifications = _load_notifications(self._paths, limit=25)
+        most_recent_terminal = _most_recent_terminal(status)
         return {
             "status": status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "notifications": notifications,
+            "most_recent_terminal": most_recent_terminal,
             "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
+            "agent_summaries": load_latest_summaries(self._paths.catalog_output_dir),
+        }
+
+    def list_notifications(self, query: dict[str, list[str]]) -> dict[str, object]:
+        return {
+            "notifications": _load_notifications(
+                self._paths,
+                limit=_query_int(query, "limit", default=100),
+                event_type=_query_value(query, "event_type"),
+                campaign_id=_query_value(query, "campaign_id"),
+                severity=_query_value(query, "severity"),
+            )
         }
 
     def list_directors(self) -> dict[str, object]:
@@ -183,6 +194,15 @@ class ApiController:
             limit=_query_int(query, "limit", default=200),
         )
 
+    def list_agent_summaries(self, query: dict[str, list[str]]) -> dict[str, object]:
+        return {
+            "agent_summaries": load_summary_records(
+                self._paths.catalog_output_dir,
+                summary_type=_query_value(query, "summary_type"),
+                limit=_query_int(query, "limit", default=20),
+            )
+        }
+
     def readiness(self) -> dict[str, object]:
         overview = self.overview()
         return {
@@ -281,10 +301,14 @@ class ApiApp:
             return self._json_response(self._controller.readiness())
         if method == "GET" and path == "/api/v1/runtime/overview":
             return self._json_response(self._controller.overview())
+        if method == "GET" and path == "/api/v1/notifications":
+            return self._json_response(self._controller.list_notifications(query))
         if method == "GET" and path == "/api/v1/jobs":
             return self._json_response(self._controller.list_jobs(query))
         if method == "GET" and path == "/api/v1/artifacts":
             return self._json_response(self._controller.list_artifacts(query))
+        if method == "GET" and path == "/api/v1/agent-summaries":
+            return self._json_response(self._controller.list_agent_summaries(query))
         if method == "GET" and path == "/api/v1/directors":
             return self._json_response(self._controller.list_directors())
         if method == "POST" and path == "/api/v1/directors":
@@ -358,7 +382,14 @@ def serve_api(
     return {"host": host, "port": port}
 
 
-def _load_notifications(paths: ResearchRuntimePaths, *, limit: int) -> list[dict[str, object]]:
+def _load_notifications(
+    paths: ResearchRuntimePaths,
+    *,
+    limit: int,
+    event_type: str | None = None,
+    campaign_id: str | None = None,
+    severity: str | None = None,
+) -> list[dict[str, object]]:
     notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
     if not notifications_path.exists():
         return []
@@ -371,8 +402,47 @@ def _load_notifications(paths: ResearchRuntimePaths, *, limit: int) -> list[dict
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict):
+            if event_type and str(payload.get("event_type", "")).strip() != event_type:
+                continue
+            if campaign_id and str(payload.get("campaign_id", "")).strip() != campaign_id:
+                continue
+            if severity and str(payload.get("severity", "")).strip() != severity:
+                continue
             records.append(payload)
     return records[-limit:][::-1]
+
+
+def _most_recent_terminal(status: dict[str, object]) -> dict[str, object]:
+    return {
+        "director": _latest_terminal_entry(status.get("directors"), statuses={"failed", "stopped", "exhausted"}),
+        "campaign": _latest_terminal_entry(status.get("campaigns"), statuses={"failed", "stopped", "exhausted", "completed"}),
+    }
+
+
+def _latest_terminal_entry(entries: object, *, statuses: set[str]) -> dict[str, object] | None:
+    if not isinstance(entries, list):
+        return None
+    latest: dict[str, object] | None = None
+    latest_timestamp = ""
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        normalized_status = str(entry.get("status", "")).lower()
+        if normalized_status not in statuses:
+            continue
+        candidate_timestamp = str(entry.get("finished_at") or entry.get("updated_at") or entry.get("created_at") or "")
+        if candidate_timestamp >= latest_timestamp:
+            latest = entry
+            latest_timestamp = candidate_timestamp
+    return latest
+
+
+def _detail_or_summary(fetch_detail: Callable[[], dict[str, object]], summary: dict[str, object]) -> dict[str, object]:
+    try:
+        detail = fetch_detail()
+    except ValueError:
+        return summary
+    return detail if isinstance(detail, dict) and detail else summary
 
 
 def _read_body(environ: dict[str, object]) -> bytes:
@@ -576,3 +646,6 @@ def _write_audit_record(path: Path, payload: dict[str, object]) -> None:
 
 def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
+
+
+

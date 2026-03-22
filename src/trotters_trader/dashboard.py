@@ -9,6 +9,7 @@ from typing import Callable
 from urllib.parse import parse_qs, quote, urlencode
 from wsgiref.simple_server import make_server
 
+from trotters_trader.agent_summaries import load_latest_summaries
 from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
     campaign_status,
@@ -60,6 +61,7 @@ class DashboardController:
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "notifications": _load_notifications(self._paths, limit=25),
+            "agent_summaries": load_latest_summaries(self._paths.catalog_output_dir),
         }
 
     def campaign_detail(self, campaign_id: str) -> dict[str, object]:
@@ -294,6 +296,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     directors = payload.get("active_directors", []) if isinstance(payload.get("active_directors"), list) else []
     campaigns = payload.get("active_campaigns", []) if isinstance(payload.get("active_campaigns"), list) else []
     notifications = payload.get("notifications", []) if isinstance(payload.get("notifications"), list) else []
+    agent_summaries = payload.get("agent_summaries", {}) if isinstance(payload.get("agent_summaries"), dict) else {}
     health = _runtime_health(status=status, campaigns=campaigns, directors=directors)
 
     summary_cards = "".join(
@@ -336,6 +339,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
         _recent_change_row(change)
         for change in _recent_changes(all_campaigns, all_directors, notifications)
     ) or "<tr><td colspan='3'>No recent changes recorded</td></tr>"
+    agent_summary_rows = "".join(_agent_summary_row(summary) for summary in agent_summaries.values() if isinstance(summary, dict)) or "<tr><td colspan='6'>No agent summaries yet</td></tr>"
 
     body = f"""
     {_flash_banner(flash)}
@@ -352,6 +356,14 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     {_notification_banner(notifications, campaigns=campaigns, directors=directors)}
     {_health_panel(health)}
     <section class="summary-grid">{summary_cards}</section>
+    <section class="panel">
+      <h2>Agent Summaries</h2>
+      <p class="subtle">Latest low-cost outputs from the supervisor and specialist review agents.</p>
+      <table>
+        <thead><tr><th>Agent</th><th>Summary</th><th>Classification</th><th>Status</th><th>Action</th><th>Recorded</th></tr></thead>
+        <tbody>{agent_summary_rows}</tbody>
+      </table>
+    </section>
     <section class="panel">
       <h2>Outcome Summary</h2>
       <p class="subtle">Recent terminal outcomes across campaigns and directors.</p>
@@ -805,7 +817,7 @@ def _render_guide(*, refresh_seconds: int) -> str:
       </section>
       <section class="panel">
         <h2>What Success Means</h2>
-        <p>Success does not mean “best looking line on a chart.” It means the system found a candidate strong enough to freeze as a serious strategy proposal.</p>
+        <p>Success does not mean â€œbest looking line on a chart.â€ It means the system found a candidate strong enough to freeze as a serious strategy proposal.</p>
         <p>When that happens, the application writes promotion artifacts, marks the campaign as completed, and emits a dedicated promotion notification. That is the point where a human review should happen.</p>
       </section>
     </section>
@@ -1033,8 +1045,19 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
 </html>"""
 
 
-def _summary_card(label: str, value: str) -> str:
-    return f"<section class='card'><h2>{escape(label)}</h2><div class='metric'>{escape(value)}</div></section>"
+def _agent_summary_row(summary: dict[str, object]) -> str:
+    return (
+        "<tr>"
+        f"<td>{escape(str(summary.get('agent_id', '-')))}</td>"
+        f"<td>{escape(str(summary.get('summary_type', '-')))}</td>"
+        f"<td>{escape(str(summary.get('classification', '-')))}</td>"
+        f"<td>{escape(str(summary.get('status', '-')))}</td>"
+        f"<td>{escape(str(summary.get('recommended_action', '-')))}</td>"
+        f"<td>{_timestamp_with_age(summary.get('recorded_at_utc'))}</td>"
+        "</tr>"
+    )
+
+def _summary_card(label: str, value: str) -> str:    return f"<section class='card'><h2>{escape(label)}</h2><div class='metric'>{escape(value)}</div></section>"
 
 
 def _health_panel(health: dict[str, object]) -> str:
@@ -2094,3 +2117,13 @@ def _query_value(query: dict[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     return values[0]
+
+
+
+
+
+
+
+
+
+

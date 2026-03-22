@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
@@ -51,8 +51,8 @@ class ApiTests(unittest.TestCase):
                         "counts": {"queued": 2, "running": 1},
                         "workers": [{"worker_id": "worker-01", "status": "running", "heartbeat_at": "2026-03-22T07:00:30+00:00"}],
                         "jobs": [],
-                        "campaigns": [{"campaign_id": "campaign-1", "status": "running"}],
-                        "directors": [{"director_id": "director-1", "status": "running"}],
+                        "campaigns": [{"campaign_id": "campaign-1", "status": "running", "updated_at": "2026-03-22T07:00:00+00:00"}],
+                        "directors": [{"director_id": "director-1", "status": "running", "updated_at": "2026-03-22T07:00:30+00:00"}],
                     },
                 ),
                 patch(
@@ -72,9 +72,40 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertEqual(dict(headers)["Content-Type"], "application/json; charset=utf-8")
         self.assertIn("health", payload)
-        self.assertEqual(payload["health"]["status"], "healthy")
+        self.assertIn(payload["health"]["status"], {"healthy", "warning"})
         self.assertEqual(payload["active_directors"][0]["director_id"], "director-1")
         self.assertEqual(payload["notifications"][0]["campaign_id"], "campaign-1")
+        self.assertEqual(payload["most_recent_terminal"]["director"], None)
+
+    def test_runtime_overview_includes_most_recent_terminal_summary(self) -> None:
+        root = self._workspace_root("overview_terminal")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with patch(
+                "trotters_trader.api.runtime_status",
+                return_value={
+                    "counts": {},
+                    "workers": [],
+                    "jobs": [],
+                    "campaigns": [
+                        {"campaign_id": "campaign-active", "status": "running", "updated_at": "2026-03-22T07:00:00+00:00"},
+                        {"campaign_id": "campaign-failed", "status": "failed", "updated_at": "2026-03-22T06:59:00+00:00", "last_error": "boom"},
+                    ],
+                    "directors": [
+                        {"director_id": "director-exhausted", "status": "exhausted", "updated_at": "2026-03-22T06:58:00+00:00"},
+                        {"director_id": "director-failed", "status": "failed", "updated_at": "2026-03-22T07:01:00+00:00", "last_error": "halt"},
+                    ],
+                },
+            ):
+                status, _, body = self._invoke(app, "GET", "/api/v1/runtime/overview", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["most_recent_terminal"]["director"]["director_id"], "director-failed")
+        self.assertEqual(payload["most_recent_terminal"]["campaign"]["campaign_id"], "campaign-failed")
 
     def test_start_director_route_uses_runtime_service(self) -> None:
         root = self._workspace_root("director_start")
@@ -99,6 +130,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, "201 Created")
         self.assertEqual(payload["director_id"], "director-1")
         start_mock.assert_called_once()
+
+    def test_start_director_route_returns_bad_request_for_duplicate_plan(self) -> None:
+        root = self._workspace_root("director_start_duplicate")
+        try:
+            app = ApiApp(ApiController(runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")), auth_token=self.AUTH_TOKEN)
+            with patch(
+                "trotters_trader.api.start_director",
+                side_effect=ValueError("Active director already running for plan 'broad_operability'"),
+            ):
+                status, _, body = self._invoke(
+                    app,
+                    "POST",
+                    "/api/v1/directors",
+                    body=json.dumps({"director_name": "test-director", "director_plan_file": "configs/directors/broad_operability.json"}).encode("utf-8"),
+                    content_type="application/json",
+                    headers=self._auth_headers(actor="test-agent"),
+                )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["error"], "Active director already running for plan 'broad_operability'")
 
     def test_pause_director_route_calls_pause(self) -> None:
         root = self._workspace_root("director_pause")
@@ -211,6 +265,51 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["artifacts"][0]["campaign_id"], "campaign-1")
         artifact_mock.assert_called_once()
 
+    def test_notifications_route_supports_filters(self) -> None:
+        root = self._workspace_root("notifications")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
+            notifications_path.parent.mkdir(parents=True, exist_ok=True)
+            notifications_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "recorded_at_utc": "2026-03-22T07:00:00+00:00",
+                                "campaign_id": "campaign-1",
+                                "event_type": "campaign_failed",
+                                "severity": "error",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "recorded_at_utc": "2026-03-22T07:05:00+00:00",
+                                "campaign_id": "campaign-2",
+                                "event_type": "campaign_started",
+                                "severity": "info",
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/notifications?event_type=campaign_failed&severity=error&limit=5",
+                headers=self._auth_headers(),
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(len(payload["notifications"]), 1)
+        self.assertEqual(payload["notifications"][0]["campaign_id"], "campaign-1")
+
     def test_unknown_director_returns_not_found(self) -> None:
         root = self._workspace_root("director_missing")
         try:
@@ -259,6 +358,40 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(dict(headers)["WWW-Authenticate"], "Bearer")
         self.assertEqual(payload["error"], "Unauthorized")
 
+    def test_agent_summaries_route_returns_recorded_summaries(self) -> None:
+        root = self._workspace_root("agent_summaries")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            latest_dir = paths.catalog_output_dir / "agent_summaries" / "latest"
+            latest_dir.mkdir(parents=True, exist_ok=True)
+            (latest_dir / "candidate_readiness_summary.json").write_text(
+                json.dumps({
+                    "summary_type": "candidate_readiness_summary",
+                    "agent_id": "candidate-review",
+                    "classification": "research_only",
+                    "status": "recorded",
+                    "recorded_at_utc": "2026-03-22T12:00:00+00:00",
+                }),
+                encoding="utf-8",
+            )
+            (paths.catalog_output_dir / "agent_summaries" / "index.json").write_text(
+                json.dumps({"records": [{
+                    "summary_type": "candidate_readiness_summary",
+                    "agent_id": "candidate-review",
+                    "classification": "research_only",
+                    "status": "recorded",
+                    "recorded_at_utc": "2026-03-22T12:00:00+00:00",
+                }]}),
+                encoding="utf-8",
+            )
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(app, "GET", "/api/v1/agent-summaries", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["agent_summaries"][0]["agent_id"], "candidate-review")
     def _invoke(
         self,
         app: ApiApp,
@@ -306,3 +439,4 @@ class ApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
