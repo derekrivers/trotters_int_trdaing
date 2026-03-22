@@ -1,0 +1,16 @@
+{
+  "name": "@trotters/trotters-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trotters runtime supervisor tools and skills for OpenClaw.",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "install": {
+      "localPath": "extensions/openclaw/trotters-runtime",
+      "defaultChoice": "local"
+    }
+  }
+}

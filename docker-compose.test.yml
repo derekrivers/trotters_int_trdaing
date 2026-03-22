@@ -4,7 +4,7 @@ services:
   test-runner:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.test
     working_dir: /app
     entrypoint:
       - python
@@ -17,5 +17,7 @@ services:
     volumes:
       - ./configs:/app/configs:ro
       - ./data:/app/data:ro
+      - ./extensions:/app/extensions:ro
+      - ./scripts:/app/scripts:ro
       - ./src:/app/src:ro
       - ./tests:/app/tests

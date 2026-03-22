@@ -1,0 +1,58 @@
+{
+  "id": "trotters-runtime",
+  "name": "Trotters Runtime",
+  "description": "Supervisor tools for the Trotters research runtime.",
+  "skills": ["skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBase": { "type": "string" },
+      "opsBridgeBase": { "type": "string" },
+      "runbookPath": { "type": "string" },
+      "runbookHistoryPath": { "type": "string" },
+      "catalogRoot": { "type": "string" },
+      "summaryRoot": { "type": "string" },
+      "actor": { "type": "string" },
+      "defaultLogTailLines": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 2000
+      }
+    }
+  },
+  "uiHints": {
+    "apiBase": {
+      "label": "Research API Base",
+      "help": "Base URL for the internal runtime control API."
+    },
+    "opsBridgeBase": {
+      "label": "Ops Bridge Base",
+      "help": "Base URL for the internal service-restart bridge."
+    },
+    "runbookPath": {
+      "label": "Runbook Path",
+      "help": "Path to the curated supervisor runbook JSON file."
+    },
+    "runbookHistoryPath": {
+      "label": "Runbook History Path",
+      "help": "JSONL history file for recorded recoveries and escalations."
+    },
+    "catalogRoot": {
+      "label": "Catalog Root",
+      "help": "Root directory for exported research catalog artifacts."
+    },
+    "summaryRoot": {
+      "label": "Summary Root",
+      "help": "Directory where low-cost agent summary artifacts are written."
+    },
+    "actor": {
+      "label": "Actor Header",
+      "help": "Actor value sent in X-Trotters-Actor for audit logging."
+    },
+    "defaultLogTailLines": {
+      "label": "Default Log Tail",
+      "help": "Default stderr/stdout tail size for job log inspection."
+    }
+  }
+}

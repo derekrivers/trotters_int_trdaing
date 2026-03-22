@@ -16,6 +16,7 @@ services:
     restart: unless-stopped
     depends_on:
       - research-api
+      - ops-bridge
     environment:
       HOME: /home/node
       NODE_ENV: production
@@ -25,16 +26,28 @@ services:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
       TROTTERS_API_BASE: http://research-api:8890
       TROTTERS_API_TOKEN: ${TROTTERS_API_TOKEN}
+      TROTTERS_OPS_BRIDGE_TOKEN: ${TROTTERS_OPS_BRIDGE_TOKEN}
+      OPENCLAW_SUPERVISOR_AUTH_SOURCE_AGENT: ${OPENCLAW_SUPERVISOR_AUTH_SOURCE_AGENT:-dev}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      XIAOMI_API_KEY: ${XIAOMI_API_KEY:-}
     volumes:
       - ./configs/openclaw:/opt/openclaw-config:ro
+      - ./extensions/openclaw/trotters-runtime:/opt/openclaw-extensions/trotters-runtime:ro
+      - ./scripts/openclaw:/opt/openclaw-bootstrap:ro
       - ./runtime/openclaw:/home/node/.openclaw
+      - ./runtime/catalog:/runtime/catalog
+      - research_runtime:/runtime/research_runtime
     ports:
       - "127.0.0.1:${OPENCLAW_GATEWAY_PORT}:18789"
     command:
       [
         "sh",
         "-lc",
-        "mkdir -p /home/node/.openclaw && if [ ! -f /home/node/.openclaw/openclaw.json ]; then cp /opt/openclaw-config/openclaw.json /home/node/.openclaw/openclaw.json; fi && exec node dist/index.js gateway --bind ${OPENCLAW_GATEWAY_BIND} --port ${OPENCLAW_GATEWAY_PORT} --allow-unconfigured --dev"
+        "sh /opt/openclaw-bootstrap/start-openclaw.sh"
       ]
   research-api:
     <<: *runtime-service
@@ -52,6 +65,33 @@ services:
       - "8890"
     ports:
       - "8890:8890"
+    depends_on:
+      - coordinator
+  ops-bridge:
+    <<: *runtime-service
+    environment:
+      TROTTERS_OPS_BRIDGE_TOKEN: ${TROTTERS_OPS_BRIDGE_TOKEN}
+    command:
+      - research-ops-bridge
+      - --runtime-root
+      - /runtime/research_runtime
+      - --catalog-output-dir
+      - /runtime/catalog
+      - --runbook-file
+      - /app/configs/openclaw/trotters-runbook.json
+      - --ops-host
+      - 0.0.0.0
+      - --ops-port
+      - "8891"
+      - --docker-socket-path
+      - /var/run/docker.sock
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+      - ./src:/app/src:ro
+      - ./runtime/catalog:/runtime/catalog
+      - research_runtime:/runtime/research_runtime
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - coordinator
   dashboard:
@@ -126,3 +166,4 @@ services:
 
 volumes:
   research_runtime:
+
