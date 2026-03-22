@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,16 @@ from trotters_trader.research_runtime import (
 from tests.support import IsolatedWorkspaceTestCase
 
 
+@contextmanager
+def _db_connection(path: Path):
+    connection = sqlite3.connect(path)
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
 class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def _prepared_dataset(self) -> Path:
         config = self.isolated_config(Path("configs/backtest.toml"))
@@ -64,7 +75,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
 
         initialize_runtime(paths)
 
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
 
         self.assertEqual(str(mode).lower(), "wal")
@@ -77,7 +88,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
             for future in futures:
                 future.result()
 
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             tables = {
                 row[0]
                 for row in connection.execute(
@@ -152,7 +163,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
                 "config_path": "configs/backtest.toml",
             },
         )
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO workers (worker_id, status, current_job_id, updated_at)
@@ -180,7 +191,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
                 "config_path": "configs/backtest.toml",
             },
         )
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -218,7 +229,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
                 "config_path": "configs/backtest.toml",
             },
         )
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 UPDATE jobs
@@ -229,7 +240,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
 
         renew_job_lease(paths, "job-1", "worker-1", 300)
 
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             lease_expires_at = connection.execute(
                 "SELECT lease_expires_at FROM jobs WHERE job_id = 'job-1'"
             ).fetchone()[0]
@@ -422,6 +433,31 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertEqual(queue[0]["campaign_max_jobs"], 250)
         self.assertEqual(queue[0]["shortlist_size"], 2)
 
+    def test_start_director_rejects_duplicate_active_plan_instances(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        plan_payload = {
+            "plan_name": "custom-plan",
+            "campaigns": [{"config_path": "configs/backtest.toml", "campaign_name": "phase-one"}],
+        }
+        with patch(
+            "trotters_trader.research_runtime.step_director",
+            return_value={"outcome": "campaign_started"},
+        ):
+            start_director(
+                paths,
+                director_name="director-one",
+                plan_payload=plan_payload,
+                plan_file_path="configs/directors/custom.json",
+            )
+
+        with self.assertRaisesRegex(ValueError, "Active director already running for plan 'custom-plan'"):
+            start_director(
+                paths,
+                director_name="director-two",
+                plan_payload=plan_payload,
+                plan_file_path="configs/directors/custom.json",
+            )
+
     def test_start_director_rejects_missing_plan_config(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
 
@@ -443,7 +479,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_step_director_launches_first_campaign(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO directors (
@@ -515,7 +551,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_step_director_adopts_matching_active_campaign(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO directors (
@@ -582,7 +618,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_step_director_completes_on_freeze_candidate(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO directors (
@@ -686,7 +722,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_skip_director_next_marks_pending_entry_skipped(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO directors (
@@ -742,7 +778,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_stop_campaign_marks_campaign_stopped_and_invokes_notification_hook(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO campaigns (
@@ -860,7 +896,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_campaign_manager_marks_campaign_failed_on_runtime_error(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO campaigns (
@@ -926,7 +962,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_campaign_manager_retries_retryable_runtime_error(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO campaigns (
@@ -997,7 +1033,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_step_campaign_submits_focused_operability_jobs(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO campaigns (
@@ -1057,7 +1093,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         canonical_dir = self._prepared_dataset()
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute(
                 """
@@ -1222,7 +1258,7 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
     def test_successful_campaign_emits_strategy_promoted_notification(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)
-        with sqlite3.connect(paths.database_path) as connection:
+        with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO campaigns (

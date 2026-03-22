@@ -1275,6 +1275,15 @@ def start_director(
         "final_result": None,
     }
     with _connect(paths) as connection:
+        duplicate = _find_active_plan_duplicate(connection, spec)
+        if duplicate is not None:
+            current_campaign_id = str(duplicate.get("current_campaign_id") or "").strip()
+            raise ValueError(
+                "Active director already running for plan "
+                f"'{plan_resolution['plan_name']}' "
+                f"(director_id='{duplicate['director_id']}', current_campaign_id='{current_campaign_id or '-'}'). "
+                "Stop or finish that director before starting another."
+            )
         connection.execute(
             """
             INSERT INTO directors (
@@ -1312,6 +1321,47 @@ def start_director(
     )
     step = step_director(paths, director_id)
     return {"director_id": director_id, "director_name": resolved_name, **step}
+
+
+def _find_active_plan_duplicate(connection: sqlite3.Connection, incoming_spec: dict[str, object]) -> dict[str, object] | None:
+    incoming_identity = _director_plan_identity(incoming_spec)
+    for row in connection.execute(
+        """
+        SELECT director_id, director_name, current_campaign_id, spec_json
+        FROM directors
+        WHERE status IN ('queued', 'running')
+        ORDER BY created_at ASC
+        """
+    ).fetchall():
+        try:
+            existing_spec = json.loads(row["spec_json"]) if row["spec_json"] else {}
+        except json.JSONDecodeError:
+            existing_spec = {}
+        if not isinstance(existing_spec, dict):
+            existing_spec = {}
+        if _director_plan_identity(existing_spec) != incoming_identity:
+            continue
+        return {
+            "director_id": row["director_id"],
+            "director_name": row["director_name"],
+            "current_campaign_id": row["current_campaign_id"],
+        }
+    return None
+
+
+def _director_plan_identity(spec: dict[str, object]) -> tuple[object, ...]:
+    plan_name = str(spec.get("plan_name") or "").strip()
+    plan_source = str(spec.get("plan_source") or "").strip()
+    campaign_paths: list[str] = []
+    raw_plan = spec.get("plan")
+    if isinstance(raw_plan, list):
+        for entry in raw_plan:
+            if not isinstance(entry, dict):
+                continue
+            config_path = str(entry.get("config_path") or "").strip()
+            if config_path:
+                campaign_paths.append(config_path)
+    return (plan_name, plan_source, tuple(campaign_paths))
 
 
 def director_status(paths: ResearchRuntimePaths, director_id: str | None = None) -> dict[str, object]:
@@ -3433,7 +3483,8 @@ def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
         dict(row)
         for row in connection.execute(
             """
-            SELECT campaign_id, director_id, campaign_name, status, phase, updated_at, latest_report_path
+            SELECT campaign_id, director_id, campaign_name, status, phase, created_at, updated_at, finished_at,
+                   latest_report_path, last_error
             FROM campaigns
             ORDER BY created_at ASC
             """
@@ -3443,7 +3494,8 @@ def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
         dict(row)
         for row in connection.execute(
             """
-            SELECT director_id, director_name, status, current_campaign_id, successful_campaign_id, updated_at
+            SELECT director_id, director_name, status, current_campaign_id, successful_campaign_id, created_at,
+                   updated_at, finished_at, last_error
             FROM directors
             ORDER BY created_at ASC
             """
