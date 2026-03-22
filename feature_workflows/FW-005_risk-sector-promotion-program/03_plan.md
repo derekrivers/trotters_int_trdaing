@@ -28,3 +28,9 @@
 2. update research campaign planning/reporting as needed
 3. run the chosen branch work
 4. update the evidence context after each meaningful result
+
+## Completion Notes
+
+- the branch definition now lives in `configs/research_programs/risk_sector_promotion.json`
+- the maintained artifact is written by `research-program-report`
+- the final sector follow-up was rerun into `runtime/catalog` and caused the branch to retire under the defined stop conditions

@@ -2,8 +2,8 @@
 
 ## Problem
 
-- the strongest repo-backed branch is now the broad `risk + sector` family, but the evidence is spread across runtime artifacts, configs, and roadmap notes
-- that makes it harder to keep a disciplined research path and easier to re-open exhausted branches without noticing
+- the strongest repo-backed branch was the broad `risk + sector` family, but the evidence was spread across runtime artifacts, configs, and roadmap notes
+- that made it harder to keep a disciplined research path and easier to re-open exhausted branches without noticing
 
 ## Linked Stable Docs
 
@@ -13,10 +13,11 @@
 
 ## Current Behavior
 
-- the current strongest branch is centered on:
+- the resolved branch is centered on:
   - `configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml`
   - `configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml`
-- it improved holdout behavior materially but still failed promotion because walk-forward robustness fell away
+- the fresh `sec3` follow-up run on March 22, 2026 confirmed that the branch still failed promotion because validation and holdout stayed benchmark-negative and walk-forward robustness fell to `0 / 3` passing windows
+- the branch is now retired under explicit stop conditions instead of remaining an implicit "current best" path
 
 ## Non-Goals
 

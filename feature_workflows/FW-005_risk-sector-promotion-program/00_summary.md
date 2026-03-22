@@ -6,7 +6,7 @@
 
 ## Status
 
-- `ready`
+- `done`
 
 ## Dependency Chain
 
@@ -22,3 +22,9 @@
 
 - one commit per research/control-plane adjustment
 - keep report or evidence-capture refactors separate from strategy-parameter changes when practical
+
+## Outcome
+
+- the branch is now explicitly retired, not left open-ended
+- `configs/research_programs/risk_sector_promotion.json` fixes the seed stack, campaign path, artifact expectations, and stop conditions
+- `runtime/catalog/risk_sector_promotion_program/research_program.json` is now the maintained evidence artifact for this branch

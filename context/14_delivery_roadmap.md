@@ -356,3 +356,14 @@ Updated next implication:
 
 - the strongest current research branch is no longer the plain broad momentum seed; it is now the `risk + sector` family centered on the `gross65_deploy20_n8_w09_cb12` seed with a `max_positions_per_sector = 3` follow-up
 - the next credible work should stay in that family and target restoring walk-forward robustness while preserving the holdout improvement, rather than returning to universe slicing, ranking tweaks, or benchmark-regime overlays
+
+Risk-sector retirement checkpoint on March 22, 2026:
+
+- the `sec3` follow-up was rerun directly into `runtime/catalog` under the current promotion policy
+- validation remained benchmark-negative at roughly `-3.8%`
+- holdout remained benchmark-negative at roughly `-12.9%`
+- walk-forward finished at `0 / 3` passing windows
+- that means the `risk + sector` branch has now exhausted its defined path without producing a promotion-eligible candidate
+- the branch is no longer "current best"; it is explicitly retired in `runtime/catalog/risk_sector_promotion_program/research_program.json`
+- the next research iteration should select a different family or a materially new hypothesis rather than reopening this path without new evidence
+
