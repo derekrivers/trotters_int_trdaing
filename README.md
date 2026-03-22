@@ -262,19 +262,22 @@ docker compose up --build -d --scale worker=6
 Local endpoints:
 
 - OpenClaw gateway websocket: `ws://localhost:18789`
-- OpenClaw canvas UI: `http://localhost:18789/__openclaw__/canvas/`
+- OpenClaw control UI: `http://127.0.0.1:18789/`
+- OpenClaw canvas UI assets: `http://127.0.0.1:18789/__openclaw__/canvas/`
 - Research API: `http://localhost:8890`
 
 Authentication:
 
-- the OpenClaw canvas path requires `Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>`
+- the OpenClaw UI is easiest to bootstrap with `http://127.0.0.1:18789/#token=<OPENCLAW_GATEWAY_TOKEN>`
 - the research API requires `Authorization: Bearer <TROTTERS_API_TOKEN>` on all `/api/v1/*` routes
+- on first browser connection, OpenClaw may require one-time device pairing approval
 
 Operational notes:
 
-- OpenClaw is not a normal HTTP app at `/`; simple browser or `curl` checks against the root path are not a useful health check
+- OpenClaw serves its Control UI at `/`, but authentication happens on the websocket handshake, so a plain unauthenticated browser hit may show `Disconnected from gateway` until the token is provided
 - the gateway is intentionally published on loopback only: `127.0.0.1:${OPENCLAW_GATEWAY_PORT}`
 - if you change [`configs/openclaw/openclaw.json`](c:/Dev/TrottersIndependantTraders/configs/openclaw/openclaw.json), restart the gateway with `docker compose up -d openclaw-gateway`
+- if the UI shows `pairing required`, approve the pending browser device from the gateway host with `docker compose exec openclaw-gateway openclaw devices list` and `docker compose exec openclaw-gateway openclaw devices approve <request_id>`
 - the current Compose wiring starts the gateway and passes the research API location and token to it, but tool/plugin wiring for autonomous runtime control is still the next step
 
 Suggested Docker Desktop resources for this repo:
