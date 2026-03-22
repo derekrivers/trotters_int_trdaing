@@ -21,7 +21,11 @@ from trotters_trader.research_runtime import (
     skip_director_next,
     stop_campaign,
 )
-from trotters_trader.reports import build_operability_scorecard
+from trotters_trader.reports import (
+    build_campaign_operator_summary,
+    build_operability_scorecard,
+    operability_artifact_paths,
+)
 
 
 @dataclass(frozen=True)
@@ -57,12 +61,19 @@ class DashboardController:
             for campaign_id in active_campaign_ids
             if campaign_id
         ]
+        agent_summaries = load_latest_summaries(self._paths.catalog_output_dir)
         return {
             "status": status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "notifications": _load_notifications(self._paths, limit=25),
-            "agent_summaries": load_latest_summaries(self._paths.catalog_output_dir),
+            "current_best_candidate": _build_current_best_candidate(
+                self._paths,
+                status=status,
+                active_campaigns=active_campaigns,
+                agent_summaries=agent_summaries,
+            ),
+            "agent_summaries": agent_summaries,
             "agent_dispatches": load_dispatch_records(self._paths.catalog_output_dir, limit=10),
             "agent_dispatch_summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=100),
         }
@@ -277,6 +288,43 @@ def _load_notifications(paths: ResearchRuntimePaths, *, limit: int) -> list[dict
     return records[-limit:][::-1]
 
 
+def _build_current_best_candidate(
+    paths: ResearchRuntimePaths,
+    *,
+    status: dict[str, object],
+    active_campaigns: list[dict[str, object]],
+    agent_summaries: dict[str, dict[str, object]],
+) -> dict[str, object] | None:
+    focus_campaign = _latest_campaign(active_campaigns)
+    source = "active_campaign"
+    if focus_campaign is None:
+        terminal_campaign = _recent_outcomes(status.get("campaigns"), limit=1)
+        if terminal_campaign:
+            campaign_id = str(terminal_campaign[0].get("campaign_id", ""))
+            if campaign_id:
+                try:
+                    focus_campaign = campaign_status(paths, campaign_id).get("campaign", {})
+                except ValueError:
+                    focus_campaign = terminal_campaign[0]
+                source = "most_recent_terminal_campaign"
+    if not isinstance(focus_campaign, dict) or not focus_campaign:
+        return None
+    summary = build_campaign_operator_summary(
+        focus_campaign,
+        candidate_readiness=agent_summaries.get("candidate_readiness_summary"),
+        paper_trade_readiness=agent_summaries.get("paper_trade_readiness_summary"),
+    )
+    summary["source"] = source
+    return summary
+
+
+def _latest_campaign(campaigns: list[dict[str, object]]) -> dict[str, object] | None:
+    valid = [campaign for campaign in campaigns if isinstance(campaign, dict)]
+    if not valid:
+        return None
+    return max(valid, key=lambda campaign: str(campaign.get("updated_at", "") or ""))
+
+
 def _read_body(environ: dict[str, object]) -> bytes:
     length_text = str(environ.get("CONTENT_LENGTH", "") or "0").strip()
     try:
@@ -299,6 +347,11 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     directors = payload.get("active_directors", []) if isinstance(payload.get("active_directors"), list) else []
     campaigns = payload.get("active_campaigns", []) if isinstance(payload.get("active_campaigns"), list) else []
     notifications = payload.get("notifications", []) if isinstance(payload.get("notifications"), list) else []
+    current_best_candidate = (
+        payload.get("current_best_candidate", {})
+        if isinstance(payload.get("current_best_candidate"), dict)
+        else {}
+    )
     agent_summaries = payload.get("agent_summaries", {}) if isinstance(payload.get("agent_summaries"), dict) else {}
     agent_dispatches = payload.get("agent_dispatches", []) if isinstance(payload.get("agent_dispatches"), list) else []
     agent_dispatch_summary = payload.get("agent_dispatch_summary", {}) if isinstance(payload.get("agent_dispatch_summary"), dict) else {}
@@ -381,6 +434,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     </section>
     {_notification_banner(notifications, campaigns=campaigns, directors=directors)}
     {_health_panel(health)}
+    {_current_best_candidate_section(current_best_candidate)}
     <section class="summary-grid">{summary_cards}</section>
     <section class="panel">
       <h2>Decision Snapshots</h2>
@@ -472,6 +526,82 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     </section>
     """
     return _render_layout("Research Runtime Dashboard", body, refresh_seconds=refresh_seconds)
+
+
+def _current_best_candidate_section(summary: dict[str, object]) -> str:
+    if not summary:
+        return """
+        <section class="panel">
+          <h2>Current Best Candidate</h2>
+          <p>No operator-ready candidate summary is available yet.</p>
+        </section>
+        """
+
+    best_candidate = summary.get("best_candidate") if isinstance(summary.get("best_candidate"), dict) else None
+    supporting = summary.get("supporting_summaries") if isinstance(summary.get("supporting_summaries"), dict) else {}
+    progression = summary.get("progression") if isinstance(summary.get("progression"), dict) else {}
+    why_best = _scorecard_list(summary.get("why_this_candidate"), empty_message="No strengths recorded yet.")
+    what_failed = _scorecard_list(summary.get("what_failed_or_is_missing"), empty_message="No missing-evidence summary recorded yet.")
+    next_steps = _scorecard_list(summary.get("next_steps"), empty_message="No next steps recorded yet.")
+    candidate_snapshot = _candidate_snapshot(
+        best_candidate or {},
+        None,
+        empty_message="No shortlisted candidate has been selected yet.",
+    )
+    supporting_rows = "".join(
+        _operator_supporting_summary_row(label, details)
+        for label, details in [
+            ("Candidate readiness", supporting.get("candidate_readiness")),
+            ("Paper-trade readiness", supporting.get("paper_trade_readiness")),
+        ]
+    ) or "<tr><td colspan='5'>No supporting specialist summaries recorded yet.</td></tr>"
+    artifact_paths = summary.get("artifact_paths") if isinstance(summary.get("artifact_paths"), dict) else {}
+
+    return f"""
+    <section class="panel">
+      <h2>Current Best Candidate</h2>
+      <p class="subtle">Single-screen operator view of the current lead branch, why it leads, what is still weak, and what should happen next.</p>
+      <section class="summary-grid">
+        {_summary_card("source", str(summary.get("source", "active_campaign")))}
+        {_summary_card("recommendation", str(summary.get("operator_recommendation", "needs_more_research")))}
+        {_summary_card("campaign status", str(summary.get("campaign_status", "unknown")))}
+        {_summary_card("phase", str(summary.get("campaign_phase", "unknown")))}
+        {_summary_card("shortlist", str(progression.get("shortlist_count", 0)))}
+        {_summary_card("pivot used", "yes" if bool(progression.get("pivot_used", False)) else "no")}
+      </section>
+      <p><strong>{escape(str(summary.get("campaign_name", "unknown campaign")))}</strong> ({escape(str(summary.get("campaign_id", "")))})</p>
+      <p>{escape(str(summary.get("headline", "")))}</p>
+      <p><strong>Immediate next action:</strong> {escape(str(summary.get("next_action", "")) or "No next action recorded yet.")}</p>
+      {_scorecard_artifact_paths(artifact_paths)}
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Why This Is The Current Lead</h2>
+        {why_best}
+      </section>
+      <section class="panel">
+        <h2>What Failed Or Is Missing</h2>
+        {what_failed}
+      </section>
+    </section>
+    <section class="split-grid">
+      <section class="panel">
+        <h2>Best Candidate Snapshot</h2>
+        {candidate_snapshot}
+      </section>
+      <section class="panel">
+        <h2>What Happens Next</h2>
+        {next_steps}
+      </section>
+    </section>
+    <section class="panel">
+      <h2>Supporting Specialist Views</h2>
+      <table>
+        <thead><tr><th>Summary</th><th>Classification</th><th>Status</th><th>Action</th><th>Recorded</th></tr></thead>
+        <tbody>{supporting_rows}</tbody>
+      </table>
+    </section>
+    """
 
 
 def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
@@ -857,7 +987,7 @@ def _render_guide(*, refresh_seconds: int) -> str:
       </section>
       <section class="panel">
         <h2>What Success Means</h2>
-        <p>Success does not mean â€œbest looking line on a chart.â€ It means the system found a candidate strong enough to freeze as a serious strategy proposal.</p>
+        <p>Success does not mean "best looking line on a chart." It means the system found a candidate strong enough to freeze as a serious strategy proposal.</p>
         <p>When that happens, the application writes promotion artifacts, marks the campaign as completed, and emits a dedicated promotion notification. That is the point where a human review should happen.</p>
       </section>
     </section>
@@ -879,6 +1009,7 @@ def _render_guide(*, refresh_seconds: int) -> str:
     <section class="split-grid">
       <section class="panel">
         <h2>How To Read The Dashboard</h2>
+        <p><strong>Current Best Candidate</strong> is the fastest operator answer for what the system currently thinks is the lead branch, why it leads, what is still weak, and what should happen next.</p>
         <p><strong>Active Directors</strong> are the highest-level search programs. A director can launch the next campaign automatically.</p>
         <p><strong>Active Campaigns</strong> are the current strategy families being tested.</p>
         <p><strong>Workers</strong> tell you whether the machine is actively processing jobs.</p>
@@ -1664,17 +1795,23 @@ def _operator_note(row: dict[str, object], stress_result: dict[str, object] | No
     return "Shortlisted, but not yet strong enough to freeze."
 
 
+def _operator_supporting_summary_row(label: str, summary: object) -> str:
+    details = summary if isinstance(summary, dict) else {}
+    if not details:
+        return ""
+    return (
+        "<tr>"
+        f"<td>{escape(label)}</td>"
+        f"<td>{escape(str(details.get('classification', 'unknown')))}</td>"
+        f"<td>{escape(str(details.get('status', 'unknown')))}</td>"
+        f"<td>{escape(str(details.get('recommended_action', 'unknown')))}</td>"
+        f"<td>{escape(str(details.get('recorded_at_utc', '') or '-'))}</td>"
+        "</tr>"
+    )
+
+
 def _campaign_scorecard_artifact_paths(campaign: dict[str, object]) -> dict[str, str]:
-    latest_report_path = str(campaign.get("latest_report_path") or "")
-    if not latest_report_path:
-        return {}
-    report_dir = Path(latest_report_path).parent
-    paths = {
-        "scorecard_md": report_dir / "operator_scorecard.md",
-        "scorecard_json": report_dir / "operator_scorecard.json",
-        "comparison_md": report_dir / "candidate_comparison.md",
-    }
-    return {key: str(path) for key, path in paths.items() if path.exists()}
+    return operability_artifact_paths(campaign.get("latest_report_path"))
 
 
 def _scorecard_artifact_paths(paths: dict[str, str]) -> str:

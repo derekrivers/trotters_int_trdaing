@@ -9,7 +9,9 @@ from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.config import load_config
 from trotters_trader.experiments import run_promotion_check, run_universe_slice_sweep
 from trotters_trader.reports import (
+    build_campaign_operator_summary,
     build_operability_scorecard,
+    operability_artifact_paths,
     safe_artifact_dirname,
     write_operability_program_report,
     write_paper_trade_decision_artifacts,
@@ -309,6 +311,105 @@ class ReportTests(IsolatedWorkspaceTestCase):
 
         self.assertEqual(scorecard["operator_recommendation"], "reject")
         self.assertIn("rejected", str(scorecard["summary"]).lower())
+
+    def test_campaign_operator_summary_exposes_current_best_candidate_contract(self) -> None:
+        artifact_dir = self.temp_root / "catalog" / "campaign-1"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for name in [
+            "operability_program.md",
+            "operability_program.json",
+            "operator_scorecard.md",
+            "operator_scorecard.json",
+            "candidate_comparison.md",
+        ]:
+            (artifact_dir / name).write_text(name, encoding="utf-8")
+
+        summary = build_campaign_operator_summary(
+            {
+                "campaign_id": "campaign-1",
+                "campaign_name": "broad-operability",
+                "status": "completed",
+                "phase": "stress_pack",
+                "updated_at": "2026-03-22T20:00:00+00:00",
+                "latest_report_path": str((artifact_dir / "operability_program.md").resolve()),
+                "state": {
+                    "control_row": {
+                        "run_name": "control-run",
+                        "profile_name": "control-profile",
+                        "validation_excess_return": -0.01,
+                        "holdout_excess_return": -0.02,
+                        "walkforward_pass_windows": 0,
+                    },
+                    "shortlisted": [
+                        {
+                            "run_name": "candidate-run",
+                            "profile_name": "candidate-profile",
+                            "eligible": True,
+                            "validation_excess_return": 0.04,
+                            "holdout_excess_return": 0.02,
+                            "walkforward_pass_windows": 2,
+                            "rebalance_frequency_days": 84,
+                            "max_rebalance_turnover_pct": 0.08,
+                        }
+                    ],
+                    "stress_results": [
+                        {
+                            "candidate_run_name": "candidate-run",
+                            "stress_ok": True,
+                            "non_broken_count": 4,
+                            "scenario_count": 4,
+                        }
+                    ],
+                    "final_decision": {
+                        "recommended_action": "freeze_candidate",
+                        "reason": "candidate_passed_promotion_and_stress_pack",
+                        "selected_run_name": "candidate-run",
+                        "selected_profile_name": "candidate-profile",
+                        "selected_candidate_eligible": True,
+                        "selected_stress_ok": True,
+                        "pivot_used": False,
+                    },
+                },
+            },
+            candidate_readiness={
+                "agent_id": "candidate-review",
+                "classification": "paper_rehearsal_ready",
+                "status": "recorded",
+                "recommended_action": "paper_trade_next",
+                "message": "Candidate is the strongest branch so far.",
+                "recorded_at_utc": "2026-03-22T20:01:00+00:00",
+            },
+            paper_trade_readiness={
+                "agent_id": "paper-trade-readiness",
+                "classification": "ready_for_rehearsal",
+                "status": "recorded",
+                "recommended_action": "prepare_rehearsal",
+                "message": "Paper rehearsal can be prepared next.",
+                "recorded_at_utc": "2026-03-22T20:02:00+00:00",
+            },
+        )
+
+        self.assertEqual(summary["operator_recommendation"], "paper_trade_next")
+        self.assertEqual(summary["best_candidate"]["run_name"], "candidate-run")
+        self.assertIn("paper-trading preparation", summary["headline"])
+        self.assertEqual(summary["supporting_summaries"]["candidate_readiness"]["classification"], "paper_rehearsal_ready")
+        self.assertIn("scorecard_md", summary["artifact_paths"])
+        self.assertEqual(summary["next_action"], summary["next_steps"][0])
+
+    def test_operability_artifact_paths_returns_existing_operator_files(self) -> None:
+        artifact_dir = self.temp_root / "catalog" / "campaign-2"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        report_path = artifact_dir / "operability_program.md"
+        report_path.write_text("program", encoding="utf-8")
+        (artifact_dir / "operator_scorecard.md").write_text("scorecard", encoding="utf-8")
+        (artifact_dir / "candidate_comparison.md").write_text("comparison", encoding="utf-8")
+
+        paths = operability_artifact_paths(str(report_path))
+
+        self.assertIn("summary_md", paths)
+        self.assertIn("scorecard_md", paths)
+        self.assertIn("comparison_md", paths)
+        self.assertNotIn("scorecard_json", paths)
 
     def test_paper_trade_decision_artifacts_are_written(self) -> None:
         config = self.isolated_config(Path("configs/backtest.toml"))

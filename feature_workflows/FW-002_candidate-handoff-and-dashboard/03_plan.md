@@ -12,6 +12,7 @@
 
 - add a compact API surface for current-best-candidate state
 - add clearer dashboard sections for recommendation, strengths, weaknesses, and next action
+- reuse persisted scorecard logic instead of adding a dashboard-only candidate ranking path
 
 ## Acceptance Criteria
 
@@ -23,6 +24,6 @@
 
 1. shape the API payload
 2. update dashboard rendering
-3. split `dashboard.py` if the feature made that worthwhile
+3. split `dashboard.py` only where the feature benefits from shared helpers and clearer overview composition
 4. run dashboard/API/report tests
-5. verify the live dashboard and API responses
+5. rebuild the live stack and verify the dashboard and API responses

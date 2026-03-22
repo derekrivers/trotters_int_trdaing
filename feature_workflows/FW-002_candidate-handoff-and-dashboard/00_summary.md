@@ -10,7 +10,7 @@
 
 ## Status
 
-- `ready`
+- `done`
 
 ## Dependency Chain
 
@@ -27,3 +27,11 @@
 
 - one commit for API/dashboard contract additions
 - one commit for dashboard structure cleanup and rendering/tests if the split is large enough to justify it
+
+## Delivered
+
+- added a shared operator-facing current-best-candidate summary contract in `reports.py`
+- exposed that summary from `/api/v1/runtime/overview` as `current_best_candidate`
+- rendered a prominent `Current Best Candidate` section on the dashboard overview with strengths, missing evidence, next action, and supporting specialist summaries
+- kept scorecard and comparison artifacts linked from the overview instead of forcing raw catalog inspection
+- cleaned the dashboard guide copy so operator-facing text is plain ASCII again

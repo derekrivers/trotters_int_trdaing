@@ -444,6 +444,81 @@ def build_operability_scorecard(
     }
 
 
+def operability_artifact_paths(latest_report_path: str | Path | None) -> dict[str, str]:
+    report_path_text = str(latest_report_path or "").strip()
+    if not report_path_text:
+        return {}
+    report_dir = Path(report_path_text).parent
+    paths = {
+        "summary_md": report_dir / "operability_program.md",
+        "decision_json": report_dir / "operability_program.json",
+        "scorecard_md": report_dir / "operator_scorecard.md",
+        "scorecard_json": report_dir / "operator_scorecard.json",
+        "comparison_md": report_dir / "candidate_comparison.md",
+    }
+    return {key: str(path) for key, path in paths.items() if path.exists()}
+
+
+def build_campaign_operator_summary(
+    campaign: dict[str, object],
+    *,
+    candidate_readiness: dict[str, object] | None = None,
+    paper_trade_readiness: dict[str, object] | None = None,
+) -> dict[str, object]:
+    state = campaign.get("state", {}) if isinstance(campaign.get("state"), dict) else {}
+    control_row = state.get("control_row") if isinstance(state.get("control_row"), dict) else {}
+    shortlisted = [row for row in state.get("shortlisted", []) if isinstance(row, dict)]
+    stress_results = [row for row in state.get("stress_results", []) if isinstance(row, dict)]
+    final_decision = state.get("final_decision") if isinstance(state.get("final_decision"), dict) else {}
+    selected_candidate = _select_scorecard_candidate(shortlisted, final_decision)
+    selected_stress = _select_scorecard_stress_result(stress_results, selected_candidate, final_decision)
+    scorecard = build_operability_scorecard(
+        control_row=control_row,
+        shortlisted=shortlisted,
+        stress_results=stress_results,
+        final_decision=final_decision,
+    )
+    next_steps = scorecard.get("next_steps", []) if isinstance(scorecard.get("next_steps"), list) else []
+    return {
+        "campaign_id": str(campaign.get("campaign_id", "")),
+        "campaign_name": str(campaign.get("campaign_name", "unknown")),
+        "campaign_status": str(campaign.get("status", "unknown")),
+        "campaign_phase": str(campaign.get("phase", "unknown")),
+        "campaign_updated_at": str(campaign.get("updated_at", "") or ""),
+        "latest_report_path": str(campaign.get("latest_report_path", "") or ""),
+        "operator_recommendation": str(scorecard.get("operator_recommendation", "needs_more_research")),
+        "campaign_decision": str(scorecard.get("campaign_decision", "continue_research")),
+        "campaign_reason": str(scorecard.get("campaign_reason", "unknown")),
+        "headline": str(scorecard.get("summary", "")),
+        "best_candidate": _scorecard_candidate_snapshot(selected_candidate, selected_stress)
+        if selected_candidate is not None
+        else None,
+        "control_candidate": scorecard.get("control"),
+        "why_this_candidate": scorecard.get("strengths", []),
+        "what_failed_or_is_missing": scorecard.get("weaknesses", []),
+        "next_action": str(next_steps[0]) if next_steps else "",
+        "next_steps": next_steps,
+        "artifact_paths": operability_artifact_paths(campaign.get("latest_report_path")),
+        "progression": {
+            "shortlist_count": len(shortlisted),
+            "stress_result_count": len(stress_results),
+            "selected_run_name": str(final_decision.get("selected_run_name") or selected_candidate.get("run_name") or "")
+            if selected_candidate is not None
+            else "",
+            "selected_profile_name": str(final_decision.get("selected_profile_name") or selected_candidate.get("profile_name") or "")
+            if selected_candidate is not None
+            else "",
+            "pivot_used": bool(final_decision.get("pivot_used", False)),
+            "selected_candidate_eligible": bool(final_decision.get("selected_candidate_eligible", False)),
+            "selected_stress_ok": bool(final_decision.get("selected_stress_ok", False)),
+        },
+        "supporting_summaries": {
+            "candidate_readiness": _operator_supporting_summary(candidate_readiness),
+            "paper_trade_readiness": _operator_supporting_summary(paper_trade_readiness),
+        },
+    }
+
+
 def _render_summary_markdown(
     run_name: str,
     summary: dict[str, float],
@@ -1255,6 +1330,19 @@ def _scorecard_comparison(
             "walkforward_pass_windows": int(selected_candidate.get("walkforward_pass_windows", 0) or 0)
             - control_walkforward,
         },
+    }
+
+
+def _operator_supporting_summary(summary: dict[str, object] | None) -> dict[str, object] | None:
+    if not isinstance(summary, dict) or not summary:
+        return None
+    return {
+        "agent_id": str(summary.get("agent_id", "unknown")),
+        "classification": str(summary.get("classification", "unknown")),
+        "status": str(summary.get("status", "unknown")),
+        "recommended_action": str(summary.get("recommended_action", "unknown")),
+        "message": str(summary.get("message", "") or ""),
+        "recorded_at_utc": str(summary.get("recorded_at_utc", "") or ""),
     }
 
 

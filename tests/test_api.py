@@ -107,6 +107,111 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["most_recent_terminal"]["director"]["director_id"], "director-failed")
         self.assertEqual(payload["most_recent_terminal"]["campaign"]["campaign_id"], "campaign-failed")
 
+    def test_runtime_overview_exposes_current_best_candidate_summary(self) -> None:
+        root = self._workspace_root("overview_best_candidate")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            latest_dir = paths.catalog_output_dir / "agent_summaries" / "latest"
+            latest_dir.mkdir(parents=True, exist_ok=True)
+            (latest_dir / "candidate_readiness_summary.json").write_text(
+                json.dumps({
+                    "summary_type": "candidate_readiness_summary",
+                    "agent_id": "candidate-review",
+                    "classification": "research_only",
+                    "status": "recorded",
+                    "recommended_action": "continue_research",
+                    "message": "Candidate still needs deeper validation.",
+                    "recorded_at_utc": "2026-03-22T12:00:00+00:00",
+                }),
+                encoding="utf-8",
+            )
+            (latest_dir / "paper_trade_readiness_summary.json").write_text(
+                json.dumps({
+                    "summary_type": "paper_trade_readiness_summary",
+                    "agent_id": "paper-trade-readiness",
+                    "classification": "not_ready",
+                    "status": "recorded",
+                    "recommended_action": "analyze_candidate",
+                    "message": "Paper-trade evidence is incomplete.",
+                    "recorded_at_utc": "2026-03-22T12:01:00+00:00",
+                }),
+                encoding="utf-8",
+            )
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with (
+                patch(
+                    "trotters_trader.api.runtime_status",
+                    return_value={
+                        "counts": {"queued": 2, "running": 1},
+                        "workers": [],
+                        "jobs": [],
+                        "campaigns": [{"campaign_id": "campaign-1", "status": "running", "updated_at": "2026-03-22T07:00:00+00:00"}],
+                        "directors": [{"director_id": "director-1", "status": "running", "updated_at": "2026-03-22T07:00:30+00:00"}],
+                    },
+                ),
+                patch(
+                    "trotters_trader.api.director_status",
+                    return_value={"director": {"director_id": "director-1", "director_name": "broad-operability-director", "status": "running"}},
+                ),
+                patch(
+                    "trotters_trader.api.campaign_status",
+                    return_value={
+                        "campaign": {
+                            "campaign_id": "campaign-1",
+                            "campaign_name": "broad-operability",
+                            "status": "running",
+                            "phase": "benchmark_pivot",
+                            "updated_at": "2026-03-22T07:00:00+00:00",
+                            "latest_report_path": "runtime/catalog/campaign-1/operability_program.md",
+                            "state": {
+                                "control_row": {
+                                    "run_name": "control-run",
+                                    "profile_name": "control-profile",
+                                    "validation_excess_return": -0.01,
+                                    "holdout_excess_return": -0.03,
+                                    "walkforward_pass_windows": 0,
+                                },
+                                "shortlisted": [
+                                    {
+                                        "run_name": "candidate-run",
+                                        "profile_name": "candidate-profile",
+                                        "eligible": True,
+                                        "validation_excess_return": 0.04,
+                                        "holdout_excess_return": 0.01,
+                                        "walkforward_pass_windows": 2,
+                                        "rebalance_frequency_days": 84,
+                                        "max_rebalance_turnover_pct": 0.08,
+                                    }
+                                ],
+                                "stress_results": [],
+                                "final_decision": {
+                                    "recommended_action": "continue_research",
+                                    "reason": "campaign_in_progress",
+                                    "selected_run_name": "candidate-run",
+                                    "selected_profile_name": "candidate-profile",
+                                    "selected_candidate_eligible": True,
+                                    "selected_stress_ok": False,
+                                    "pivot_used": True,
+                                },
+                            },
+                        }
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/api/v1/runtime/overview", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["current_best_candidate"]["campaign_id"], "campaign-1")
+        self.assertEqual(payload["current_best_candidate"]["best_candidate"]["run_name"], "candidate-run")
+        self.assertEqual(payload["current_best_candidate"]["source"], "active_campaign")
+        self.assertEqual(
+            payload["current_best_candidate"]["supporting_summaries"]["candidate_readiness"]["classification"],
+            "research_only",
+        )
+
     def test_start_director_route_uses_runtime_service(self) -> None:
         root = self._workspace_root("director_start")
         try:

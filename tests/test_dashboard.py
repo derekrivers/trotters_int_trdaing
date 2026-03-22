@@ -339,6 +339,127 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("worker pool", body)
         self.assertIn("job activity", body)
 
+    def test_overview_renders_current_best_candidate_section(self) -> None:
+        root = self._workspace_root("overview_best_candidate")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            latest_dir = paths.catalog_output_dir / "agent_summaries" / "latest"
+            latest_dir.mkdir(parents=True, exist_ok=True)
+            (latest_dir / "candidate_readiness_summary.json").write_text(
+                json.dumps({
+                    "summary_type": "candidate_readiness_summary",
+                    "agent_id": "candidate-review",
+                    "classification": "research_only",
+                    "status": "recorded",
+                    "recommended_action": "continue_research",
+                    "message": "Candidate still needs deeper validation.",
+                    "recorded_at_utc": "2026-03-22T12:00:00+00:00",
+                }),
+                encoding="utf-8",
+            )
+            (latest_dir / "paper_trade_readiness_summary.json").write_text(
+                json.dumps({
+                    "summary_type": "paper_trade_readiness_summary",
+                    "agent_id": "paper-trade-readiness",
+                    "classification": "not_ready",
+                    "status": "recorded",
+                    "recommended_action": "analyze_candidate",
+                    "message": "Paper-trade evidence is incomplete.",
+                    "recorded_at_utc": "2026-03-22T12:01:00+00:00",
+                }),
+                encoding="utf-8",
+            )
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 2, "running": 1, "completed": 9},
+                        "workers": [],
+                        "jobs": [],
+                        "campaigns": [
+                            {
+                                "campaign_id": "campaign-1",
+                                "campaign_name": "broad-operability",
+                                "status": "running",
+                                "phase": "benchmark_pivot",
+                                "updated_at": "2026-03-22T07:00:00+00:00",
+                            }
+                        ],
+                        "directors": [{"director_id": "director-1", "status": "running"}],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.campaign_status",
+                    return_value={
+                        "campaign": {
+                            "campaign_id": "campaign-1",
+                            "campaign_name": "broad-operability",
+                            "status": "running",
+                            "phase": "benchmark_pivot",
+                            "updated_at": "2026-03-22T07:00:00+00:00",
+                            "latest_report_path": "runtime/catalog/campaign-1/operability_program.md",
+                            "state": {
+                                "control_row": {
+                                    "run_name": "control-run",
+                                    "profile_name": "control-profile",
+                                    "validation_excess_return": -0.01,
+                                    "holdout_excess_return": -0.03,
+                                    "walkforward_pass_windows": 0,
+                                },
+                                "shortlisted": [
+                                    {
+                                        "run_name": "candidate-run",
+                                        "profile_name": "candidate-profile",
+                                        "eligible": True,
+                                        "validation_excess_return": 0.04,
+                                        "holdout_excess_return": 0.01,
+                                        "walkforward_pass_windows": 2,
+                                        "rebalance_frequency_days": 84,
+                                        "max_rebalance_turnover_pct": 0.08,
+                                    }
+                                ],
+                                "stress_results": [],
+                                "final_decision": {
+                                    "recommended_action": "continue_research",
+                                    "reason": "campaign_in_progress",
+                                    "selected_run_name": "candidate-run",
+                                    "selected_profile_name": "candidate-profile",
+                                    "selected_candidate_eligible": True,
+                                    "selected_stress_ok": False,
+                                    "pivot_used": True,
+                                },
+                            },
+                        }
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.director_status",
+                    return_value={
+                        "director": {
+                            "director_id": "director-1",
+                            "director_name": "broad-operability-director",
+                            "status": "running",
+                            "current_campaign_id": "campaign-1",
+                            "successful_campaign_id": None,
+                            "spec": {"plan_name": "broad-operability-plan"},
+                            "state": {"campaign_queue": [{"status": "running"}]},
+                        }
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Current Best Candidate", body)
+        self.assertIn("Why This Is The Current Lead", body)
+        self.assertIn("What Failed Or Is Missing", body)
+        self.assertIn("Immediate next action", body)
+        self.assertIn("candidate-run", body)
+        self.assertIn("Supporting Specialist Views", body)
+
     def test_overview_warns_when_system_is_quiet_with_stale_signals(self) -> None:
         root = self._workspace_root("overview_health_warn")
         try:

@@ -14,6 +14,7 @@ from wsgiref.simple_server import make_server
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries, load_summary_records
 from trotters_trader.dashboard import _runtime_health
+from trotters_trader.reports import build_campaign_operator_summary
 from trotters_trader.research_runtime import (
     DEFAULT_NOTIFICATION_EVENTS,
     ResearchRuntimePaths,
@@ -68,6 +69,7 @@ class ApiController:
         ]
         notifications = _load_notifications(self._paths, limit=25)
         most_recent_terminal = _most_recent_terminal(status)
+        agent_summaries = load_latest_summaries(self._paths.catalog_output_dir)
         return {
             "status": status,
             "active_directors": active_directors,
@@ -75,7 +77,13 @@ class ApiController:
             "notifications": notifications,
             "most_recent_terminal": most_recent_terminal,
             "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
-            "agent_summaries": load_latest_summaries(self._paths.catalog_output_dir),
+            "current_best_candidate": _build_current_best_candidate(
+                self._paths,
+                active_campaigns=active_campaigns,
+                most_recent_terminal=most_recent_terminal,
+                agent_summaries=agent_summaries,
+            ),
+            "agent_summaries": agent_summaries,
             "agent_dispatches": load_dispatch_records(self._paths.catalog_output_dir, limit=10),
             "agent_dispatch_summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=100),
         }
@@ -441,6 +449,35 @@ def _most_recent_terminal(status: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _build_current_best_candidate(
+    paths: ResearchRuntimePaths,
+    *,
+    active_campaigns: list[dict[str, object]],
+    most_recent_terminal: dict[str, object],
+    agent_summaries: dict[str, dict[str, object]],
+) -> dict[str, object] | None:
+    focus_campaign = _latest_campaign(active_campaigns)
+    source = "active_campaign"
+    if focus_campaign is None:
+        terminal_campaign = most_recent_terminal.get("campaign") if isinstance(most_recent_terminal.get("campaign"), dict) else None
+        campaign_id = str(terminal_campaign.get("campaign_id", "")) if terminal_campaign else ""
+        if campaign_id:
+            focus_campaign = _detail_or_summary(
+                lambda: campaign_status(paths, campaign_id).get("campaign", {}),
+                terminal_campaign,
+            )
+            source = "most_recent_terminal_campaign"
+    if not isinstance(focus_campaign, dict) or not focus_campaign:
+        return None
+    summary = build_campaign_operator_summary(
+        focus_campaign,
+        candidate_readiness=agent_summaries.get("candidate_readiness_summary"),
+        paper_trade_readiness=agent_summaries.get("paper_trade_readiness_summary"),
+    )
+    summary["source"] = source
+    return summary
+
+
 def _latest_terminal_entry(entries: object, *, statuses: set[str]) -> dict[str, object] | None:
     if not isinstance(entries, list):
         return None
@@ -457,6 +494,13 @@ def _latest_terminal_entry(entries: object, *, statuses: set[str]) -> dict[str, 
             latest = entry
             latest_timestamp = candidate_timestamp
     return latest
+
+
+def _latest_campaign(campaigns: list[dict[str, object]]) -> dict[str, object] | None:
+    valid = [campaign for campaign in campaigns if isinstance(campaign, dict)]
+    if not valid:
+        return None
+    return max(valid, key=lambda campaign: str(campaign.get("updated_at", "") or ""))
 
 
 def _detail_or_summary(fetch_detail: Callable[[], dict[str, object]], summary: dict[str, object]) -> dict[str, object]:
