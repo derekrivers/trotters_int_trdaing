@@ -18,6 +18,8 @@
 | `FW-014` | Active branch truth and director launch hardening | `done` | `FW-006`, `FW-010`, `FW-013` | director campaign launch is claim-protected against duplicate starts, and API/dashboard expose one active-branch summary that explains what is running now | use the active-branch summary and launch-claim contract as the baseline for future supervisor/operator visibility work |
 | `FW-015` | Runbook queue truth and candidate normalization | `done` | `FW-009`, `FW-012`, `FW-014` | the supervisor queue, research-program portfolio, and current-best-candidate summary expose one consistent operator story, with explicit no-candidate states and queue-alignment warnings | use the runbook-queue summary and normalized current-best-candidate contract as the baseline for future supervisor and promotion-path operator work |
 
+| `FW-016` | Runbook governance and next-family selection | `done` | `FW-015` | retired or untracked branches cannot be selected as the next supervisor continuation target, and the queue stops cleanly when no approved runnable family remains | use the governed empty-queue state as the baseline until a replacement family is explicitly approved |
+
 ## Ordering Notes
 
 1. `FW-002` should land before `FW-003` because paper-trading rehearsal needs a clearer operator handoff surface.
@@ -28,8 +30,5 @@
 6. `FW-009` through `FW-012` turn the promotion path into explicit read models; future paper-trading or operator work should extend those summaries instead of adding new dashboard-only logic.
 7. `FW-013` keeps the overview route operator-sized; future API additions should prefer compact summaries and dedicated detail endpoints instead of reintroducing full runtime history into `/api/v1/runtime/overview`.
 8. `FW-014` hardens the director launch path; future continuation or supervisor work should treat `launch_in_progress` as the single-source guard against double-starting the same queue entry.
-9. FW-015 makes queue drift and no-candidate states explicit; future operator and supervisor work should extend the shared runbook_queue_summary and normalized current_best_candidate contracts instead of inventing new one-off status rules.
-
-
-
-
+9. `FW-015` makes queue drift and no-candidate states explicit; future operator and supervisor work should extend the shared `runbook_queue_summary` and normalized `current_best_candidate` contracts instead of inventing new one-off status rules.
+10. `FW-016` makes the governed empty-queue state explicit; future continuation work must first approve a replacement research family instead of silently re-enabling retired or untracked plans.

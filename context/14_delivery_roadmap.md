@@ -384,4 +384,10 @@ Queue expansion checkpoint on March 23, 2026:
 - `momentum_broad_candidate_refine_n4_ms002_rf63` was chosen because it is the remaining repo-defined broad-family seed that is still operationally credible enough to run
 - `mean_reversion_broad_candidate_n8_ms005_rf21` remains outside the queue because the roadmap already records it as materially worse than the broad momentum control
 - the queue-growth rule is now: workflow-first evidence review, then research-program definition, then director plan, then runbook entry
+Runbook governance checkpoint on March 23, 2026:
 
+- the supervisor queue was hardened so enabled-but-untracked branches are no longer treated as runnable follow-ups
+- the OpenClaw `trotters_runbook` tool now reads the governed queue summary from the API instead of trusting raw queue order alone
+- all retired queue entries were then disabled in `configs/openclaw/trotters-runbook.json`
+- the live queue now resolves to an explicit governed idle state with `recommended_action = define_next_research_family`
+- this is the intended outcome: the supervisor must stop cleanly until a replacement research family is approved, rather than silently restarting stale branches
