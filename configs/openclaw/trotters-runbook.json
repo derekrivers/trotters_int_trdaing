@@ -26,8 +26,15 @@
       "plan_id": "mean_reversion_broad_reentry",
       "plan_file": "configs/directors/mean_reversion_broad_reentry.json",
       "director_name": "mean-reversion-director",
-      "enabled": true,
+      "enabled": false,
       "priority": 4
+    },
+    {
+      "plan_id": "sma_cross_broad_reentry",
+      "plan_file": "configs/directors/sma_cross_broad_reentry.json",
+      "director_name": "sma-cross-director",
+      "enabled": true,
+      "priority": 5
     }
   ],
   "config_registry": {
@@ -35,7 +42,8 @@
     "broad_sector_pivot": "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
     "broad_beta_pivot": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
     "broad_beta_defensive": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
-    "broad_refine_seed": "configs/eodhd_momentum_broad_candidate_refine_n4_ms002_rf63.toml"
+    "broad_refine_seed": "configs/eodhd_momentum_broad_candidate_refine_n4_ms002_rf63.toml",
+    "broad_sma_cross_seed": "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml"
   },
   "service_allowlist": [
     "research-api",

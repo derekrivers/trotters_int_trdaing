@@ -1,0 +1,61 @@
+{
+  "program_id": "sma_cross_broad_reentry_program",
+  "title": "Broad SMA Cross Reentry Program",
+  "strategy_family": "sma_cross",
+  "objective": "Run one bounded absolute-trend family on the broad universe and decide whether SMA-cross trend confirmation deserves promotion-path follow-up or retirement.",
+  "branch_rationale": "The governed queue is blocked because both the broad momentum and broad mean-reversion branches retired. The repo already supports SMA-cross scoring, so this is the cleanest materially different successor family that can run without new model work.",
+  "positive_hypotheses": [
+    "Absolute-trend confirmation can avoid the benchmark-relative weakness that persisted when the system was forced to rank relative winners or losers across the broad universe.",
+    "A slower 20/100 trend filter with a modest confirmation threshold may produce a smaller but more durable candidate set than the exhausted short-horizon mean-reversion branch."
+  ],
+  "seed_stack": [
+    {
+      "label": "Retired broad momentum control",
+      "profile_name": "momentum_broad_candidate_beta_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+      "rationale": "Reference control for the exhausted broad-momentum family."
+    },
+    {
+      "label": "Retired broad mean-reversion control",
+      "profile_name": "mean_reversion_broad_candidate_n12_ms004_rf14",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n12_ms004_rf14.toml",
+      "rationale": "Reference control for the retired first non-momentum branch."
+    },
+    {
+      "label": "SMA-cross seed",
+      "profile_name": "sma_cross_broad_candidate_n8_sw20_lw100_st015",
+      "config_path": "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml",
+      "rationale": "Repo-backed absolute-trend family using the existing SMA-cross strategy with a broad-universe profile identity."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "sma_cross_seed",
+      "label": "SMA-Cross Seed",
+      "profile_name": "sma_cross_broad_candidate_n8_sw20_lw100_st015",
+      "config_path": "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml",
+      "purpose": "Execute the first governed absolute-trend family and decide whether it should be promoted or retired."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "sma_cross_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The SMA-cross seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ]
+}

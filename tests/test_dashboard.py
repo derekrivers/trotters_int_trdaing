@@ -18,6 +18,24 @@ class DashboardTests(unittest.TestCase):
     AUTH_USERNAME = "operator"
     AUTH_PASSWORD = "change-me-local-only"
 
+    def test_overview_renders_catalog_pending_banner_when_catalog_missing(self) -> None:
+        root = self._workspace_root("catalog_pending")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch("trotters_trader.dashboard.runtime_status", return_value={"counts": {}, "workers": [], "jobs": [], "campaigns": [], "directors": []}),
+                patch("trotters_trader.dashboard.campaign_status", return_value={"campaign": {}}),
+                patch("trotters_trader.dashboard.director_status", return_value={"director": {}}),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Catalog snapshot not available yet.", body)
+        self.assertIn("catalog.jsonl", body)
+
     def test_overview_page_renders_campaigns_and_notifications(self) -> None:
         root = self._workspace_root("overview")
         try:

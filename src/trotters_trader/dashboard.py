@@ -98,6 +98,7 @@ class DashboardController:
         )
         return {
             "status": status,
+            "catalog_status": _catalog_status(self._paths),
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "active_branch_summary": active_branch_summary,
@@ -390,6 +391,14 @@ def _load_notifications(paths: ResearchRuntimePaths, *, limit: int) -> list[dict
     return records[-limit:][::-1]
 
 
+def _catalog_status(paths: ResearchRuntimePaths) -> dict[str, object]:
+    catalog_jsonl = paths.catalog_output_dir / "research_catalog" / "catalog.jsonl"
+    return {
+        "available": catalog_jsonl.exists(),
+        "catalog_jsonl": str(catalog_jsonl),
+    }
+
+
 def _read_body(environ: dict[str, object]) -> bytes:
     length_text = str(environ.get("CONTENT_LENGTH", "") or "0").strip()
     try:
@@ -418,6 +427,7 @@ def _render_overview(
     directors = payload.get("active_directors", []) if isinstance(payload.get("active_directors"), list) else []
     campaigns = payload.get("active_campaigns", []) if isinstance(payload.get("active_campaigns"), list) else []
     notifications = payload.get("notifications", []) if isinstance(payload.get("notifications"), list) else []
+    catalog_status = payload.get("catalog_status", {}) if isinstance(payload.get("catalog_status"), dict) else {}
     current_best_candidate = (
         payload.get("current_best_candidate", {})
         if isinstance(payload.get("current_best_candidate"), dict)
@@ -541,6 +551,7 @@ def _render_overview(
       </div>
     </section>
     {_notification_banner(notifications, campaigns=campaigns, directors=directors)}
+    {_catalog_status_banner(catalog_status)}
     {_health_panel(health)}
     {_service_heartbeat_section(service_heartbeats)}
     {_active_runtime_now_section(directors, campaigns, counts)}
@@ -2849,6 +2860,19 @@ def _notification_banner(
     else:
         message = str(record.get("message", "") or event_type)
     return _alert_banner(message, severity)
+
+
+def _catalog_status_banner(catalog_status: dict[str, object]) -> str:
+    if bool(catalog_status.get("available", False)):
+        return ""
+    path = str(catalog_status.get("catalog_jsonl", "") or "runtime/catalog/research_catalog/catalog.jsonl")
+    return _alert_banner(
+        (
+            "Catalog snapshot not available yet. Live runtime panels still work, "
+            f"but portfolio and promotion sections will stay empty until the first catalog export is written to {path}."
+        ),
+        "warning",
+    )
 
 
 def _should_show_notification_banner(

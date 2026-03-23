@@ -56,7 +56,13 @@ def load_catalog_entries(output_dir: Path) -> list[dict[str, object]]:
     if not jsonl_path.exists():
         return []
     entries: list[dict[str, object]] = []
-    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        # Another process may be replacing the catalog file between the existence
+        # check and the read. Treat that the same as "no catalog yet".
+        return []
+    for line in lines:
         if line.strip():
             try:
                 payload = json.loads(line)

@@ -18,7 +18,7 @@ class ResearchFamilyTests(IsolatedWorkspaceTestCase):
         summary = build_research_family_comparison_summary(catalog_output_dir=self.temp_root / "catalog")
 
         self.assertEqual(summary["summary_type"], "research_family_comparison_summary")
-        self.assertEqual(summary["current_proposal"]["proposal_id"], "mean_reversion_broad_reentry")
+        self.assertEqual(summary["current_proposal"]["proposal_id"], "sma_cross_broad_reentry")
         self.assertIn(summary["current_proposal"]["family_status"], {"approved", "queued", "active"})
 
     def test_next_family_status_blocks_when_only_unapproved_family_exists(self) -> None:
@@ -132,3 +132,4 @@ class ResearchFamilyTests(IsolatedWorkspaceTestCase):
 
         with self.assertRaisesRegex(ValueError, "must explain why it differs from retired work"):
             load_research_family_proposal_definition(proposal_path)
+

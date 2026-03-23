@@ -10,6 +10,18 @@ from tests.support import IsolatedWorkspaceTestCase
 
 
 class CatalogTests(IsolatedWorkspaceTestCase):
+    def test_load_catalog_entries_returns_empty_when_file_disappears_during_read(self) -> None:
+        output_dir = self.temp_root / "runs"
+        catalog_dir = output_dir / "research_catalog"
+        catalog_dir.mkdir(parents=True, exist_ok=True)
+        jsonl_path = catalog_dir / "catalog.jsonl"
+        jsonl_path.write_text('{"artifact_type":"run"}\n', encoding="utf-8")
+
+        with patch("pathlib.Path.read_text", side_effect=FileNotFoundError("catalog swapped during read")):
+            entries = load_catalog_entries(output_dir)
+
+        self.assertEqual(entries, [])
+
     def test_backtest_registers_run_in_catalog(self) -> None:
         config = self.isolated_config(Path("configs/backtest.toml"))
         materialize_canonical_data(config.data)

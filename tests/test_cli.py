@@ -2,10 +2,19 @@ import argparse
 from datetime import date
 import os
 from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import patch
 
-from trotters_trader.cli import _build_parser, _handle_runtime_command, _load_command_config, _runtime_target_warning, execute_command
+from trotters_trader.cli import (
+    _build_parser,
+    _handle_runtime_command,
+    _handle_stack_command,
+    _load_command_config,
+    _repo_root,
+    _runtime_target_warning,
+    execute_command,
+)
 from tests.support import IsolatedWorkspaceTestCase
 
 
@@ -207,6 +216,22 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.service, "coordinator")
         self.assertEqual(args.max_age_seconds, 30)
 
+    def test_parser_accepts_research_stack_up_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["research-stack-up", "--worker-count", "6", "--no-build", "--foreground"])
+
+        self.assertEqual(args.command, "research-stack-up")
+        self.assertEqual(args.worker_count, 6)
+        self.assertTrue(args.no_build)
+        self.assertTrue(args.foreground)
+
+    def test_parser_accepts_research_stack_down_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["research-stack-down", "--remove-orphans"])
+
+        self.assertEqual(args.command, "research-stack-down")
+        self.assertTrue(args.remove_orphans)
+
     def test_parser_accepts_campaign_notification_options(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(
@@ -271,6 +296,85 @@ class CliTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "wrong runtime target"):
                 _handle_runtime_command(args)
+
+    def test_handle_stack_command_runs_detached_compose_up_from_repo_root(self) -> None:
+        args = argparse.Namespace(
+            command="research-stack-up",
+            compose_file="docker-compose.yml",
+            worker_count=5,
+            no_build=False,
+            foreground=False,
+            remove_orphans=False,
+        )
+
+        with patch("trotters_trader.cli.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="stack booted",
+                stderr="",
+            )
+
+            payload = _handle_stack_command(args)
+
+        self.assertEqual(payload["status"], "started")
+        self.assertEqual(payload["worker_count"], 5)
+        self.assertTrue(payload["build"])
+        self.assertTrue(payload["detached"])
+        mock_run.assert_called_once_with(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(_repo_root() / "docker-compose.yml"),
+                "up",
+                "--build",
+                "-d",
+                "--scale",
+                "worker=5",
+            ],
+            cwd=str(_repo_root()),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_handle_stack_command_runs_compose_down_with_remove_orphans(self) -> None:
+        args = argparse.Namespace(
+            command="research-stack-down",
+            compose_file="docker-compose.yml",
+            worker_count=4,
+            no_build=False,
+            foreground=False,
+            remove_orphans=True,
+        )
+
+        with patch("trotters_trader.cli.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="stack stopped",
+                stderr="",
+            )
+
+            payload = _handle_stack_command(args)
+
+        self.assertEqual(payload["status"], "stopped")
+        self.assertTrue(payload["remove_orphans"])
+        mock_run.assert_called_once_with(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(_repo_root() / "docker-compose.yml"),
+                "down",
+                "--remove-orphans",
+            ],
+            cwd=str(_repo_root()),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 class CliCommandExecutionTests(IsolatedWorkspaceTestCase):

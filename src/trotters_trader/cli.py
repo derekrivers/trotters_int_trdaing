@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 from datetime import date
 from pathlib import Path, PurePosixPath
 import time
@@ -149,7 +150,11 @@ RUNTIME_COMMANDS = [
     "research-ops-bridge",
     "research-service-heartbeat-check",
 ]
-ALL_COMMANDS = LEGACY_COMMANDS + RUNTIME_COMMANDS
+STACK_COMMANDS = [
+    "research-stack-up",
+    "research-stack-down",
+]
+ALL_COMMANDS = LEGACY_COMMANDS + RUNTIME_COMMANDS + STACK_COMMANDS
 RUNTIME_MUTATION_COMMANDS = {
     "research-submit",
     "research-batch",
@@ -168,6 +173,11 @@ RUNTIME_MUTATION_COMMANDS = {
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.command in STACK_COMMANDS:
+        payload = _handle_stack_command(args)
+        print(json.dumps(payload, indent=2, default=str))
+        return
 
     if args.command in RUNTIME_COMMANDS:
         payload = _handle_runtime_command(args)
@@ -767,6 +777,75 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
     raise ValueError(f"Unsupported runtime command '{args.command}'")
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _run_host_command(command: list[str], *, cwd: Path) -> tuple[int, str, str]:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Docker CLI was not found on the host. Install Docker Desktop and ensure 'docker' is on PATH."
+        ) from exc
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def _handle_stack_command(args: argparse.Namespace) -> dict[str, object]:
+    repo_root = _repo_root()
+    compose_file = Path(args.compose_file)
+    if not compose_file.is_absolute():
+        compose_file = repo_root / compose_file
+
+    command = ["docker", "compose", "-f", str(compose_file)]
+    if args.command == "research-stack-up":
+        command.append("up")
+        if not bool(getattr(args, "no_build", False)):
+            command.append("--build")
+        if not bool(getattr(args, "foreground", False)):
+            command.append("-d")
+        if bool(getattr(args, "remove_orphans", False)):
+            command.append("--remove-orphans")
+        command.extend(["--scale", f"worker={int(getattr(args, 'worker_count', 4))}"])
+        status = "started"
+    elif args.command == "research-stack-down":
+        command.append("down")
+        if bool(getattr(args, "remove_orphans", False)):
+            command.append("--remove-orphans")
+        status = "stopped"
+    else:
+        raise ValueError(f"Unsupported stack command '{args.command}'")
+
+    returncode, stdout, stderr = _run_host_command(command, cwd=repo_root)
+    payload: dict[str, object] = {
+        "status": status,
+        "compose_file": str(compose_file),
+        "command": command,
+        "working_directory": str(repo_root),
+        "exit_code": returncode,
+    }
+    if args.command == "research-stack-up":
+        payload["worker_count"] = int(getattr(args, "worker_count", 4))
+        payload["build"] = not bool(getattr(args, "no_build", False))
+        payload["detached"] = not bool(getattr(args, "foreground", False))
+    if bool(getattr(args, "remove_orphans", False)):
+        payload["remove_orphans"] = True
+    if stdout:
+        payload["stdout"] = stdout
+    if stderr:
+        payload["stderr"] = stderr
+    if returncode != 0:
+        message = stderr or stdout or f"docker compose exited with code {returncode}"
+        raise RuntimeError(message)
+    return payload
+
+
 def _comparison_payload(results, output_dir: Path, report_name: str, quality_gate: str, evaluation_profile: str | None) -> dict[str, object]:
     return {
         "runs": [_format_result(result) for result in results],
@@ -934,6 +1013,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--service")
     parser.add_argument("--max-age-seconds", type=int)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--compose-file", default="docker-compose.yml")
+    parser.add_argument("--worker-count", type=int, default=4)
+    parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--foreground", action="store_true")
+    parser.add_argument("--remove-orphans", action="store_true")
     return parser
 
 

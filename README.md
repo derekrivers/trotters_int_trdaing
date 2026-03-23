@@ -202,6 +202,12 @@ The repo has two separate Compose entrypoints:
 Common commands:
 
 ```bash
+# Start the full local runtime stack via the repo wrapper
+./scripts/start-runtime.ps1
+
+# Start the same stack directly through the CLI with 6 workers
+python -m trotters_trader.cli research-stack-up --worker-count 6
+
 # Start the runtime with 4 research workers
 docker compose up --build -d --scale worker=4
 
@@ -229,9 +235,14 @@ docker compose -f docker-compose.test.yml run --rm test-runner
 # Stop the runtime stack
 docker compose down
 
+# Stop the runtime stack via the repo wrapper
+./scripts/stop-runtime.ps1
+
 # Stop the runtime stack and remove orphaned old services
 docker compose down --remove-orphans
 ```
+
+The wrapper scripts live at [`scripts/start-runtime.ps1`](c:/Dev/TrottersIndependantTraders/scripts/start-runtime.ps1) and [`scripts/stop-runtime.ps1`](c:/Dev/TrottersIndependantTraders/scripts/stop-runtime.ps1). They set `PYTHONPATH` to the repo `src/` directory first, so you can launch the stack from a checkout without relying on an editable install being active in the current shell.
 
 The runtime stack now includes dedicated `campaign-manager` and `research-director` services. The campaign manager advances one campaign through focused tuning, pivots, and stress. The research director sits one level higher: it can launch the next approved campaign automatically when the previous one exhausts, and stop only when it finds a frozen candidate or the approved queue is exhausted. A separate `dashboard` service exposes a local operations view on `http://localhost:8888`.
 
