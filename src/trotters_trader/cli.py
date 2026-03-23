@@ -53,6 +53,11 @@ from trotters_trader.features import materialize_feature_set
 from trotters_trader.ops_bridge import serve_ops_bridge
 from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action, run_paper_trade_runner
 from trotters_trader.reports import write_paper_trade_decision_artifacts, write_promotion_artifacts
+from trotters_trader.research_families import (
+    bootstrap_research_family,
+    build_next_family_status,
+    build_research_family_comparison_summary,
+)
 from trotters_trader.research_programs import load_research_program_definition, write_research_program_artifacts
 from trotters_trader.research_runtime import (
     campaign_manager_loop,
@@ -112,6 +117,8 @@ LEGACY_COMMANDS = [
     "starter-tranche",
     "operability-program",
     "research-program-report",
+    "research-family-proposals",
+    "research-family-bootstrap",
     "paper-trade-decision",
     "paper-trade-runner",
     "paper-trade-status",
@@ -181,7 +188,7 @@ def main() -> None:
         print(json.dumps(payload, indent=2, default=str))
         return
 
-    if args.command == "research-program-report":
+    if args.command in {"research-program-report", "research-family-proposals", "research-family-bootstrap"}:
         payload = execute_command(
             command=args.command,
             config=None,
@@ -226,6 +233,29 @@ def execute_command(
         return write_research_program_artifacts(
             output_dir=Path(getattr(command_args, "catalog_output_dir", "runs")),
             definition=load_research_program_definition(Path(program_file)),
+        )
+    if command == "research-family-proposals":
+        catalog_output_dir = Path(getattr(command_args, "catalog_output_dir", "runs"))
+        family_summary = build_research_family_comparison_summary(catalog_output_dir=catalog_output_dir)
+        next_family_status = build_next_family_status(
+            catalog_output_dir=catalog_output_dir,
+            runbook_queue_summary=None,
+            research_family_comparison_summary=family_summary,
+            active_branch_summary=None,
+        )
+        return {
+            "research_family_comparison_summary": family_summary,
+            "current_proposal": family_summary.get("current_proposal"),
+            "next_family_status": next_family_status,
+        }
+    if command == "research-family-bootstrap":
+        proposal_id = getattr(command_args, "proposal_id", None)
+        if not proposal_id:
+            raise ValueError("research-family-bootstrap requires --proposal-id")
+        return bootstrap_research_family(
+            proposal_id=str(proposal_id),
+            catalog_output_dir=Path(getattr(command_args, "catalog_output_dir", "runs")),
+            enable_queue=not bool(getattr(command_args, "disable_queue_enable", False)),
         )
     if command == "paper-trade-status":
         return paper_rehearsal_status(Path(getattr(command_args, "catalog_output_dir", "runs")))
@@ -858,6 +888,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir-override")
     parser.add_argument("--allow-host-runtime", action="store_true")
     parser.add_argument("--program-file")
+    parser.add_argument("--proposal-id")
+    parser.add_argument("--disable-queue-enable", action="store_true")
     parser.add_argument("--paper-action", choices=["accepted", "skipped", "overridden"])
     parser.add_argument("--day-id")
     parser.add_argument("--actor", default="operator")

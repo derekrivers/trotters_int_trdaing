@@ -18,6 +18,11 @@ from trotters_trader.dashboard import _runtime_health
 from trotters_trader.http_security import actor_label, is_bearer_authorized, request_actor
 from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action
 from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
+from trotters_trader.research_families import (
+    build_next_family_status,
+    build_research_family_comparison_summary,
+    bootstrap_research_family,
+)
 from trotters_trader.runbook_queue import build_runbook_queue_summary
 from trotters_trader.research_runtime import (
     DEFAULT_NOTIFICATION_EVENTS,
@@ -87,6 +92,10 @@ class ApiController:
             current_best_candidate=current_best_candidate,
             agent_summaries=agent_summaries,
         )
+        research_family_comparison_summary = build_research_family_comparison_summary(
+            catalog_output_dir=self._paths.catalog_output_dir,
+            research_program_portfolio=promotion_path["research_program_portfolio"],
+        )
         active_branch_summary = build_active_branch_summary(
             active_directors=active_directors,
             active_campaigns=active_campaigns,
@@ -94,6 +103,13 @@ class ApiController:
         runbook_queue_summary = build_runbook_queue_summary(
             active_branch_summary=active_branch_summary,
             research_program_portfolio=promotion_path["research_program_portfolio"],
+            research_family_comparison_summary=research_family_comparison_summary,
+        )
+        next_family_status = build_next_family_status(
+            catalog_output_dir=self._paths.catalog_output_dir,
+            runbook_queue_summary=runbook_queue_summary,
+            research_family_comparison_summary=research_family_comparison_summary,
+            active_branch_summary=active_branch_summary,
         )
         return {
             "status": compact_status,
@@ -101,6 +117,8 @@ class ApiController:
             "active_campaigns": active_campaigns,
             "active_branch_summary": active_branch_summary,
             "runbook_queue_summary": runbook_queue_summary,
+            "research_family_comparison_summary": research_family_comparison_summary,
+            "next_family_status": next_family_status,
             "notifications": notifications,
             "most_recent_terminal": most_recent_terminal,
             "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
@@ -281,11 +299,36 @@ class ApiController:
         payload = overview.get("runbook_queue_summary")
         return payload if isinstance(payload, dict) else {}
 
+    def research_family_comparison_summary(self) -> dict[str, object]:
+        overview = self.overview()
+        payload = overview.get("research_family_comparison_summary")
+        return payload if isinstance(payload, dict) else {}
+
+    def current_research_family_proposal(self) -> dict[str, object]:
+        summary = self.research_family_comparison_summary()
+        payload = summary.get("current_proposal")
+        return payload if isinstance(payload, dict) else {}
+
+    def next_family_status(self) -> dict[str, object]:
+        overview = self.overview()
+        payload = overview.get("next_family_status")
+        return payload if isinstance(payload, dict) else {}
+
     def paper_trade_entry_gate(self) -> dict[str, object]:
         return materialize_promotion_path(catalog_output_dir=self._paths.catalog_output_dir)["paper_trade_entry_gate"]
 
     def research_program_portfolio(self) -> dict[str, object]:
         return materialize_promotion_path(catalog_output_dir=self._paths.catalog_output_dir)["research_program_portfolio"]
+
+    def bootstrap_research_family(self, payload: dict[str, object]) -> dict[str, object]:
+        proposal_id = _optional_text(payload.get("proposal_id"))
+        if not proposal_id:
+            raise ValueError("proposal_id is required")
+        return bootstrap_research_family(
+            proposal_id=proposal_id,
+            catalog_output_dir=self._paths.catalog_output_dir,
+            enable_queue=bool(payload.get("enable_queue", True)),
+        )
 
     def record_paper_rehearsal_action(self, payload: dict[str, object]) -> dict[str, object]:
         return record_paper_trade_action(
@@ -439,12 +482,20 @@ class ApiApp:
             return self._json_response(self._controller.active_branch_summary())
         if method == "GET" and path == "/api/v1/runtime/runbook-queue":
             return self._json_response(self._controller.runbook_queue_summary())
+        if method == "GET" and path == "/api/v1/runtime/next-family-status":
+            return self._json_response(self._controller.next_family_status())
         if method == "GET" and path == "/api/v1/promotion-path/paper-trade-entry-gate":
             return self._json_response(self._controller.paper_trade_entry_gate())
         if method == "GET" and path == "/api/v1/promotion-path/research-program-portfolio":
             return self._json_response(self._controller.research_program_portfolio())
         if method == "GET" and path == "/api/v1/research-programs/portfolio":
             return self._json_response(self._controller.research_program_portfolio())
+        if method == "GET" and path == "/api/v1/research-families":
+            return self._json_response(self._controller.research_family_comparison_summary())
+        if method == "GET" and path == "/api/v1/research-families/current-proposal":
+            return self._json_response(self._controller.current_research_family_proposal())
+        if method == "POST" and path == "/api/v1/research-families/bootstrap":
+            return self._json_response(self._controller.bootstrap_research_family(_json_body(body)), status="201 Created")
         if method == "POST" and path == "/api/v1/paper-trading/actions":
             return self._json_response(self._controller.record_paper_rehearsal_action(_json_body(body)), status="201 Created")
         if method == "GET" and path == "/api/v1/directors":

@@ -46,6 +46,22 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.program_file, "configs/research_programs/risk_sector_promotion.json")
         self.assertEqual(args.catalog_output_dir, "runtime/catalog")
 
+    def test_parser_accepts_research_family_bootstrap_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "research-family-bootstrap",
+                "--proposal-id",
+                "mean_reversion_broad_reentry",
+                "--catalog-output-dir",
+                "runtime/catalog",
+            ]
+        )
+
+        self.assertEqual(args.command, "research-family-bootstrap")
+        self.assertEqual(args.proposal_id, "mean_reversion_broad_reentry")
+        self.assertEqual(args.catalog_output_dir, "runtime/catalog")
+
     def test_parser_accepts_paper_trade_decision_command(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(

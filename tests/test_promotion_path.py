@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from trotters_trader.promotion_path import (
+    _write_json,
     build_candidate_progression_summary,
     build_paper_trade_entry_gate,
     build_research_program_portfolio,
@@ -25,7 +27,7 @@ class PromotionPathTests(IsolatedWorkspaceTestCase):
             for program in summary["programs"]
             if program["program_id"] == "beta_defensive_continuation_program"
         )
-        self.assertTrue(beta_program["queue_enabled"])
+        self.assertFalse(beta_program["queue_enabled"])
         self.assertEqual(beta_program["queue_plan_id"], "beta_defensive_continuation")
 
     def test_candidate_progression_summary_merges_current_best_candidate(self) -> None:
@@ -182,3 +184,20 @@ class PromotionPathTests(IsolatedWorkspaceTestCase):
 
         self.assertEqual(gate["status"], "ready")
         self.assertEqual(gate["recommended_action"], "run_paper_trade_rehearsal")
+
+    def test_write_json_retries_permission_error_once(self) -> None:
+        target = self.temp_root / "catalog" / "promotion_path" / "latest" / "paper_trade_entry_gate.json"
+        real_replace = __import__("os").replace
+        calls = {"count": 0}
+
+        def flaky_replace(src: str, dst: str) -> None:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise PermissionError("locked")
+            real_replace(src, dst)
+
+        with patch("trotters_trader.promotion_path.os.replace", side_effect=flaky_replace):
+            _write_json(target, {"status": "ready"})
+
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["status"], "ready")
+        self.assertEqual(calls["count"], 2)

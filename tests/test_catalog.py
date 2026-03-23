@@ -1,9 +1,10 @@
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from trotters_trader.backtest import run_backtest
 from trotters_trader.canonical import materialize_canonical_data
-from trotters_trader.catalog import load_catalog_entries
+from trotters_trader.catalog import _atomic_write_text, load_catalog_entries
 from trotters_trader.experiments import run_sma_grid, write_experiment_comparison
 from tests.support import IsolatedWorkspaceTestCase
 
@@ -37,6 +38,27 @@ class CatalogTests(IsolatedWorkspaceTestCase):
         artifact_types = {entry.get("artifact_type") for entry in entries}
         self.assertIn("comparison_report", artifact_types)
         self.assertIn("research_decision", artifact_types)
+
+    def test_atomic_write_text_retries_permission_error_once(self) -> None:
+        target_path = self.temp_root / "catalog.jsonl"
+        real_replace = __import__("os").replace
+        attempts = {"count": 0}
+
+        def flaky_replace(source, destination):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise PermissionError("locked")
+            return real_replace(source, destination)
+
+        with (
+            patch("trotters_trader.catalog.os.replace", side_effect=flaky_replace) as replace_mock,
+            patch("trotters_trader.catalog.time.sleep") as sleep_mock,
+        ):
+            _atomic_write_text(target_path, "example\n")
+
+        self.assertEqual(replace_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+        self.assertEqual(target_path.read_text(encoding="utf-8"), "example\n")
 
 
 if __name__ == "__main__":

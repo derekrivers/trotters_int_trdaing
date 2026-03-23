@@ -21,6 +21,13 @@
       "director_name": "refine-seed-director",
       "enabled": false,
       "priority": 3
+    },
+    {
+      "plan_id": "mean_reversion_broad_reentry",
+      "plan_file": "configs/directors/mean_reversion_broad_reentry.json",
+      "director_name": "mean-reversion-director",
+      "enabled": true,
+      "priority": 4
     }
   ],
   "config_registry": {

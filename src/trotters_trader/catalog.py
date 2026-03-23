@@ -5,7 +5,11 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import time
 import uuid
+
+CATALOG_REPLACE_RETRIES = 5
+CATALOG_REPLACE_SLEEP_SECONDS = 0.1
 
 
 def register_catalog_entry(output_dir: Path, entry: dict[str, object]) -> dict[str, str]:
@@ -75,7 +79,7 @@ def _write_catalog_csv(path: Path, entries: list[dict[str, object]]) -> None:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(entries)
-        os.replace(temp_path, path)
+        _replace_with_retry(temp_path, path)
     finally:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
@@ -85,10 +89,23 @@ def _atomic_write_text(path: Path, content: str) -> None:
     temp_path = _temporary_path(path)
     try:
         temp_path.write_text(content, encoding="utf-8")
-        os.replace(temp_path, path)
+        _replace_with_retry(temp_path, path)
     finally:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
+
+
+def _replace_with_retry(temp_path: Path, path: Path) -> None:
+    attempts = 0
+    while True:
+        try:
+            os.replace(temp_path, path)
+            return
+        except PermissionError:
+            attempts += 1
+            if attempts >= CATALOG_REPLACE_RETRIES:
+                raise
+            time.sleep(CATALOG_REPLACE_SLEEP_SECONDS)
 
 
 def _temporary_path(path: Path) -> Path:

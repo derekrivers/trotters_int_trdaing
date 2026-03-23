@@ -29,6 +29,16 @@ class RunbookQueueTests(unittest.TestCase):
                         }
                     ]
                 },
+                research_family_comparison_summary={
+                    "families": [
+                        {
+                            "plan_id": "beta_defensive_continuation",
+                            "proposal_id": "beta_defensive_continuation",
+                            "approval_status": "approved",
+                            "family_status": "queued",
+                        }
+                    ]
+                },
             )
 
         self.assertEqual(summary["summary_type"], "runbook_queue_summary")
@@ -60,11 +70,95 @@ class RunbookQueueTests(unittest.TestCase):
                         }
                     ]
                 },
+                research_family_comparison_summary={
+                    "families": [
+                        {
+                            "plan_id": "next_family",
+                            "proposal_id": "next_family",
+                            "approval_status": "approved",
+                            "family_status": "queued",
+                        }
+                    ]
+                },
             )
 
         self.assertEqual(summary["status"], "attention")
         self.assertEqual(summary["next_runnable_plan_id"], "next_family")
         self.assertEqual(summary["entries"][1]["queue_status"], "ready")
+
+    def test_build_runbook_queue_summary_requests_start_when_no_plan_is_active(self) -> None:
+        with patch(
+            "trotters_trader.runbook_queue._load_runbook",
+            return_value={
+                "work_queue": [
+                    {"plan_id": "approved_family", "director_name": "approved-family-director", "enabled": True, "priority": 1},
+                ]
+            },
+        ):
+            summary = build_runbook_queue_summary(
+                active_branch_summary={},
+                research_program_portfolio={
+                    "programs": [
+                        {
+                            "queue_plan_id": "approved_family",
+                            "title": "Approved Family Program",
+                            "status": "active",
+                        }
+                    ]
+                },
+                research_family_comparison_summary={
+                    "families": [
+                        {
+                            "plan_id": "approved_family",
+                            "proposal_id": "approved_family",
+                            "approval_status": "approved",
+                            "family_status": "queued",
+                        }
+                    ]
+                },
+            )
+
+        self.assertEqual(summary["status"], "ready")
+        self.assertEqual(summary["next_runnable_plan_id"], "approved_family")
+        self.assertEqual(summary["recommended_action"], "start_approved_family")
+
+    def test_build_runbook_queue_summary_stays_aligned_when_last_active_plan_has_no_followup(self) -> None:
+        with patch(
+            "trotters_trader.runbook_queue._load_runbook",
+            return_value={
+                "work_queue": [
+                    {"plan_id": "approved_family", "director_name": "approved-family-director", "enabled": True, "priority": 1},
+                ]
+            },
+        ):
+            summary = build_runbook_queue_summary(
+                active_branch_summary={"director": {"plan_name": "approved_family"}},
+                research_program_portfolio={
+                    "programs": [
+                        {
+                            "queue_plan_id": "approved_family",
+                            "title": "Approved Family Program",
+                            "status": "active",
+                        }
+                    ]
+                },
+                research_family_comparison_summary={
+                    "families": [
+                        {
+                            "plan_id": "approved_family",
+                            "proposal_id": "approved_family",
+                            "approval_status": "approved",
+                            "family_status": "active",
+                        }
+                    ]
+                },
+            )
+
+        self.assertEqual(summary["status"], "aligned")
+        self.assertEqual(summary["next_runnable_plan_id"], None)
+        self.assertEqual(summary["recommended_action"], "monitor_active_plan")
+        warning_codes = {warning["code"] for warning in summary["warnings"]}
+        self.assertNotIn("no_next_runnable_queue_item", warning_codes)
 
     def test_build_runbook_queue_summary_does_not_treat_untracked_entries_as_runnable(self) -> None:
         with patch(
@@ -79,6 +173,7 @@ class RunbookQueueTests(unittest.TestCase):
             summary = build_runbook_queue_summary(
                 active_branch_summary={"director": {"plan_name": "broad_operability"}},
                 research_program_portfolio={"programs": []},
+                research_family_comparison_summary={},
             )
 
         self.assertIsNone(summary["next_runnable_plan_id"])
@@ -86,7 +181,41 @@ class RunbookQueueTests(unittest.TestCase):
         warning_codes = {warning["code"] for warning in summary["warnings"]}
         self.assertIn("enabled_untracked_plan", warning_codes)
         self.assertIn("active_plan_untracked", warning_codes)
-        self.assertIn("no_next_runnable_queue_item", warning_codes)
+
+    def test_build_runbook_queue_summary_blocks_unapproved_family(self) -> None:
+        with patch(
+            "trotters_trader.runbook_queue._load_runbook",
+            return_value={
+                "work_queue": [
+                    {"plan_id": "approved_family", "director_name": "approved-family-director", "enabled": True, "priority": 1},
+                ]
+            },
+        ):
+            summary = build_runbook_queue_summary(
+                active_branch_summary={},
+                research_program_portfolio={
+                    "programs": [
+                        {
+                            "queue_plan_id": "approved_family",
+                            "title": "Approved Family Program",
+                            "status": "active",
+                        }
+                    ]
+                },
+                research_family_comparison_summary={
+                    "families": [
+                        {
+                            "plan_id": "approved_family",
+                            "proposal_id": "approved_family",
+                            "approval_status": "under_review",
+                            "family_status": "under_review",
+                        }
+                    ]
+                },
+            )
+
+        self.assertEqual(summary["entries"][0]["queue_status"], "blocked_pending_approval")
+        self.assertEqual(summary["recommended_action"], "approve_research_family")
 
 
 if __name__ == "__main__":

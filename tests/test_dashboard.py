@@ -1405,9 +1405,16 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(status, "200 OK")
         self.assertIn("Research Program Portfolio", body)
+        self.assertIn("Research Family Comparison", body)
+        self.assertIn("Next Family Status", body)
+        self.assertIn("Broad Mean-Reversion Reentry", body)
         self.assertIn("Beta-Defensive Continuation Program", body)
         self.assertIn("Supervisor Work Queue", body)
-        self.assertIn("define_next_research_family", body)
+        self.assertTrue(
+            "define_next_research_family" in body
+            or "start_approved_family" in body
+            or "bootstrap_approved_family" in body
+        )
 
     def _invoke(
         self,

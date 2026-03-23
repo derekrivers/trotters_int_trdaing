@@ -9,6 +9,7 @@ def build_runbook_queue_summary(
     *,
     active_branch_summary: dict[str, object] | None,
     research_program_portfolio: dict[str, object] | None,
+    research_family_comparison_summary: dict[str, object] | None = None,
 ) -> dict[str, object]:
     runbook = _load_runbook()
     queue_entries = [
@@ -22,10 +23,22 @@ def build_runbook_queue_summary(
         for program in portfolio.get("programs", [])
         if isinstance(program, dict)
     ] if isinstance(portfolio.get("programs"), list) else []
+    family_summary = research_family_comparison_summary if isinstance(research_family_comparison_summary, dict) else {}
+    families = [
+        dict(family)
+        for family in family_summary.get("families", [])
+        if isinstance(family, dict)
+    ] if isinstance(family_summary.get("families"), list) else []
+    require_family_approval = bool(family_summary)
     programs_by_plan_id = {
         str(program.get("queue_plan_id", "")).strip(): program
         for program in programs
         if str(program.get("queue_plan_id", "")).strip()
+    }
+    families_by_plan_id = {
+        str(family.get("plan_id", "")).strip(): family
+        for family in families
+        if str(family.get("plan_id", "")).strip()
     }
 
     director = (
@@ -49,16 +62,20 @@ def build_runbook_queue_summary(
         plan_id = str(entry.get("plan_id", "")).strip()
         enabled = bool(entry.get("enabled", False))
         program = programs_by_plan_id.get(plan_id)
+        family = families_by_plan_id.get(plan_id)
         queue_status = _entry_status(
             plan_id=plan_id,
             enabled=enabled,
             active_plan_id=active_plan_id,
             program=program,
+            family=family,
+            require_family_approval=require_family_approval,
         )
         detail = _entry_detail(
             plan_id=plan_id,
             queue_status=queue_status,
             program=program,
+            family=family,
         )
         record = {
             "queue_index": index,
@@ -72,6 +89,9 @@ def build_runbook_queue_summary(
             "program_status": str(program.get("status", "") or "") if isinstance(program, dict) else "",
             "program_title": str(program.get("title", "") or "") if isinstance(program, dict) else "",
             "program_summary_path": str(program.get("summary_path", "") or "") if isinstance(program, dict) else "",
+            "approval_status": str(family.get("approval_status", "") or "") if isinstance(family, dict) else "",
+            "family_status": str(family.get("family_status", "") or "") if isinstance(family, dict) else "",
+            "proposal_id": str(family.get("proposal_id", "") or "") if isinstance(family, dict) else "",
         }
         entries.append(record)
         warning = _entry_warning(record)
@@ -97,7 +117,7 @@ def build_runbook_queue_summary(
 
     next_runnable = _next_runnable_entry(entries, start_index=(active_entry_index + 1) if isinstance(active_entry_index, int) else 0)
     if next_runnable is None and entries:
-        if any(bool(entry.get("enabled", False)) for entry in entries):
+        if not active_plan_id and any(bool(entry.get("enabled", False)) for entry in entries):
             warnings.append(
                 {
                     "code": "no_next_runnable_queue_item",
@@ -110,7 +130,18 @@ def build_runbook_queue_summary(
         "enabled": sum(1 for entry in entries if bool(entry.get("enabled", False))),
         "active": sum(1 for entry in entries if str(entry.get("queue_status", "")) == "active"),
         "ready": sum(1 for entry in entries if str(entry.get("queue_status", "")) == "ready"),
-        "blocked": sum(1 for entry in entries if str(entry.get("queue_status", "")) in {"blocked_retired", "blocked_promoted"}),
+        "blocked": sum(
+            1
+            for entry in entries
+            if str(entry.get("queue_status", "")) in {
+                "blocked_retired",
+                "blocked_promoted",
+                "blocked_pending_approval",
+                "blocked_rejected",
+                "blocked_missing_definition",
+                "approved_bootstrap_required",
+            }
+        ),
         "untracked": sum(1 for entry in entries if str(entry.get("queue_status", "")) == "untracked"),
     }
     return {
@@ -118,7 +149,7 @@ def build_runbook_queue_summary(
         "recorded_at_utc": _utcnow(),
         "status": _summary_status(warnings, next_runnable),
         "message": _summary_message(active_plan_id=active_plan_id, next_runnable=next_runnable, warnings=warnings),
-        "recommended_action": _recommended_action(warnings, next_runnable),
+        "recommended_action": _recommended_action(warnings, next_runnable, active_plan_id=active_plan_id),
         "active_plan_id": active_plan_id or None,
         "next_runnable_plan_id": str(next_runnable.get("plan_id", "") or "") if isinstance(next_runnable, dict) else None,
         "counts": counts,
@@ -134,26 +165,53 @@ def _entry_status(
     enabled: bool,
     active_plan_id: str,
     program: dict[str, object] | None,
+    family: dict[str, object] | None,
+    require_family_approval: bool,
 ) -> str:
     if plan_id and active_plan_id and plan_id == active_plan_id:
         return "active"
     if not enabled:
         return "disabled"
     if not isinstance(program, dict):
-        return "untracked"
+        return "blocked_missing_definition" if isinstance(family, dict) else "untracked"
+    if not require_family_approval:
+        program_status = str(program.get("status", "") or "")
+        if program_status == "retired":
+            return "blocked_retired"
+        if program_status == "promoted":
+            return "blocked_promoted"
+        return "ready"
+    if not isinstance(family, dict):
+        return "blocked_pending_approval"
     program_status = str(program.get("status", "") or "")
+    family_status = str(family.get("family_status", "") or "")
+    approval_status = str(family.get("approval_status", "") or "")
     if program_status == "retired":
         return "blocked_retired"
     if program_status == "promoted":
         return "blocked_promoted"
+    if approval_status in {"proposed", "under_review"}:
+        return "blocked_pending_approval"
+    if approval_status == "rejected":
+        return "blocked_rejected"
+    if approval_status == "approved" and family_status == "approved":
+        return "approved_bootstrap_required"
     return "ready"
 
 
-def _entry_detail(*, plan_id: str, queue_status: str, program: dict[str, object] | None) -> str:
+def _entry_detail(
+    *,
+    plan_id: str,
+    queue_status: str,
+    program: dict[str, object] | None,
+    family: dict[str, object] | None,
+) -> str:
     if queue_status == "active":
         return f"{plan_id} is the currently active supervisor work item."
     if queue_status == "disabled":
         return f"{plan_id} is disabled in the supervisor runbook."
+    if queue_status == "blocked_missing_definition":
+        return f"{plan_id} has an approved family proposal, but its runnable program definition is still missing."
     if queue_status == "untracked":
         return f"{plan_id} has no research-program definition, so the portfolio cannot explain its state."
     if queue_status == "blocked_retired":
@@ -161,6 +219,14 @@ def _entry_detail(*, plan_id: str, queue_status: str, program: dict[str, object]
         return summary or f"{plan_id} maps to a retired research program and is not a valid next branch."
     if queue_status == "blocked_promoted":
         return f"{plan_id} already maps to a promoted program and should not be re-queued blindly."
+    if queue_status == "blocked_pending_approval":
+        proposal_id = str(family.get("proposal_id", "") or "proposal") if isinstance(family, dict) else "proposal"
+        return f"{plan_id} is not runnable until family proposal '{proposal_id}' is explicitly approved."
+    if queue_status == "blocked_rejected":
+        proposal_id = str(family.get("proposal_id", "") or "proposal") if isinstance(family, dict) else "proposal"
+        return f"{plan_id} is blocked because family proposal '{proposal_id}' was rejected."
+    if queue_status == "approved_bootstrap_required":
+        return f"{plan_id} is approved, but the bootstrap artifacts must be materialized before it can run."
     return f"{plan_id} is enabled and remains eligible for future continuation."
 
 
@@ -183,6 +249,30 @@ def _entry_warning(entry: dict[str, object]) -> dict[str, object] | None:
         return {
             "code": "enabled_promoted_program",
             "message": f"Runbook item '{plan_id}' is enabled even though its research program is already promoted.",
+            "plan_id": plan_id,
+        }
+    if queue_status == "blocked_pending_approval":
+        return {
+            "code": "enabled_unapproved_family",
+            "message": f"Runbook item '{plan_id}' is enabled before its research family is approved.",
+            "plan_id": plan_id,
+        }
+    if queue_status == "blocked_rejected":
+        return {
+            "code": "enabled_rejected_family",
+            "message": f"Runbook item '{plan_id}' is enabled even though its research family was rejected.",
+            "plan_id": plan_id,
+        }
+    if queue_status == "blocked_missing_definition":
+        return {
+            "code": "approved_family_missing_definition",
+            "message": f"Runbook item '{plan_id}' is approved but its runnable program definition is missing.",
+            "plan_id": plan_id,
+        }
+    if queue_status == "approved_bootstrap_required":
+        return {
+            "code": "approved_family_needs_bootstrap",
+            "message": f"Runbook item '{plan_id}' is approved but still needs bootstrap before it can run.",
             "plan_id": plan_id,
         }
     return None
@@ -220,12 +310,27 @@ def _summary_message(
     return "The supervisor work queue has no runnable entries."
 
 
-def _recommended_action(warnings: list[dict[str, object]], next_runnable: dict[str, object] | None) -> str:
+def _recommended_action(
+    warnings: list[dict[str, object]],
+    next_runnable: dict[str, object] | None,
+    *,
+    active_plan_id: str,
+) -> str:
     if warnings:
+        warning_codes = {str(warning.get("code", "")) for warning in warnings}
+        if "approved_family_needs_bootstrap" in warning_codes:
+            return "bootstrap_approved_family"
+        if "enabled_unapproved_family" in warning_codes:
+            return "approve_research_family"
         return "repair_runbook_alignment"
+    if active_plan_id:
+        return "monitor_active_plan"
     if next_runnable is None:
         return "define_next_research_family"
-    return "monitor_active_plan"
+    queue_status = str(next_runnable.get("queue_status", "") or "")
+    if queue_status == "active":
+        return "monitor_active_plan"
+    return "start_approved_family"
 
 
 def _load_runbook() -> dict[str, object]:

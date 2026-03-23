@@ -79,6 +79,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn("paper_rehearsal", payload)
         self.assertIn("active_branch_summary", payload)
         self.assertIn("runbook_queue_summary", payload)
+        self.assertIn("research_family_comparison_summary", payload)
+        self.assertIn("next_family_status", payload)
         self.assertIn("candidate_progression_summary", payload)
         self.assertIn("paper_trade_entry_gate", payload)
         self.assertIn("research_program_portfolio", payload)
@@ -825,6 +827,12 @@ class ApiTests(unittest.TestCase):
                 "/api/v1/runtime/runbook-queue",
                 headers=self._auth_headers(),
             )
+            next_family_status_code, _, next_family_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/runtime/next-family-status",
+                headers=self._auth_headers(),
+            )
             gate_status, _, gate_body = self._invoke(
                 app,
                 "GET",
@@ -843,6 +851,18 @@ class ApiTests(unittest.TestCase):
                 "/api/v1/research-programs/portfolio",
                 headers=self._auth_headers(),
             )
+            families_status, _, families_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/research-families",
+                headers=self._auth_headers(),
+            )
+            current_proposal_status, _, current_proposal_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/research-families/current-proposal",
+                headers=self._auth_headers(),
+            )
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -850,23 +870,32 @@ class ApiTests(unittest.TestCase):
         current_best = json.loads(current_best_body)
         active_branch = json.loads(active_branch_body)
         queue_summary = json.loads(queue_body)
+        next_family = json.loads(next_family_body)
         gate = json.loads(gate_body)
         portfolio = json.loads(portfolio_body)
         portfolio_alias = json.loads(portfolio_alias_body)
+        families = json.loads(families_body)
+        current_proposal = json.loads(current_proposal_body)
         self.assertEqual(progression_status, "200 OK")
         self.assertEqual(current_best_status, "200 OK")
         self.assertEqual(active_branch_status, "200 OK")
         self.assertEqual(queue_status, "200 OK")
+        self.assertEqual(next_family_status_code, "200 OK")
         self.assertEqual(gate_status, "200 OK")
         self.assertEqual(portfolio_status, "200 OK")
         self.assertEqual(portfolio_alias_status, "200 OK")
+        self.assertEqual(families_status, "200 OK")
+        self.assertEqual(current_proposal_status, "200 OK")
         self.assertEqual(progression["summary_type"], "candidate_progression_summary")
         self.assertIn(current_best["status"], {"available", "no_selected_candidate", "unavailable"})
         self.assertIn(active_branch["status"], {"idle", "active"})
         self.assertEqual(queue_summary["summary_type"], "runbook_queue_summary")
+        self.assertEqual(next_family["summary_type"], "next_family_status")
         self.assertEqual(gate["summary_type"], "paper_trade_entry_gate")
         self.assertEqual(portfolio["summary_type"], "research_program_portfolio")
         self.assertEqual(portfolio_alias["summary_type"], "research_program_portfolio")
+        self.assertEqual(families["summary_type"], "research_family_comparison_summary")
+        self.assertIn(current_proposal["approval_status"], {"approved", "under_review", "proposed", "queued", "active", "retired", "rejected"})
     def _invoke(
         self,
         app: ApiApp,

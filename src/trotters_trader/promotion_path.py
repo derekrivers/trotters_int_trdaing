@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 from typing import Callable
 
@@ -12,6 +13,8 @@ from trotters_trader.research_programs import build_research_program_summary, lo
 
 PROMOTION_PATH_SCHEMA_VERSION = 1
 PROMOTION_PATH_STALE_HOURS = 48
+PROMOTION_PATH_REPLACE_RETRIES = 5
+PROMOTION_PATH_REPLACE_SLEEP_SECONDS = 0.1
 
 
 def resolve_current_best_candidate(
@@ -840,10 +843,25 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(temp_path, path)
+        _replace_with_retry(temp_path, path)
     finally:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
+
+
+def _replace_with_retry(temp_path: Path, path: Path) -> None:
+    last_error: PermissionError | None = None
+    for attempt in range(PROMOTION_PATH_REPLACE_RETRIES):
+        try:
+            os.replace(temp_path, path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt >= PROMOTION_PATH_REPLACE_RETRIES - 1:
+                break
+            time.sleep(PROMOTION_PATH_REPLACE_SLEEP_SECONDS)
+    if last_error is not None:
+        raise last_error
 
 
 def _dedupe_artifact_refs(entries: list[dict[str, object]]) -> list[dict[str, object]]:

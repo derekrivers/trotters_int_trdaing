@@ -16,6 +16,7 @@ from trotters_trader.active_branch import build_active_branch_summary
 from trotters_trader.http_security import is_basic_authorized, new_csrf_token, parse_cookies
 from trotters_trader.paper_rehearsal import paper_rehearsal_status
 from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
+from trotters_trader.research_families import build_next_family_status, build_research_family_comparison_summary
 from trotters_trader.runbook_queue import build_runbook_queue_summary
 from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
@@ -76,6 +77,10 @@ class DashboardController:
             current_best_candidate=current_best_candidate,
             agent_summaries=agent_summaries,
         )
+        research_family_comparison_summary = build_research_family_comparison_summary(
+            catalog_output_dir=self._paths.catalog_output_dir,
+            research_program_portfolio=promotion_path["research_program_portfolio"],
+        )
         active_branch_summary = build_active_branch_summary(
             active_directors=active_directors,
             active_campaigns=active_campaigns,
@@ -83,6 +88,13 @@ class DashboardController:
         runbook_queue_summary = build_runbook_queue_summary(
             active_branch_summary=active_branch_summary,
             research_program_portfolio=promotion_path["research_program_portfolio"],
+            research_family_comparison_summary=research_family_comparison_summary,
+        )
+        next_family_status = build_next_family_status(
+            catalog_output_dir=self._paths.catalog_output_dir,
+            runbook_queue_summary=runbook_queue_summary,
+            research_family_comparison_summary=research_family_comparison_summary,
+            active_branch_summary=active_branch_summary,
         )
         return {
             "status": status,
@@ -90,6 +102,8 @@ class DashboardController:
             "active_campaigns": active_campaigns,
             "active_branch_summary": active_branch_summary,
             "runbook_queue_summary": runbook_queue_summary,
+            "research_family_comparison_summary": research_family_comparison_summary,
+            "next_family_status": next_family_status,
             "notifications": _load_notifications(self._paths, limit=25),
             "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
             "current_best_candidate": current_best_candidate,
@@ -424,6 +438,16 @@ def _render_overview(
         if isinstance(payload.get("paper_trade_entry_gate"), dict)
         else {}
     )
+    research_family_comparison_summary = (
+        payload.get("research_family_comparison_summary", {})
+        if isinstance(payload.get("research_family_comparison_summary"), dict)
+        else {}
+    )
+    next_family_status = (
+        payload.get("next_family_status", {})
+        if isinstance(payload.get("next_family_status"), dict)
+        else {}
+    )
     research_program_portfolio = (
         payload.get("research_program_portfolio", {})
         if isinstance(payload.get("research_program_portfolio"), dict)
@@ -524,6 +548,8 @@ def _render_overview(
     {_current_best_candidate_section(current_best_candidate)}
     {_candidate_progression_section(candidate_progression_summary)}
     {_paper_trade_entry_gate_section(paper_trade_entry_gate)}
+    {_next_family_status_section(next_family_status)}
+    {_research_family_comparison_section(research_family_comparison_summary)}
     {_paper_rehearsal_section(paper_rehearsal)}
     {_research_program_portfolio_section(research_program_portfolio)}
     {_runbook_queue_summary_section(runbook_queue_summary)}
@@ -819,6 +845,52 @@ def _paper_trade_entry_gate_section(summary: dict[str, object]) -> str:
     """
 
 
+def _next_family_status_section(summary: dict[str, object]) -> str:
+    if not summary:
+        return ""
+    current_proposal = summary.get("current_proposal", {}) if isinstance(summary.get("current_proposal"), dict) else {}
+    return f"""
+    <section class="panel">
+      <h2>Next Family Status</h2>
+      <p class="subtle">Governed resumption state for the next approved research family.</p>
+      <section class="summary-grid">
+        {_summary_card("status", str(summary.get("status", "unknown")))}
+        {_summary_card("recommended action", str(summary.get("recommended_action", "define_next_research_family")))}
+        {_summary_card("active plan", str(summary.get("active_plan_id", "none") or "none"))}
+        {_summary_card("next runnable", str(summary.get("next_runnable_plan_id", "none") or "none"))}
+        {_summary_card("current proposal", str(current_proposal.get("proposal_id", "none") or "none"))}
+      </section>
+      <p>{escape(str(summary.get("message", "No next-family status is available.")))}</p>
+      {f"<p><strong>Blocking reason:</strong> {escape(str(summary.get('blocking_reason', '')))}</p>" if str(summary.get('blocking_reason', '')).strip() else ""}
+    </section>
+    """
+
+
+def _research_family_comparison_section(summary: dict[str, object]) -> str:
+    if not summary:
+        return ""
+    counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
+    families = [family for family in summary.get("families", []) if isinstance(family, dict)] if isinstance(summary.get("families"), list) else []
+    rows = "".join(_research_family_row(family) for family in families[:8]) or "<tr><td colspan='8'>No research family proposals recorded.</td></tr>"
+    return f"""
+    <section class="panel">
+      <h2>Research Family Comparison</h2>
+      <p class="subtle">Proposal, approval, and queue-readiness view for the next materially different strategy family.</p>
+      <section class="summary-grid">
+        {_summary_card("families", str(counts.get("total", 0)))}
+        {_summary_card("approved", str(counts.get("approved", 0)))}
+        {_summary_card("queued", str(counts.get("queued", 0)))}
+        {_summary_card("active", str(counts.get("active", 0)))}
+        {_summary_card("under review", str(counts.get("under_review", 0)))}
+      </section>
+      <table>
+        <thead><tr><th>Proposal</th><th>Status</th><th>Approval</th><th>Novelty</th><th>Readiness</th><th>Recommendation</th><th>Plan</th><th>Program</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
+
+
 def _paper_rehearsal_section(summary: dict[str, object]) -> str:
     state = summary.get("state") if isinstance(summary.get("state"), dict) else {}
     latest_day = summary.get("latest_day") if isinstance(summary.get("latest_day"), dict) else {}
@@ -869,6 +941,21 @@ def _paper_rehearsal_section(summary: dict[str, object]) -> str:
       </section>
     </section>
     """
+
+
+def _research_family_row(family: dict[str, object]) -> str:
+    return (
+        "<tr>"
+        f"<td><strong>{escape(str(family.get('title', family.get('proposal_id', 'proposal'))))}</strong><br><span class='subtle'>{escape(str(family.get('proposal_id', '')))}</span></td>"
+        f"<td>{_status_pill(str(family.get('family_status', 'unknown')))}</td>"
+        f"<td>{escape(str(family.get('approval_status', 'unknown')))}</td>"
+        f"<td>{escape(str(family.get('novelty_vs_retired', 'unknown')))}</td>"
+        f"<td>{escape(str(family.get('implementation_readiness', 'planned')))}</td>"
+        f"<td>{escape(str(family.get('operator_recommendation', 'review_research_family')))}</td>"
+        f"<td><code>{escape(str(family.get('plan_id', '')))}</code></td>"
+        f"<td>{escape(str(family.get('program_title', family.get('program_id', '')) or '-'))}</td>"
+        "</tr>"
+    )
 
 
 def _research_program_portfolio_section(summary: dict[str, object]) -> str:

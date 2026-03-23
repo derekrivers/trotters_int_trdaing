@@ -1,0 +1,84 @@
+{
+  "proposal_id": "mean_reversion_broad_reentry",
+  "title": "Broad Mean-Reversion Reentry",
+  "strategy_family": "mean_reversion",
+  "hypothesis": "A short-horizon mean-reversion family is materially different from the retired broad-momentum branches and is the cleanest repo-backed next family that can be queued without inventing unsupported model features.",
+  "why_different_from_retired": [
+    "The retired broad families all remained inside the cross-sectional momentum engine, while this proposal switches the strategy family to mean reversion with a shorter signal horizon and equal weighting.",
+    "This branch gives the research runtime one governed non-momentum family to compare against the exhausted broad-momentum queue instead of reopening local momentum tweaks."
+  ],
+  "success_criteria": [
+    "The seed must pass the existing promotion policy without exceptions before it can move toward paper-trade preparation.",
+    "If it remains non-promotable, it must still produce enough evidence to accept or retire mean reversion as a family rather than leaving the queue empty by accident."
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The mean-reversion seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ],
+  "approval_status": "approved",
+  "novelty_vs_retired": "material",
+  "implementation_readiness": "ready",
+  "expected_evidence_cost": "medium",
+  "promotion_path_compatibility": "compatible",
+  "recorded_at_utc": "2026-03-23T12:00:00+00:00",
+  "bootstrap": {
+    "plan_id": "mean_reversion_broad_reentry",
+    "program_id": "mean_reversion_broad_reentry_program",
+    "program_title": "Broad Mean-Reversion Reentry Program",
+    "director_name": "mean-reversion-director",
+    "campaign_name": "mean-reversion-primary",
+    "config_path": "configs/eodhd_mean_reversion_broad_candidate_n12_ms004_rf14.toml",
+    "quality_gate": "pass_warn",
+    "campaign_max_hours": 24,
+    "campaign_max_jobs": 1500,
+    "stage_candidate_limit": 36,
+    "shortlist_size": 3,
+    "queue_priority": 4,
+    "objective": "Run one bounded non-momentum family that is materially different from the exhausted broad-momentum queue and decide whether mean reversion deserves promotion-path follow-up or retirement.",
+    "branch_rationale": "The governed queue is intentionally empty after retiring the broad-momentum branches. The repo already contains a mean-reversion engine, so this proposal chooses the cleanest materially different family that can be executed without adding unsupported model features.",
+    "positive_hypotheses": [
+      "Short-horizon mean reversion can attack the late-period holdout weakness from a genuinely different signal family instead of re-tuning the exhausted momentum branch.",
+      "A broader 12-position basket with a 14-day rebalance cadence gives the first approved non-momentum branch a cleaner execution profile than the previously tested 21-day seed."
+    ],
+    "seed_stack": [
+      {
+        "label": "Retired broad momentum control",
+        "profile_name": "momentum_broad_candidate_beta_n4_ms002_rf63",
+        "config_path": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+        "rationale": "Reference control for the exhausted broad-momentum family."
+      },
+      {
+        "label": "Mean-reversion seed",
+        "profile_name": "mean_reversion_broad_candidate_n12_ms004_rf14",
+        "config_path": "configs/eodhd_mean_reversion_broad_candidate_n12_ms004_rf14.toml",
+        "rationale": "Repo-backed materially different family using the existing mean-reversion implementation with a fresh profile identity and faster cadence."
+      }
+    ],
+    "campaign_path": [
+      {
+        "step_id": "mean_reversion_seed",
+        "label": "Mean-Reversion Seed",
+        "profile_name": "mean_reversion_broad_candidate_n12_ms004_rf14",
+        "config_path": "configs/eodhd_mean_reversion_broad_candidate_n12_ms004_rf14.toml",
+        "purpose": "Execute the first governed non-momentum family and decide whether it should be promoted or retired."
+      }
+    ],
+    "artifact_expectations": [
+      {
+        "step_id": "mean_reversion_seed",
+        "artifacts": [
+          "promotion",
+          "operability_program",
+          "operator_scorecard",
+          "research_program"
+        ]
+      }
+    ]
+  }
+}

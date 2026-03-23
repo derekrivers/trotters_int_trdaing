@@ -677,6 +677,12 @@ function summarizeRunbookSelectionBlock(queueSummary) {
   if (recommendedAction === "repair_runbook_alignment") {
     return "Supervisor work queue needs alignment repair before the next branch can be started safely.";
   }
+  if (recommendedAction === "approve_research_family") {
+    return "No runbook item is runnable until the next research family is explicitly approved.";
+  }
+  if (recommendedAction === "bootstrap_approved_family") {
+    return "An approved research family exists, but its runnable bootstrap artifacts have not been materialized yet.";
+  }
   if (recommendedAction === "define_next_research_family") {
     return "No approved runnable research family remains in the supervisor queue.";
   }
@@ -781,6 +787,21 @@ function summarizeOverviewPayload(cfg, payload, { notificationLimit, includeRaw 
           ]),
         )
       : [],
+    next_family_status: pickFields(payload?.next_family_status, [
+      "status",
+      "recommended_action",
+      "message",
+      "blocking_reason",
+      "active_plan_id",
+      "next_runnable_plan_id",
+    ]),
+    runbook_queue_summary: pickFields(payload?.runbook_queue_summary, [
+      "status",
+      "recommended_action",
+      "message",
+      "active_plan_id",
+      "next_runnable_plan_id",
+    ]),
   };
   summary.supervisor_decision = buildSupervisorDecision(cfg, summary);
 
@@ -853,6 +874,8 @@ function buildSupervisorDecision(cfg, summary) {
   const terminalEvent = String(summary?.most_recent_terminal?.event_type || "").trim().toLowerCase();
   const terminalMessage = String(summary?.most_recent_terminal?.message || "").trim().toLowerCase();
   const terminalSeverity = String(summary?.most_recent_terminal?.severity || "").trim().toLowerCase();
+  const nextFamilyStatus = summary?.next_family_status && typeof summary.next_family_status === "object" ? summary.next_family_status : {};
+  const nextFamilyState = String(nextFamilyStatus?.status || "").trim().toLowerCase();
   const hasActiveRuntime = activeDirectors > 0 || activeCampaigns > 0;
   const degradedFingerprint = hasActiveRuntime ? buildSupervisorIncidentFingerprint("active_degraded", summary) : null;
   const degradedCooldown = degradedFingerprint ? loadSupervisorIncidentCooldown(cfg, degradedFingerprint, SUPERVISOR_INCIDENT_COOLDOWN_MINUTES) : inactiveIncidentCooldown();
@@ -944,6 +967,34 @@ function buildSupervisorDecision(cfg, summary) {
       blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
       incident_fingerprint: exhaustedFingerprint,
       current_plan_id: exhaustedPlanId,
+      cooldown_active: false,
+      cooldown_remaining_seconds: 0,
+      recent_incident: null,
+    };
+  }
+
+  if (nextFamilyState === "queued") {
+    return {
+      classification: "idle_approved_family_ready",
+      recommended_mode: "advance_runbook",
+      reason: String(nextFamilyStatus?.message || "An approved research family is queued and ready for controlled resumption."),
+      preferred_tools: ["trotters_runbook.next_work_item", "trotters_director.start", "trotters_runbook.record_recovery"],
+      blocked_mutations: [],
+      incident_fingerprint: null,
+      cooldown_active: false,
+      cooldown_remaining_seconds: 0,
+      recent_incident: null,
+    };
+  }
+
+  if (["blocked_pending_approval", "blocked_pending_bootstrap"].includes(nextFamilyState)) {
+    return {
+      classification: "idle_governed_blocked",
+      recommended_mode: "await_family_governance",
+      reason: String(nextFamilyStatus?.message || nextFamilyStatus?.blocking_reason || "The runtime is intentionally blocked pending research-family governance."),
+      preferred_tools: ["trotters_runbook.get", "trotters_summaries.latest"],
+      blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
+      incident_fingerprint: null,
       cooldown_active: false,
       cooldown_remaining_seconds: 0,
       recent_incident: null,
