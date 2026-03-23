@@ -16,6 +16,7 @@
 | `FW-012` | Research program portfolio board | `done` | `FW-005`, `FW-007`, `FW-009` | the app exposes active, retired, and queue-eligible research programs in one compact operator view | use the portfolio board as the branch-selection baseline instead of scattered roadmap prose |
 | `FW-013` | Runtime overview compaction and API truth | `done` | `FW-009`, `FW-010`, `FW-012` | the API overview returns compact current-state data instead of full runtime history, and live operator counts stay aligned with the shared runtime | use the compact overview contract as the baseline for future operator APIs and keep heavy history on dedicated detail endpoints |
 | `FW-014` | Active branch truth and director launch hardening | `done` | `FW-006`, `FW-010`, `FW-013` | director campaign launch is claim-protected against duplicate starts, and API/dashboard expose one active-branch summary that explains what is running now | use the active-branch summary and launch-claim contract as the baseline for future supervisor/operator visibility work |
+| `FW-015` | Runbook queue truth and candidate normalization | `done` | `FW-009`, `FW-012`, `FW-014` | the supervisor queue, research-program portfolio, and current-best-candidate summary expose one consistent operator story, with explicit no-candidate states and queue-alignment warnings | use the runbook-queue summary and normalized current-best-candidate contract as the baseline for future supervisor and promotion-path operator work |
 
 ## Ordering Notes
 
@@ -27,3 +28,8 @@
 6. `FW-009` through `FW-012` turn the promotion path into explicit read models; future paper-trading or operator work should extend those summaries instead of adding new dashboard-only logic.
 7. `FW-013` keeps the overview route operator-sized; future API additions should prefer compact summaries and dedicated detail endpoints instead of reintroducing full runtime history into `/api/v1/runtime/overview`.
 8. `FW-014` hardens the director launch path; future continuation or supervisor work should treat `launch_in_progress` as the single-source guard against double-starting the same queue entry.
+9. FW-015 makes queue drift and no-candidate states explicit; future operator and supervisor work should extend the shared runbook_queue_summary and normalized current_best_candidate contracts instead of inventing new one-off status rules.
+
+
+
+
