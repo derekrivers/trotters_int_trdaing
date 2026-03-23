@@ -27,6 +27,7 @@
 | `FW-023` | Approved standby backlog and queue continuity | `done` | `FW-021`, `FW-022` | approved standby depth is visible across family, queue, and next-family summaries, fresh approved families are queued with new plan IDs, and the live runtime can resume while retaining backlog behind the head | use the backlog metrics as the minimum continuity contract and keep at least two approved standby families materialized |
 | `FW-024` | EODHD reference and actions ingestion | `done` | `FW-001` | EODHD exchange-symbol metadata, dividends, and splits can be downloaded into generated source artifacts and fed into canonical total-return materialization | use the managed EODHD source artifacts when you want research runs to depend on vendor-backed reference data instead of static sample files |
 | `FW-025` | Total-return governed family integration | `done` | `FW-024` | the managed total-return config is represented as an approved family, program, director plan, and enabled standby queue item | use the governed total-return family when you want the supervisor queue to evaluate data-contract improvements explicitly instead of keeping them off to one side |
+| `FW-026` | Shared runtime overview read-model extraction | `done` | `FW-013`, `FW-022`, `FW-023` | dashboard and API overview assembly depend on one shared runtime-overview module for health, notifications, terminal summaries, and governed queue read models | use the shared runtime-overview module as the only place to extend cross-surface operator summary logic before adding new dashboard/API overview fields |
 
 ## Ordering Notes
 
@@ -45,3 +46,6 @@
 13. `FW-023` adds queue continuity as a first-class governed signal; future family onboarding work should keep at least two approved standby families materialized instead of letting the queue fall back to one-family-at-a-time halts.
 14. `FW-024` upgrades the EODHD path from bars-only ingestion to managed reference and corporate-action ingestion; future data-quality work should extend the generated source-artifact path instead of reintroducing sample-only metadata on the main EODHD research route.
 15. `FW-025` makes the managed total-return branch a governed queue candidate; future data-path experiments that materially change evidence quality should enter the same family/program/runbook system instead of remaining ad hoc configs.
+16. `FW-026` extracts shared overview assembly out of the dashboard and API entrypoints; future operator-summary changes should land in the shared runtime-overview module first, then stay presentation-specific only at the route/render layer.
+
+

@@ -7,15 +7,13 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import socketserver
-from typing import Callable
 from urllib.parse import parse_qs
 import uuid
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
-from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.active_branch import build_active_branch_summary
+from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries, load_summary_records
-from trotters_trader.dashboard import _runtime_health
 from trotters_trader.http_security import actor_label, is_bearer_authorized, request_actor
 from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action
 from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
@@ -41,6 +39,14 @@ from trotters_trader.research_runtime import (
     start_director,
     stop_campaign,
     stop_director,
+)
+from trotters_trader.runtime_overview import (
+    build_runtime_overview_payload,
+    compact_overview_status as _compact_overview_status,
+    detail_or_summary as _detail_or_summary,
+    load_runtime_notifications as _load_notifications,
+    most_recent_terminal as _most_recent_terminal,
+    runtime_health as _runtime_health,
 )
 
 
@@ -82,60 +88,25 @@ class ApiController:
             for campaign in status.get("campaigns", [])
             if isinstance(campaign, dict) and str(campaign.get("status", "")).lower() in {"queued", "running"}
         ]
-        notifications = _load_notifications(self._paths, limit=25)
-        most_recent_terminal = _most_recent_terminal(status)
-        agent_summaries = load_latest_summaries(self._paths.catalog_output_dir)
-        current_best_candidate = resolve_current_best_candidate(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            active_campaigns=active_campaigns,
-            most_recent_terminal=most_recent_terminal,
-            agent_summaries=agent_summaries,
-            fetch_campaign_detail=lambda campaign_id: campaign_status(self._paths, campaign_id).get("campaign", {}),
-        )
-        promotion_path = materialize_promotion_path(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            current_best_candidate=current_best_candidate,
-            agent_summaries=agent_summaries,
-        )
-        research_family_comparison_summary = build_research_family_comparison_summary(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            research_program_portfolio=promotion_path["research_program_portfolio"],
-        )
-        active_branch_summary = build_active_branch_summary(
+        return build_runtime_overview_payload(
+            self._paths,
+            status=status,
+            status_payload=compact_status,
             active_directors=active_directors,
             active_campaigns=active_campaigns,
+            include_health=True,
+            include_most_recent_terminal=True,
+            fetch_campaign_detail=lambda campaign_id: campaign_status(self._paths, campaign_id).get("campaign", {}),
+            resolve_current_best_candidate_fn=resolve_current_best_candidate,
+            materialize_promotion_path_fn=materialize_promotion_path,
+            build_research_family_comparison_summary_fn=build_research_family_comparison_summary,
+            build_runbook_queue_summary_fn=build_runbook_queue_summary,
+            build_next_family_status_fn=build_next_family_status,
+            load_latest_summaries_fn=load_latest_summaries,
+            load_dispatch_records_fn=load_dispatch_records,
+            load_dispatch_summary_fn=load_dispatch_summary,
+            paper_rehearsal_status_fn=paper_rehearsal_status,
         )
-        runbook_queue_summary = build_runbook_queue_summary(
-            active_branch_summary=active_branch_summary,
-            research_program_portfolio=promotion_path["research_program_portfolio"],
-            research_family_comparison_summary=research_family_comparison_summary,
-        )
-        next_family_status = build_next_family_status(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            runbook_queue_summary=runbook_queue_summary,
-            research_family_comparison_summary=research_family_comparison_summary,
-            active_branch_summary=active_branch_summary,
-        )
-        return {
-            "status": compact_status,
-            "active_directors": active_directors,
-            "active_campaigns": active_campaigns,
-            "active_branch_summary": active_branch_summary,
-            "runbook_queue_summary": runbook_queue_summary,
-            "research_family_comparison_summary": research_family_comparison_summary,
-            "next_family_status": next_family_status,
-            "notifications": notifications,
-            "most_recent_terminal": most_recent_terminal,
-            "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors, next_family_status=next_family_status),
-            "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
-            "current_best_candidate": current_best_candidate,
-            "candidate_progression_summary": promotion_path["candidate_progression_summary"],
-            "paper_trade_entry_gate": promotion_path["paper_trade_entry_gate"],
-            "research_program_portfolio": promotion_path["research_program_portfolio"],
-            "agent_summaries": agent_summaries,
-            "agent_dispatches": load_dispatch_records(self._paths.catalog_output_dir, limit=10),
-            "agent_dispatch_summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=100),
-        }
 
     def list_notifications(self, query: dict[str, list[str]]) -> dict[str, object]:
         return {
@@ -596,118 +567,6 @@ def serve_api(
         print(f"Research API listening on http://{host}:{port}", flush=True)
         server.serve_forever()
     return {"host": host, "port": port}
-
-
-def _load_notifications(
-    paths: ResearchRuntimePaths,
-    *,
-    limit: int,
-    event_type: str | None = None,
-    campaign_id: str | None = None,
-    severity: str | None = None,
-) -> list[dict[str, object]]:
-    notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
-    if not notifications_path.exists():
-        return []
-    records: list[dict[str, object]] = []
-    for line in notifications_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            if event_type and str(payload.get("event_type", "")).strip() != event_type:
-                continue
-            if campaign_id and str(payload.get("campaign_id", "")).strip() != campaign_id:
-                continue
-            if severity and str(payload.get("severity", "")).strip() != severity:
-                continue
-            records.append(payload)
-    return records[-limit:][::-1]
-
-
-def _most_recent_terminal(status: dict[str, object]) -> dict[str, object]:
-    return {
-        "director": _latest_terminal_entry(status.get("directors"), statuses={"failed", "stopped", "exhausted"}),
-        "campaign": _latest_terminal_entry(status.get("campaigns"), statuses={"failed", "stopped", "exhausted", "completed"}),
-    }
-
-
-def _compact_overview_status(status: dict[str, object], *, queued_preview_limit: int = 10) -> dict[str, object]:
-    counts = dict(status.get("counts", {})) if isinstance(status.get("counts"), dict) else {}
-    workers = [
-        dict(worker)
-        for worker in status.get("workers", [])
-        if isinstance(worker, dict)
-    ] if isinstance(status.get("workers"), list) else []
-    jobs = [
-        dict(job)
-        for job in status.get("jobs", [])
-        if isinstance(job, dict)
-    ] if isinstance(status.get("jobs"), list) else []
-    campaigns = [
-        dict(campaign)
-        for campaign in status.get("campaigns", [])
-        if isinstance(campaign, dict)
-    ] if isinstance(status.get("campaigns"), list) else []
-    directors = [
-        dict(director)
-        for director in status.get("directors", [])
-        if isinstance(director, dict)
-    ] if isinstance(status.get("directors"), list) else []
-    queued_jobs = [job for job in jobs if str(job.get("status", "")).lower() == "queued"]
-    running_jobs = [job for job in jobs if str(job.get("status", "")).lower() == "running"]
-    service_heartbeats = [
-        dict(record)
-        for record in status.get("service_heartbeats", [])
-        if isinstance(record, dict)
-    ] if isinstance(status.get("service_heartbeats"), list) else []
-    compact = {
-        "counts": counts,
-        "workers": workers,
-        "running_jobs": running_jobs,
-        "queued_jobs_preview": queued_jobs[:queued_preview_limit],
-        "queued_jobs_total": len(queued_jobs),
-        "service_heartbeats": service_heartbeats,
-        "recent_terminal_campaigns": _recent_terminal_entries(campaigns, statuses={"failed", "stopped", "exhausted", "completed"}, limit=5),
-        "recent_terminal_directors": _recent_terminal_entries(directors, statuses={"failed", "stopped", "exhausted"}, limit=5),
-    }
-    if "database_path" in status:
-        compact["database_path"] = status["database_path"]
-    return compact
-
-
-def _latest_terminal_entry(entries: object, *, statuses: set[str]) -> dict[str, object] | None:
-    terminal = _recent_terminal_entries(entries, statuses=statuses, limit=1)
-    return terminal[0] if terminal else None
-
-
-def _recent_terminal_entries(entries: object, *, statuses: set[str], limit: int) -> list[dict[str, object]]:
-    if not isinstance(entries, list):
-        return []
-    terminal: list[dict[str, object]] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        normalized_status = str(entry.get("status", "")).lower()
-        if normalized_status not in statuses:
-            continue
-        terminal.append(dict(entry))
-    terminal.sort(
-        key=lambda item: str(item.get("finished_at") or item.get("updated_at") or item.get("created_at") or ""),
-        reverse=True,
-    )
-    return terminal[:limit]
-
-
-def _detail_or_summary(fetch_detail: Callable[[], dict[str, object]], summary: dict[str, object]) -> dict[str, object]:
-    try:
-        detail = fetch_detail()
-    except ValueError:
-        return summary
-    return detail if isinstance(detail, dict) and detail else summary
 
 
 def _read_body(environ: dict[str, object]) -> bytes:

@@ -285,6 +285,7 @@ class DashboardTests(unittest.TestCase):
             now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
             with (
                 patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch("trotters_trader.runtime_overview._utc_now", return_value=now),
                 patch(
                     "trotters_trader.dashboard.runtime_status",
                     return_value={
@@ -558,6 +559,7 @@ class DashboardTests(unittest.TestCase):
             now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
             with (
                 patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch("trotters_trader.runtime_overview._utc_now", return_value=now),
                 patch(
                     "trotters_trader.dashboard.runtime_status",
                     return_value={
@@ -632,6 +634,7 @@ class DashboardTests(unittest.TestCase):
             now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
             with (
                 patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch("trotters_trader.runtime_overview._utc_now", return_value=now),
                 patch(
                     "trotters_trader.dashboard.runtime_status",
                     return_value={
@@ -715,6 +718,7 @@ class DashboardTests(unittest.TestCase):
             now = datetime(2026, 3, 21, 21, 40, tzinfo=UTC)
             with (
                 patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch("trotters_trader.runtime_overview._utc_now", return_value=now),
                 patch(
                     "trotters_trader.dashboard.runtime_status",
                     return_value={
@@ -1371,6 +1375,7 @@ class DashboardTests(unittest.TestCase):
             now = datetime(2026, 3, 23, 9, 0, tzinfo=UTC)
             with (
                 patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch("trotters_trader.runtime_overview._utc_now", return_value=now),
                 patch(
                     "trotters_trader.dashboard.runtime_status",
                     return_value={

@@ -13,7 +13,6 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries
-from trotters_trader.active_branch import build_active_branch_summary
 from trotters_trader.http_security import is_basic_authorized, new_csrf_token, parse_cookies
 from trotters_trader.paper_rehearsal import paper_rehearsal_status
 from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
@@ -30,6 +29,13 @@ from trotters_trader.research_runtime import (
     stop_campaign,
 )
 from trotters_trader.reports import build_operability_scorecard, operability_artifact_paths
+from trotters_trader.runtime_overview import (
+    build_runtime_overview_payload,
+    catalog_status as _catalog_status,
+    load_runtime_notifications as _load_notifications,
+    recent_outcomes as _recent_outcomes,
+    runtime_health as _runtime_health,
+)
 
 
 class _ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
@@ -69,57 +75,24 @@ class DashboardController:
             for campaign_id in active_campaign_ids
             if campaign_id
         ]
-        agent_summaries = load_latest_summaries(self._paths.catalog_output_dir)
-        current_best_candidate = resolve_current_best_candidate(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            active_campaigns=active_campaigns,
-            most_recent_terminal={"campaign": _recent_outcomes(status.get("campaigns"), limit=1)[0]} if _recent_outcomes(status.get("campaigns"), limit=1) else {},
-            agent_summaries=agent_summaries,
-            fetch_campaign_detail=lambda campaign_id: campaign_status(self._paths, campaign_id).get("campaign", {}),
-        )
-        promotion_path = materialize_promotion_path(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            current_best_candidate=current_best_candidate,
-            agent_summaries=agent_summaries,
-        )
-        research_family_comparison_summary = build_research_family_comparison_summary(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            research_program_portfolio=promotion_path["research_program_portfolio"],
-        )
-        active_branch_summary = build_active_branch_summary(
+        return build_runtime_overview_payload(
+            self._paths,
+            status=status,
+            status_payload=status,
             active_directors=active_directors,
             active_campaigns=active_campaigns,
+            include_catalog_status=True,
+            fetch_campaign_detail=lambda campaign_id: campaign_status(self._paths, campaign_id).get("campaign", {}),
+            resolve_current_best_candidate_fn=resolve_current_best_candidate,
+            materialize_promotion_path_fn=materialize_promotion_path,
+            build_research_family_comparison_summary_fn=build_research_family_comparison_summary,
+            build_runbook_queue_summary_fn=build_runbook_queue_summary,
+            build_next_family_status_fn=build_next_family_status,
+            load_latest_summaries_fn=load_latest_summaries,
+            load_dispatch_records_fn=load_dispatch_records,
+            load_dispatch_summary_fn=load_dispatch_summary,
+            paper_rehearsal_status_fn=paper_rehearsal_status,
         )
-        runbook_queue_summary = build_runbook_queue_summary(
-            active_branch_summary=active_branch_summary,
-            research_program_portfolio=promotion_path["research_program_portfolio"],
-            research_family_comparison_summary=research_family_comparison_summary,
-        )
-        next_family_status = build_next_family_status(
-            catalog_output_dir=self._paths.catalog_output_dir,
-            runbook_queue_summary=runbook_queue_summary,
-            research_family_comparison_summary=research_family_comparison_summary,
-            active_branch_summary=active_branch_summary,
-        )
-        return {
-            "status": status,
-            "catalog_status": _catalog_status(self._paths),
-            "active_directors": active_directors,
-            "active_campaigns": active_campaigns,
-            "active_branch_summary": active_branch_summary,
-            "runbook_queue_summary": runbook_queue_summary,
-            "research_family_comparison_summary": research_family_comparison_summary,
-            "next_family_status": next_family_status,
-            "notifications": _load_notifications(self._paths, limit=25),
-            "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
-            "current_best_candidate": current_best_candidate,
-            "candidate_progression_summary": promotion_path["candidate_progression_summary"],
-            "paper_trade_entry_gate": promotion_path["paper_trade_entry_gate"],
-            "research_program_portfolio": promotion_path["research_program_portfolio"],
-            "agent_summaries": agent_summaries,
-            "agent_dispatches": load_dispatch_records(self._paths.catalog_output_dir, limit=10),
-            "agent_dispatch_summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=100),
-        }
 
     def campaign_detail(self, campaign_id: str) -> dict[str, object]:
         return campaign_status(self._paths, campaign_id)
@@ -377,31 +350,6 @@ def serve_dashboard(
         print(f"Dashboard listening on http://{host}:{port}", flush=True)
         server.serve_forever()
     return {"host": host, "port": port}
-
-
-def _load_notifications(paths: ResearchRuntimePaths, *, limit: int) -> list[dict[str, object]]:
-    notifications_path = paths.runtime_root / "exports" / "campaign_notifications.jsonl"
-    if not notifications_path.exists():
-        return []
-    records: list[dict[str, object]] = []
-    for line in notifications_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            records.append(payload)
-    return records[-limit:][::-1]
-
-
-def _catalog_status(paths: ResearchRuntimePaths) -> dict[str, object]:
-    catalog_jsonl = paths.catalog_output_dir / "research_catalog" / "catalog.jsonl"
-    return {
-        "available": catalog_jsonl.exists(),
-        "catalog_jsonl": str(catalog_jsonl),
-    }
 
 
 def _read_body(environ: dict[str, object]) -> bytes:
@@ -2439,16 +2387,6 @@ def _director_progress_text(queue: object) -> str:
     return f"{finished} / {len(entries)}"
 
 
-def _recent_outcomes(items: object, *, limit: int = 6) -> list[dict[str, object]]:
-    terminal_statuses = {"completed", "exhausted", "failed", "stopped"}
-    candidates = [
-        item
-        for item in items
-        if isinstance(item, dict) and str(item.get("status", "")).lower() in terminal_statuses
-    ] if isinstance(items, list) else []
-    return sorted(candidates, key=lambda item: _timestamp_sort_key(item.get("updated_at")), reverse=True)[:limit]
-
-
 def _recent_changes(
     campaigns: object,
     directors: object,
@@ -2503,227 +2441,6 @@ def _recent_changes(
                 }
             )
     return sorted(items, key=lambda item: _timestamp_sort_key(item.get("timestamp")), reverse=True)[:limit]
-
-
-def _runtime_health(
-    *,
-    status: dict[str, object],
-    campaigns: list[dict[str, object]],
-    directors: list[dict[str, object]],
-    next_family_status: dict[str, object] | None = None,
-) -> dict[str, object]:
-    counts = status.get("counts", {}) if isinstance(status.get("counts"), dict) else {}
-    all_directors = [director for director in status.get("directors", []) if isinstance(director, dict)] if isinstance(status.get("directors"), list) else []
-    workers = [worker for worker in status.get("workers", []) if isinstance(worker, dict)] if isinstance(status.get("workers"), list) else []
-    jobs = [job for job in status.get("jobs", []) if isinstance(job, dict)] if isinstance(status.get("jobs"), list) else []
-    service_heartbeats = [
-        record
-        for record in status.get("service_heartbeats", [])
-        if isinstance(record, dict)
-    ] if isinstance(status.get("service_heartbeats"), list) else []
-    queued = int(counts.get("queued", 0) or 0)
-    running = int(counts.get("running", 0) or 0)
-    active_director_count = len(directors)
-    most_recent_director = max(
-        all_directors,
-        key=lambda director: _timestamp_sort_key(director.get("updated_at") or director.get("created_at")),
-        default=None,
-    )
-    most_recent_director_status = str(most_recent_director.get("status", "")).lower() if isinstance(most_recent_director, dict) else ""
-    most_recent_director_name = (
-        str(most_recent_director.get("director_name") or most_recent_director.get("director_id") or "unknown director")
-        if isinstance(most_recent_director, dict)
-        else "unknown director"
-    )
-    most_recent_director_age = (
-        _age_seconds(most_recent_director.get("updated_at") or most_recent_director.get("created_at"))
-        if isinstance(most_recent_director, dict)
-        else None
-    )
-    director_requires_attention = active_director_count == 0 and most_recent_director_status in {"failed", "stopped"}
-    active_worker_count = sum(
-        1
-        for worker in workers
-        if str(worker.get("status", "")).lower() in {"running", "idle"}
-    )
-    stale_worker_count = sum(
-        1
-        for worker in workers
-        if _age_seconds(worker.get("heartbeat_at") or worker.get("updated_at")) is not None
-        and _age_seconds(worker.get("heartbeat_at") or worker.get("updated_at")) > 180
-    )
-    stale_running_job_count = sum(
-        1
-        for job in jobs
-        if str(job.get("status", "")).lower() == "running"
-        and (_age_seconds(job.get("updated_at")) or 0) > 900
-    )
-    oldest_running_job_age = max(
-        (
-            _age_seconds(job.get("updated_at")) or 0
-            for job in jobs
-            if str(job.get("status", "")).lower() == "running"
-        ),
-        default=0,
-    )
-    freshest_campaign_age = min(
-        (
-            _age_seconds(campaign.get("updated_at")) or 0
-            for campaign in campaigns
-        ),
-        default=None,
-    )
-    degraded_services = [
-        record
-        for record in service_heartbeats
-        if str(record.get("status", "")).lower() != "ok"
-    ]
-    next_family = next_family_status if isinstance(next_family_status, dict) else {}
-    next_family_state = str(next_family.get("status", "")).lower()
-    governance_blocked = next_family_state in {"blocked_pending_approval", "blocked_pending_bootstrap"}
-    governance_message = str(next_family.get("message", "")).strip()
-    governance_reason = str(next_family.get("blocking_reason", "")).strip()
-
-    checks: list[dict[str, str]] = []
-    checks.append(
-        {
-            "name": "service heartbeats",
-            "status": "ok" if not degraded_services else "error",
-            "detail": (
-                "Coordinator, campaign manager, and research director heartbeats are fresh."
-                if not degraded_services
-                else "Degraded services: "
-                + ", ".join(
-                    f"{record.get('service')} ({record.get('status')})"
-                    for record in degraded_services
-                )
-                + "."
-            ),
-        }
-    )
-    checks.append(
-        {
-            "name": "worker pool",
-            "status": "ok" if active_worker_count > 0 else "error",
-            "detail": (
-                f"{active_worker_count} workers active."
-                if active_worker_count > 0
-                else "No active workers are reporting. Research cannot progress."
-            ),
-        }
-    )
-    checks.append(
-        {
-            "name": "worker heartbeats",
-            "status": "ok" if stale_worker_count == 0 else "warning",
-            "detail": (
-                "All worker heartbeats are fresh."
-                if stale_worker_count == 0
-                else f"{stale_worker_count} worker records have stale heartbeats older than 3 minutes."
-            ),
-        }
-    )
-    checks.append(
-        {
-            "name": "job activity",
-            "status": "ok" if running > 0 or queued > 0 else "warning",
-            "detail": (
-                f"{running} running and {queued} queued jobs."
-                if running > 0 or queued > 0
-                else "No queued or running jobs. The system is waiting for the next campaign decision or is idle."
-            ),
-        }
-    )
-    checks.append(
-        {
-            "name": "campaign activity",
-            "status": (
-                "ok"
-                if campaigns and (freshest_campaign_age is None or freshest_campaign_age <= 900)
-                else "warning"
-            ),
-            "detail": (
-                f"{len(campaigns)} active campaign(s); most recent update {_format_age_seconds(freshest_campaign_age)}."
-                if campaigns
-                else "No active campaigns. The director may be idle, paused, or complete."
-            ),
-        }
-    )
-    checks.append(
-        {
-            "name": "director activity",
-            "status": "ok" if active_director_count > 0 else "warning",
-            "detail": (
-                f"{active_director_count} active director(s)."
-                if active_director_count > 0
-                else (
-                    f"No active directors. Most recent director {most_recent_director_name} "
-                    f"{most_recent_director_status or 'finished'} {_format_age_seconds(most_recent_director_age)}."
-                    if isinstance(most_recent_director, dict)
-                    else "No active directors. Start a director to submit the next campaign."
-                )
-            ),
-        }
-    )
-    if governance_blocked:
-        checks.append(
-            {
-                "name": "queue governance",
-                "status": "warning",
-                "detail": (
-                    f"{governance_message} {governance_reason}".strip()
-                    if governance_message or governance_reason
-                    else "The supervisor queue is intentionally blocked pending research-family governance."
-                ),
-            }
-        )
-    if running > 0:
-        checks.append(
-            {
-                "name": "running job freshness",
-                "status": "ok" if stale_running_job_count == 0 else "warning",
-                "detail": (
-                    f"{stale_running_job_count} running job(s) have not updated for more than 15 minutes; oldest update {_format_age_seconds(oldest_running_job_age)}."
-                    if stale_running_job_count > 0
-                    else "Running jobs are updating normally."
-                ),
-            }
-        )
-
-    overall = "healthy"
-    summary = "Research runtime is healthy and actively progressing."
-    if degraded_services:
-        overall = "warning"
-        summary = "Research runtime is degraded: one or more orchestration service heartbeats are stale."
-    if active_worker_count == 0:
-        overall = "critical"
-        summary = "Research runtime is unhealthy: no workers are active."
-    elif stale_running_job_count > 0:
-        overall = "stalled"
-        summary = "Research runtime looks stalled: jobs are marked running, but their progress signals are stale."
-    elif stale_worker_count > 0 or oldest_running_job_age > 1800:
-        overall = "warning"
-        summary = "Research runtime is degraded: activity exists, but some signals look stale."
-    elif running == 0 and queued == 0 and campaigns:
-        overall = "warning"
-        summary = "Research runtime is quiet: campaigns are active but no jobs are currently queued or running."
-    elif director_requires_attention:
-        overall = "warning"
-        summary = (
-            "Research runtime needs attention: no active directors remain after the latest director "
-            f"{most_recent_director_status}."
-        )
-    elif governance_blocked and running == 0 and queued == 0 and not campaigns and not directors:
-        overall = "blocked"
-        summary = (
-            f"Research runtime is intentionally blocked: {governance_message}"
-            if governance_message
-            else "Research runtime is intentionally blocked pending research-family governance."
-        )
-    elif running == 0 and queued == 0 and not campaigns and not directors:
-        overall = "idle"
-        summary = "Research runtime is idle: there is no active director, active campaign, or queued work."
-    return {"status": overall, "summary": summary, "checks": checks}
 
 
 def _timestamp_sort_key(value: object) -> float:
