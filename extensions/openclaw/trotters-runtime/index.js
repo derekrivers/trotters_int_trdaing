@@ -667,15 +667,7 @@ function summarizeOverviewPayload(cfg, payload, { notificationLimit, includeRaw 
       "latest_report_path",
       "updated_at",
     ]),
-    most_recent_terminal: summarizeEntry(payload?.most_recent_terminal, [
-      "campaign_id",
-      "campaign_name",
-      "event_type",
-      "severity",
-      "message",
-      "recorded_at_utc",
-      "payload_path",
-    ]),
+    most_recent_terminal: summarizeMostRecentTerminal(payload?.most_recent_terminal),
     recent_notifications: Array.isArray(payload?.notifications)
       ? payload.notifications.slice(0, safeLimit).map((entry) =>
           summarizeEntry(entry, [
@@ -698,6 +690,41 @@ function summarizeOverviewPayload(cfg, payload, { notificationLimit, includeRaw 
   return {
     summary,
     raw: payload,
+  };
+}
+
+function summarizeMostRecentTerminal(terminalPayload) {
+  if (!terminalPayload || typeof terminalPayload !== "object") {
+    return {};
+  }
+  const campaignTerminal =
+    terminalPayload?.campaign && typeof terminalPayload.campaign === "object"
+      ? terminalPayload.campaign
+      : null;
+  const directorTerminal =
+    terminalPayload?.director && typeof terminalPayload.director === "object"
+      ? terminalPayload.director
+      : null;
+  const legacyFlatTerminal = campaignTerminal || directorTerminal ? null : terminalPayload;
+  const primary = campaignTerminal || directorTerminal || legacyFlatTerminal || {};
+  return {
+    campaign_id: optionalString(campaignTerminal || legacyFlatTerminal, "campaign_id"),
+    campaign_name: optionalString(campaignTerminal || legacyFlatTerminal, "campaign_name"),
+    director_id: optionalString(directorTerminal || campaignTerminal, "director_id"),
+    director_name: optionalString(directorTerminal, "director_name"),
+    director_plan_name:
+      optionalString(directorTerminal?.spec, "plan_name") ||
+      optionalString(directorTerminal, "plan_name") ||
+      null,
+    event_type: optionalString(primary, "event_type"),
+    severity: optionalString(primary, "severity"),
+    message: optionalString(primary, "message"),
+    recorded_at_utc:
+      optionalString(primary, "recorded_at_utc") ||
+      optionalString(primary, "finished_at") ||
+      optionalString(primary, "updated_at") ||
+      null,
+    payload_path: optionalString(primary, "payload_path"),
   };
 }
 
@@ -726,6 +753,7 @@ function buildSupervisorDecision(cfg, summary) {
   const degradedCooldown = degradedFingerprint ? loadSupervisorIncidentCooldown(cfg, degradedFingerprint, SUPERVISOR_INCIDENT_COOLDOWN_MINUTES) : inactiveIncidentCooldown();
   const exhaustedFingerprint = buildSupervisorIncidentFingerprint("idle_exhausted_ready_for_next", summary);
   const exhaustedRecent = isRecentTerminal(summary?.most_recent_terminal, SUPERVISOR_EXHAUSTED_STALE_HOURS);
+  const exhaustedPlanId = optionalString(summary?.most_recent_terminal, "director_plan_name");
 
   if (hasActiveRuntime) {
     if (healthStatus === "healthy" && workerCount > 0) {
@@ -795,6 +823,7 @@ function buildSupervisorDecision(cfg, summary) {
       preferred_tools: ["trotters_runbook.next_work_item", "trotters_director.start", "trotters_runbook.record_recovery"],
       blocked_mutations: [],
       incident_fingerprint: exhaustedFingerprint,
+      current_plan_id: exhaustedPlanId,
       cooldown_active: false,
       cooldown_remaining_seconds: 0,
       recent_incident: null,
@@ -809,6 +838,7 @@ function buildSupervisorDecision(cfg, summary) {
       preferred_tools: ["trotters_runbook.get", "trotters_summaries.latest"],
       blocked_mutations: ["trotters_director.start", "trotters_campaign.start", "trotters_service.restart"],
       incident_fingerprint: exhaustedFingerprint,
+      current_plan_id: exhaustedPlanId,
       cooldown_active: false,
       cooldown_remaining_seconds: 0,
       recent_incident: null,
@@ -1358,6 +1388,7 @@ function numberOrDefault(value, defaultValue) {
 }
 
 export default plugin;
+
 
 
 

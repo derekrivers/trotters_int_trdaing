@@ -203,6 +203,7 @@ await runTest("overview suppresses repeated degraded runtime actions inside the 
       const summaryRoot = path.join(path.dirname(historyPath), "agent_summaries");
       await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
         const originalFetch = global.fetch;
+        const freshTimestamp = new Date().toISOString();
         global.fetch = async () =>
           jsonResponse({
             status: {
@@ -290,7 +291,7 @@ await runTest("overview treats stale exhausted context as wait-or-inspect instea
   });
 });
 
-await runTest("supervisor drill harness advances the runbook only after an exhausted idle runtime", async () => {
+await runTest("supervisor drill harness advances the runbook from the exhausted plan to the next approved item", async () => {
   await withRunbookFixture(
     {
       work_queue: [
@@ -299,11 +300,17 @@ await runTest("supervisor drill harness advances the runbook only after an exhau
           plan_file: "configs/directors/broad_operability.json",
           director_name: "broad-operability-director",
         },
+        {
+          plan_id: "beta_defensive_continuation",
+          plan_file: "configs/directors/beta_defensive_continuation.json",
+          director_name: "beta-defensive-director",
+        },
       ],
     },
     async ({ runbookPath }) => {
       await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
         const originalFetch = global.fetch;
+        const freshTimestamp = new Date().toISOString();
         global.fetch = async () =>
           jsonResponse({
             status: {
@@ -318,15 +325,26 @@ await runTest("supervisor drill harness advances the runbook only after an exhau
                 event_type: "campaign_finished",
                 severity: "info",
                 message: "campaign exhausted cleanly",
-                recorded_at_utc: "2026-03-22T18:29:00Z",
+                recorded_at_utc: freshTimestamp,
               },
             ],
             most_recent_terminal: {
-              campaign_id: "campaign-9",
-              event_type: "campaign_finished",
-              severity: "info",
-              message: "campaign exhausted cleanly",
-              recorded_at_utc: "2026-03-22T18:29:00Z",
+              director: {
+                director_id: "director-9",
+                director_name: "broad-operability-director",
+                status: "exhausted",
+                finished_at: freshTimestamp,
+                spec: { plan_name: "broad_operability" },
+              },
+              campaign: {
+                campaign_id: "campaign-9",
+                campaign_name: "broad-operability-drawdown-pivot",
+                director_id: "director-9",
+                event_type: "campaign_finished",
+                severity: "info",
+                message: "campaign exhausted cleanly",
+                recorded_at_utc: freshTimestamp,
+              },
             },
             health: { status: "healthy", summary: "Idle after clean completion." },
           });
@@ -338,12 +356,17 @@ await runTest("supervisor drill harness advances the runbook only after an exhau
             actor: "runtime-supervisor",
           });
           const overview = await tools.trotters_overview.execute("call-idle-exhausted", {});
-          const nextItem = await tools.trotters_runbook.execute("call-next-item", { action: "next_work_item" });
+          const currentPlanId = overview.details.summary.supervisor_decision.current_plan_id;
+          const nextItem = await tools.trotters_runbook.execute("call-next-item", {
+            action: "next_work_item",
+            currentPlanId,
+          });
 
           assert.equal(overview.details.summary.supervisor_decision.classification, "idle_exhausted_ready_for_next");
           assert.equal(overview.details.summary.supervisor_decision.recommended_mode, "advance_runbook");
-          assert.equal(nextItem.details.selected.plan_id, "broad_operability");
-          assert.equal(nextItem.details.selected.director_name, "broad-operability-director");
+          assert.equal(currentPlanId, "broad_operability");
+          assert.equal(nextItem.details.selected.plan_id, "beta_defensive_continuation");
+          assert.equal(nextItem.details.selected.director_name, "beta-defensive-director");
         } finally {
           global.fetch = originalFetch;
         }

@@ -1,0 +1,55 @@
+{
+  "program_id": "beta_defensive_continuation_program",
+  "title": "Beta-Defensive Continuation Program",
+  "strategy_family": "cross_sectional_momentum",
+  "objective": "Test whether a more defensive beta-vol-inverse branch can improve late-period benchmark-relative robustness without reopening the retired risk + sector family.",
+  "branch_rationale": "The broad beta and drawdown branches have already exhausted their defined operability paths, and the risk + sector branch is explicitly retired. The unused beta-defensive seed is the cleanest repo-backed materially different hypothesis already encoded in config.",
+  "positive_hypotheses": [
+    "Beta-vol-inverse weighting with lower gross exposure, tighter deployment, and smaller max weights is a materially different robustness hypothesis than the exhausted broad and drawdown seeds.",
+    "A defensive branch can target the late-period benchmark-relative holdout problem more directly than more local ranking or regime tweaks on the retired family."
+  ],
+  "seed_stack": [
+    {
+      "label": "Broad beta control",
+      "profile_name": "momentum_broad_candidate_beta_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+      "rationale": "Reference broad candidate family and the original control for the branch that has already exhausted its queued operability work."
+    },
+    {
+      "label": "Beta-defensive seed",
+      "profile_name": "momentum_broad_candidate_beta_defensive_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
+      "rationale": "Repo-defined defensive follow-up using beta-vol-inverse weighting, lower gross exposure, lower initial deployment, and smaller position caps."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "beta_defensive_seed",
+      "label": "Beta-Defensive Seed",
+      "profile_name": "momentum_broad_candidate_beta_defensive_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
+      "purpose": "Run the next materially different broad-family hypothesis and decide whether it deserves further follow-up or retirement."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "beta_defensive_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The beta-defensive seed passes the existing promotion policy and remains acceptable for downstream paper-trading preparation."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The beta-defensive seed records a terminal promotion decision and still fails the policy, especially on validation, holdout, or walk-forward thresholds."
+    }
+  ]
+}
