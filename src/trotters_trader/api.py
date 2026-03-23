@@ -53,6 +53,7 @@ class ApiController:
 
     def overview(self) -> dict[str, object]:
         status = runtime_status(self._paths)
+        compact_status = _compact_overview_status(status)
         active_directors = [
             _detail_or_summary(
                 lambda director_id=str(director.get("director_id", "")): director_status(self._paths, director_id).get("director", {}),
@@ -85,7 +86,7 @@ class ApiController:
             agent_summaries=agent_summaries,
         )
         return {
-            "status": status,
+            "status": compact_status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "notifications": notifications,
@@ -521,22 +522,71 @@ def _most_recent_terminal(status: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _compact_overview_status(status: dict[str, object], *, queued_preview_limit: int = 10) -> dict[str, object]:
+    counts = dict(status.get("counts", {})) if isinstance(status.get("counts"), dict) else {}
+    workers = [
+        dict(worker)
+        for worker in status.get("workers", [])
+        if isinstance(worker, dict)
+    ] if isinstance(status.get("workers"), list) else []
+    jobs = [
+        dict(job)
+        for job in status.get("jobs", [])
+        if isinstance(job, dict)
+    ] if isinstance(status.get("jobs"), list) else []
+    campaigns = [
+        dict(campaign)
+        for campaign in status.get("campaigns", [])
+        if isinstance(campaign, dict)
+    ] if isinstance(status.get("campaigns"), list) else []
+    directors = [
+        dict(director)
+        for director in status.get("directors", [])
+        if isinstance(director, dict)
+    ] if isinstance(status.get("directors"), list) else []
+    queued_jobs = [job for job in jobs if str(job.get("status", "")).lower() == "queued"]
+    running_jobs = [job for job in jobs if str(job.get("status", "")).lower() == "running"]
+    service_heartbeats = [
+        dict(record)
+        for record in status.get("service_heartbeats", [])
+        if isinstance(record, dict)
+    ] if isinstance(status.get("service_heartbeats"), list) else []
+    compact = {
+        "counts": counts,
+        "workers": workers,
+        "running_jobs": running_jobs,
+        "queued_jobs_preview": queued_jobs[:queued_preview_limit],
+        "queued_jobs_total": len(queued_jobs),
+        "service_heartbeats": service_heartbeats,
+        "recent_terminal_campaigns": _recent_terminal_entries(campaigns, statuses={"failed", "stopped", "exhausted", "completed"}, limit=5),
+        "recent_terminal_directors": _recent_terminal_entries(directors, statuses={"failed", "stopped", "exhausted"}, limit=5),
+    }
+    if "database_path" in status:
+        compact["database_path"] = status["database_path"]
+    return compact
+
+
 def _latest_terminal_entry(entries: object, *, statuses: set[str]) -> dict[str, object] | None:
+    terminal = _recent_terminal_entries(entries, statuses=statuses, limit=1)
+    return terminal[0] if terminal else None
+
+
+def _recent_terminal_entries(entries: object, *, statuses: set[str], limit: int) -> list[dict[str, object]]:
     if not isinstance(entries, list):
-        return None
-    latest: dict[str, object] | None = None
-    latest_timestamp = ""
+        return []
+    terminal: list[dict[str, object]] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         normalized_status = str(entry.get("status", "")).lower()
         if normalized_status not in statuses:
             continue
-        candidate_timestamp = str(entry.get("finished_at") or entry.get("updated_at") or entry.get("created_at") or "")
-        if candidate_timestamp >= latest_timestamp:
-            latest = entry
-            latest_timestamp = candidate_timestamp
-    return latest
+        terminal.append(dict(entry))
+    terminal.sort(
+        key=lambda item: str(item.get("finished_at") or item.get("updated_at") or item.get("created_at") or ""),
+        reverse=True,
+    )
+    return terminal[:limit]
 
 
 def _detail_or_summary(fetch_detail: Callable[[], dict[str, object]], summary: dict[str, object]) -> dict[str, object]:

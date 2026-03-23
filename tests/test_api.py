@@ -256,6 +256,62 @@ class ApiTests(unittest.TestCase):
         )
         self.assertIn("leading_candidate", payload["candidate_progression_summary"])
 
+    def test_runtime_overview_compacts_large_status_lists(self) -> None:
+        root = self._workspace_root("overview_compact_status")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with (
+                patch(
+                    "trotters_trader.api.runtime_status",
+                    return_value={
+                        "counts": {"queued": 12, "running": 2, "completed": 2000},
+                        "workers": [
+                            {"worker_id": "worker-01", "status": "running", "heartbeat_at": "2026-03-23T09:59:55+00:00"},
+                            {"worker_id": "worker-02", "status": "idle", "heartbeat_at": "2026-03-23T09:59:56+00:00"},
+                        ],
+                        "jobs": [
+                            {"job_id": f"queued-{index}", "status": "queued", "priority": 100 + index}
+                            for index in range(12)
+                        ] + [
+                            {"job_id": "running-1", "status": "running", "priority": 90},
+                            {"job_id": "running-2", "status": "running", "priority": 91},
+                        ] + [
+                            {"job_id": f"completed-{index}", "status": "completed", "priority": 200 + index}
+                            for index in range(50)
+                        ],
+                        "campaigns": [
+                            {"campaign_id": "campaign-running", "status": "running", "updated_at": "2026-03-23T10:00:00+00:00"},
+                            {"campaign_id": "campaign-failed", "status": "failed", "finished_at": "2026-03-23T09:55:00+00:00"},
+                        ],
+                        "directors": [
+                            {"director_id": "director-running", "status": "running", "updated_at": "2026-03-23T10:00:00+00:00"},
+                            {"director_id": "director-exhausted", "status": "exhausted", "finished_at": "2026-03-23T09:54:00+00:00"},
+                        ],
+                        "service_heartbeats": [
+                            {"service": "coordinator", "status": "ok", "recorded_at_utc": "2026-03-23T09:59:59+00:00"},
+                        ],
+                    },
+                ),
+                patch("trotters_trader.api.director_status", return_value={"director": {"director_id": "director-running", "status": "running"}}),
+                patch("trotters_trader.api.campaign_status", return_value={"campaign": {"campaign_id": "campaign-running", "status": "running"}}),
+            ):
+                status, _, body = self._invoke(app, "GET", "/api/v1/runtime/overview", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        compact_status = payload["status"]
+        self.assertEqual(status, "200 OK")
+        self.assertNotIn("jobs", compact_status)
+        self.assertNotIn("campaigns", compact_status)
+        self.assertNotIn("directors", compact_status)
+        self.assertEqual(len(compact_status["running_jobs"]), 2)
+        self.assertEqual(compact_status["queued_jobs_total"], 12)
+        self.assertEqual(len(compact_status["queued_jobs_preview"]), 10)
+        self.assertEqual(compact_status["recent_terminal_campaigns"][0]["campaign_id"], "campaign-failed")
+        self.assertEqual(compact_status["recent_terminal_directors"][0]["director_id"], "director-exhausted")
+
     def test_start_director_route_uses_runtime_service(self) -> None:
         root = self._workspace_root("director_start")
         try:
