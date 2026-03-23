@@ -1,0 +1,14 @@
+﻿{
+  "plan_name": "mean_reversion_broad_volatility_cap",
+  "campaigns": [
+    {
+      "campaign_name": "mean-reversion-volatility-cap-primary",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n8_ms005_rf14_vt10.toml",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 36,
+      "shortlist_size": 3,
+      "quality_gate": "pass_warn"
+    }
+  ]
+}

@@ -1520,10 +1520,48 @@ class DashboardTests(unittest.TestCase):
                         "message": "Approved family 'sma_cross_broad_confirmation' is queued and ready for controlled resumption.",
                         "blocking_reason": "",
                         "next_runnable_plan_id": "sma_cross_broad_confirmation",
-                        "approved_backlog_depth": 2,
+                        "approved_backlog_depth": 6,
                         "approved_backlog_status": "healthy",
-                        "approved_backlog_message": "2 approved standby families remain beyond the current queue head.",
-                        "approved_backlog_plan_ids": ["mean_reversion_broad_fastcycle", "momentum_drawdown_sector_guard"],
+                        "approved_backlog_message": "6 approved standby families remain beyond the current queue head.",
+                        "approved_backlog_plan_ids": [
+                            "mean_reversion_broad_fastcycle",
+                            "momentum_drawdown_sector_guard",
+                            "beta_defensive_continuation",
+                            "refine_seed_continuation",
+                            "mean_reversion_broad_residual_cap",
+                            "sma_cross_broad_trend_guard",
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.build_research_family_comparison_summary",
+                    return_value={
+                        "families": [
+                            {
+                                "proposal_id": f"family_{index}",
+                                "title": f"Family {index}",
+                                "family_status": "queued",
+                                "approval_status": "approved",
+                                "plan_id": f"family_{index}",
+                                "program_id": f"family_{index}_program",
+                                "novelty_vs_retired": "material",
+                                "implementation_readiness": "ready",
+                                "operator_recommendation": "start_approved_family",
+                            }
+                            for index in range(10)
+                        ],
+                        "counts": {"total": 10, "approved": 0, "queued": 10, "active": 0, "under_review": 0},
+                        "approved_backlog_depth": 6,
+                        "approved_backlog_status": "healthy",
+                        "approved_backlog_message": "6 approved standby families remain beyond the current queue head.",
+                        "approved_backlog": [
+                            {"proposal_id": "mean_reversion_broad_fastcycle", "title": "Mean-Reversion Fast Cycle", "plan_id": "mean_reversion_broad_fastcycle"},
+                            {"proposal_id": "momentum_drawdown_sector_guard", "title": "Momentum Drawdown Sector Guard", "plan_id": "momentum_drawdown_sector_guard"},
+                            {"proposal_id": "beta_defensive_continuation", "title": "Beta-Defensive Continuation", "plan_id": "beta_defensive_continuation"},
+                            {"proposal_id": "refine_seed_continuation", "title": "Refine-Seed Continuation", "plan_id": "refine_seed_continuation"},
+                            {"proposal_id": "mean_reversion_broad_residual_cap", "title": "Mean-Reversion Residual Cap", "plan_id": "mean_reversion_broad_residual_cap"},
+                            {"proposal_id": "sma_cross_broad_trend_guard", "title": "SMA Cross Trend Guard", "plan_id": "sma_cross_broad_trend_guard"},
+                        ],
                     },
                 ),
             ):
@@ -1534,8 +1572,10 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("approved standby", body)
         self.assertIn("backlog status", body)
-        self.assertIn("2 approved standby families remain beyond the current queue head.", body)
+        self.assertIn("6 approved standby families remain beyond the current queue head.", body)
         self.assertIn("mean_reversion_broad_fastcycle", body)
+        self.assertIn("Showing first 5 of 6 approved standby families.", body)
+        self.assertIn("Showing first 8 of 10 recorded families.", body)
 
     def test_serve_dashboard_uses_threaded_wsgi_server(self) -> None:
         root = self._workspace_root("serve_dashboard")

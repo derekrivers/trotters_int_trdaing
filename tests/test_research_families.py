@@ -229,3 +229,18 @@ class ResearchFamilyTests(IsolatedWorkspaceTestCase):
         with self.assertRaisesRegex(ValueError, "must explain why it differs from retired work"):
             load_research_family_proposal_definition(proposal_path)
 
+    def test_repo_continuity_proposal_files_load(self) -> None:
+        for proposal_path, expected_plan_id in (
+            ("configs/research_family_proposals/beta_defensive_continuation.json", "beta_defensive_continuation"),
+            ("configs/research_family_proposals/refine_seed_continuation.json", "refine_seed_continuation"),
+            ("configs/research_family_proposals/mean_reversion_broad_residual_cap.json", "mean_reversion_broad_residual_cap"),
+            ("configs/research_family_proposals/mean_reversion_broad_volatility_cap.json", "mean_reversion_broad_volatility_cap"),
+            ("configs/research_family_proposals/sma_cross_broad_trend_guard.json", "sma_cross_broad_trend_guard"),
+            ("configs/research_family_proposals/momentum_beta_bucket_guard.json", "momentum_beta_bucket_guard"),
+            ("configs/research_family_proposals/momentum_drawdown_patience_guard.json", "momentum_drawdown_patience_guard"),
+            ("configs/research_family_proposals/momentum_total_return_starter_guard.json", "momentum_total_return_starter_guard"),
+        ):
+            definition = load_research_family_proposal_definition(Path(proposal_path))
+            self.assertEqual(definition["approval_status"], "approved")
+            self.assertEqual(definition["bootstrap"]["plan_id"], expected_plan_id)
+

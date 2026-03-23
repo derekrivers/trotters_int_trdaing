@@ -30,6 +30,7 @@ class DataConfig:
     staging_dir: Path
     canonical_dir: Path
     raw_dir: Path
+    download_exchange_code: str = ""
     adjustment_policy: str = "raw_close"
 
 
@@ -283,6 +284,7 @@ def load_config(path: str | Path, evaluation_profile: str | None = None) -> AppC
             download_instruments_csv=Path(payload["data"]["download_instruments_csv"])
             if payload["data"].get("download_instruments_csv")
             else None,
+            download_exchange_code=str(payload["data"].get("download_exchange_code", "")),
             source_corporate_actions_csv=Path(payload["data"]["source_corporate_actions_csv"]),
             staging_dir=Path(payload["data"]["staging_dir"]),
             canonical_dir=Path(payload["data"]["canonical_dir"]),

@@ -232,6 +232,20 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "research-stack-down")
         self.assertTrue(args.remove_orphans)
 
+    def test_parser_accepts_eodhd_reference_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["download-eodhd-reference", "--config", "configs/eodhd.toml", "--exchange-code", "LSE"])
+
+        self.assertEqual(args.command, "download-eodhd-reference")
+        self.assertEqual(args.exchange_code, "LSE")
+
+    def test_parser_accepts_eodhd_corporate_actions_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["download-eodhd-corporate-actions", "--config", "configs/eodhd.toml", "--instrument", "TSCO.L"])
+
+        self.assertEqual(args.command, "download-eodhd-corporate-actions")
+        self.assertEqual(args.instrument, ["TSCO.L"])
+
     def test_parser_accepts_campaign_notification_options(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(

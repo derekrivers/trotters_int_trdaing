@@ -9,20 +9,6 @@
                            "priority":  1
                        },
                        {
-                           "plan_id":  "beta_defensive_continuation",
-                           "plan_file":  "configs/directors/beta_defensive_continuation.json",
-                           "director_name":  "beta-defensive-director",
-                           "enabled":  false,
-                           "priority":  2
-                       },
-                       {
-                           "plan_id":  "refine_seed_continuation",
-                           "plan_file":  "configs/directors/refine_seed_continuation.json",
-                           "director_name":  "refine-seed-director",
-                           "enabled":  false,
-                           "priority":  3
-                       },
-                       {
                            "plan_id":  "mean_reversion_broad_reentry",
                            "plan_file":  "configs/directors/mean_reversion_broad_reentry.json",
                            "director_name":  "mean-reversion-director",
@@ -44,10 +30,17 @@
                            "priority":  6
                        },
                        {
+                           "plan_id":  "default_broad_operability",
+                           "plan_file":  "configs/directors/default_broad_operability.json",
+                           "director_name":  "momentum-drawdown-sector-guard-director",
+                           "enabled":  false,
+                           "priority":  7
+                       },
+                       {
                            "plan_id":  "mean_reversion_broad_fastcycle",
                            "plan_file":  "configs/directors/mean_reversion_broad_fastcycle.json",
                            "director_name":  "mean-reversion-fastcycle-director",
-                           "enabled":  true,
+                           "enabled":  false,
                            "priority":  7
                        },
                        {
@@ -56,6 +49,62 @@
                            "director_name":  "momentum-drawdown-sector-guard-director",
                            "enabled":  true,
                            "priority":  8
+                       },
+                       {
+                           "plan_id":  "beta_defensive_continuation",
+                           "plan_file":  "configs/directors/beta_defensive_continuation.json",
+                           "director_name":  "beta-defensive-director",
+                           "enabled":  false,
+                           "priority":  9
+                       },
+                       {
+                           "plan_id":  "refine_seed_continuation",
+                           "plan_file":  "configs/directors/refine_seed_continuation.json",
+                           "director_name":  "refine-seed-director",
+                           "enabled":  false,
+                           "priority":  10
+                       },
+                       {
+                           "plan_id":  "mean_reversion_broad_residual_cap",
+                           "enabled":  true,
+                           "plan_file":  "configs/directors/mean_reversion_broad_residual_cap.json",
+                           "priority":  11,
+                           "director_name":  "mean-reversion-residual-cap-director"
+                       },
+                       {
+                           "plan_id":  "sma_cross_broad_trend_guard",
+                           "enabled":  true,
+                           "plan_file":  "configs/directors/sma_cross_broad_trend_guard.json",
+                           "priority":  12,
+                           "director_name":  "sma-cross-trend-guard-director"
+                       },
+                       {
+                           "plan_id":  "momentum_beta_bucket_guard",
+                           "enabled":  true,
+                           "plan_file":  "configs/directors/momentum_beta_bucket_guard.json",
+                           "priority":  13,
+                           "director_name":  "momentum-beta-bucket-guard-director"
+                       },
+                       {
+                           "plan_id":  "mean_reversion_broad_volatility_cap",
+                           "enabled":  true,
+                           "plan_file":  "configs/directors/mean_reversion_broad_volatility_cap.json",
+                           "priority":  14,
+                           "director_name":  "mean-reversion-volatility-cap-director"
+                       },
+                       {
+                           "plan_id":  "momentum_drawdown_patience_guard",
+                           "enabled":  true,
+                           "plan_file":  "configs/directors/momentum_drawdown_patience_guard.json",
+                           "priority":  15,
+                           "director_name":  "momentum-drawdown-patience-director"
+                       },
+                       {
+                           "plan_id":  "momentum_total_return_starter_guard",
+                           "enabled":  true,
+                           "plan_file":  "configs/directors/momentum_total_return_starter_guard.json",
+                           "priority":  16,
+                           "director_name":  "momentum-total-return-starter-director"
                        }
                    ],
     "config_registry":  {
@@ -67,7 +116,13 @@
                             "broad_sma_cross_seed":  "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml",
                             "broad_sma_cross_confirmation":  "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
                             "broad_mean_reversion_fastcycle":  "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
-                            "broad_momentum_drawdown_sector_guard":  "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml"
+                            "broad_momentum_drawdown_sector_guard":  "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml",
+                            "broad_mean_reversion_residual_cap":  "configs/eodhd_mean_reversion_broad_candidate_n6_ms006_rf7_bb2.toml",
+                            "broad_sma_cross_trend_guard":  "configs/eodhd_sma_cross_broad_candidate_n5_sw35_lw180_st012.toml",
+                            "broad_momentum_beta_bucket_guard":  "configs/eodhd_momentum_broad_candidate_beta_bucket_n5_ms002_rf42.toml",
+                            "broad_momentum_drawdown_patience_guard":  "configs/eodhd_momentum_broad_candidate_drawdown_patience_n5_ms002_rf63.toml",
+                            "broad_mean_reversion_volatility_cap":  "configs/eodhd_mean_reversion_broad_candidate_n8_ms005_rf14_vt10.toml",
+                            "starter_momentum_total_return_guard":  "configs/eodhd_momentum_total_return.toml"
                         },
     "service_allowlist":  [
                               "research-api",

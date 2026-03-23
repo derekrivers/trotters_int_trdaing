@@ -108,6 +108,22 @@ class ResearchProgramTests(IsolatedWorkspaceTestCase):
         self.assertEqual(definition["program_id"], "refine_seed_continuation_program")
         self.assertEqual(definition["campaign_path"][0]["profile_name"], "momentum_broad_candidate_refine_n4_ms002_rf63")
 
+    def test_new_continuity_program_definition_files_load(self) -> None:
+        expected = {
+            "configs/research_programs/default_broad_operability.json": ("default_broad_operability_program", 2),
+            "configs/research_programs/mean_reversion_broad_residual_cap.json": ("mean_reversion_broad_residual_cap_program", 1),
+            "configs/research_programs/mean_reversion_broad_volatility_cap.json": ("mean_reversion_broad_volatility_cap_program", 1),
+            "configs/research_programs/sma_cross_broad_trend_guard.json": ("sma_cross_broad_trend_guard_program", 1),
+            "configs/research_programs/momentum_beta_bucket_guard.json": ("momentum_beta_bucket_guard_program", 1),
+            "configs/research_programs/momentum_drawdown_patience_guard.json": ("momentum_drawdown_patience_guard_program", 1),
+            "configs/research_programs/momentum_total_return_starter_guard.json": ("momentum_total_return_starter_guard_program", 1),
+        }
+
+        for path, (program_id, campaign_count) in expected.items():
+            definition = load_research_program_definition(Path(path))
+            self.assertEqual(definition["program_id"], program_id)
+            self.assertEqual(len(definition["campaign_path"]), campaign_count)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,69 @@
+﻿{
+  "program_id": "default_broad_operability_program",
+  "title": "Default Broad Operability Program",
+  "strategy_family": "cross_sectional_momentum",
+  "objective": "Track the legacy built-in default broad-operability branch while governed queue follow-on families continue behind it.",
+  "branch_rationale": "The live runtime still uses a built-in default broad-operability plan for the currently active director. This program definition lets the queue and portfolio summaries explain that active plan instead of treating it as an untracked orphan.",
+  "positive_hypotheses": [
+    "The risk-controlled broad momentum seed remains the operational control while newer guarded family branches queue behind it.",
+    "Tracking the built-in default plan explicitly avoids false queue-health warnings while the legacy branch finishes."
+  ],
+  "seed_stack": [
+    {
+      "label": "Risk seed control",
+      "profile_name": "momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12",
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+      "rationale": "Current built-in default broad-operability control branch."
+    },
+    {
+      "label": "Drawdown pivot fallback",
+      "profile_name": "momentum_broad_candidate_drawdown_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_n4_ms002_rf63.toml",
+      "rationale": "Fallback pivot already encoded in the built-in default plan."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "risk_seed",
+      "label": "Risk Seed",
+      "profile_name": "momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12",
+      "config_path": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+      "purpose": "Track the active built-in broad-operability seed."
+    },
+    {
+      "step_id": "drawdown_pivot",
+      "label": "Drawdown Pivot",
+      "profile_name": "momentum_broad_candidate_drawdown_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_n4_ms002_rf63.toml",
+      "purpose": "Fallback pivot for the legacy built-in broad-operability branch."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "risk_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    },
+    {
+      "step_id": "drawdown_pivot",
+      "artifacts": [
+        "promotion",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "Any step in the legacy branch passes the promotion policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The legacy built-in broad-operability branch exhausts its final pivot without producing a promotion-eligible candidate."
+    }
+  ]
+}

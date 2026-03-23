@@ -22,7 +22,11 @@ from trotters_trader.config import (
 )
 from trotters_trader.coverage import summarize_data_coverage, write_coverage_artifacts
 from trotters_trader.dashboard import serve_dashboard
-from trotters_trader.eodhd import download_daily_series as download_eodhd_daily_series
+from trotters_trader.eodhd import (
+    download_corporate_actions as download_eodhd_corporate_actions,
+    download_daily_series as download_eodhd_daily_series,
+    download_exchange_symbols as download_eodhd_exchange_symbols,
+)
 from trotters_trader.experiments import (
     BATCH_PRESETS,
     apply_research_variant,
@@ -90,6 +94,8 @@ from trotters_trader.staging import stage_source_data
 LEGACY_COMMANDS = [
     "download-alpha-vantage",
     "download-eodhd",
+    "download-eodhd-reference",
+    "download-eodhd-corporate-actions",
     "coverage",
     "stage",
     "ingest",
@@ -301,6 +307,21 @@ def execute_command(
             config.data,
             date_from=getattr(command_args, "from_date", None),
             date_to=getattr(command_args, "to_date", None),
+            limit=getattr(command_args, "limit", None),
+            requested_instruments=getattr(command_args, "instrument", None),
+            force=bool(getattr(command_args, "force", False)),
+        )
+    if command == "download-eodhd-reference":
+        return download_eodhd_exchange_symbols(
+            config.data,
+            exchange_code=getattr(command_args, "exchange_code", None),
+            limit=getattr(command_args, "limit", None),
+            requested_instruments=getattr(command_args, "instrument", None),
+            force=bool(getattr(command_args, "force", False)),
+        )
+    if command == "download-eodhd-corporate-actions":
+        return download_eodhd_corporate_actions(
+            config.data,
             limit=getattr(command_args, "limit", None),
             requested_instruments=getattr(command_args, "instrument", None),
             force=bool(getattr(command_args, "force", False)),
@@ -959,6 +980,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-series", action="store_true")
     parser.add_argument("--instrument", action="append")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--exchange-code")
     parser.add_argument("--from-date")
     parser.add_argument("--to-date")
     parser.add_argument("--reference-date", type=_parse_iso_date)

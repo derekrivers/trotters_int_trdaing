@@ -1,0 +1,55 @@
+{
+  "program_id": "momentum_total_return_starter_guard_program",
+  "title": "Starter Momentum Total-Return Guard Program",
+  "strategy_family": "cross_sectional_momentum",
+  "objective": "Run the starter-universe momentum baseline on EODHD-managed total-return inputs so the governed queue can measure whether cleaner corporate-action handling changes the evidence shape enough to justify a broader follow-up.",
+  "branch_rationale": "The retired momentum branches relied on vendor-adjusted bars plus static/sample support files. This branch changes the input contract itself by using generated EODHD reference data and split-and-dividend total-return reconstruction before deciding whether momentum should spend more governed backlog depth.",
+  "positive_hypotheses": [
+    "A managed vendor-backed instrument master and action ledger can remove data-quality distortions that were contaminating benchmark-relative evidence.",
+    "Reconstructed total-return inputs can improve split and walk-forward stability enough to justify a later broad-universe follow-up if the starter-universe signal shape improves."
+  ],
+  "seed_stack": [
+    {
+      "label": "Current starter momentum baseline",
+      "profile_name": "momentum_balanced",
+      "config_path": "configs/eodhd_momentum.toml",
+      "rationale": "Control branch using the existing vendor-adjusted EODHD path."
+    },
+    {
+      "label": "Managed total-return starter seed",
+      "profile_name": "momentum_total_return",
+      "config_path": "configs/eodhd_momentum_total_return.toml",
+      "rationale": "Same strategy family, but running on EODHD-managed reference and corporate-action inputs."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "total_return_seed",
+      "label": "Momentum Total-Return Starter Seed",
+      "profile_name": "momentum_total_return",
+      "config_path": "configs/eodhd_momentum_total_return.toml",
+      "purpose": "Execute the managed total-return starter branch and decide whether the improved data path earns broader governed follow-up."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "total_return_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The total-return starter seed passes the existing validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially if the cleaner data path still cannot produce benchmark-relative split or walk-forward evidence."
+    }
+  ]
+}

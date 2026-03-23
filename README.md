@@ -598,6 +598,22 @@ Download named symbols into raw JSON:
 python -m trotters_trader.cli download-eodhd --config configs/eodhd.toml --instrument TSCO.L --from-date 2018-01-01
 ```
 
+If you want the repo to manage the instrument master and corporate-action ledger from EODHD directly, use [`configs/eodhd_momentum_total_return.toml`](c:/Users/derek/OneDrive/Documents/Development/TrottersIndependantTraders/configs/eodhd_momentum_total_return.toml) and sync the supporting feeds first:
+
+```bash
+python -m trotters_trader.cli download-eodhd-reference --config configs/eodhd_momentum_total_return.toml
+python -m trotters_trader.cli download-eodhd-corporate-actions --config configs/eodhd_momentum_total_return.toml
+python -m trotters_trader.cli download-eodhd --config configs/eodhd_momentum_total_return.toml --from-date 2018-01-01
+```
+
+That managed config writes:
+
+- an EODHD-backed instrument master to `data/reference/eodhd_lse_starter_instrument_master.csv`
+- an EODHD-backed corporate-action ledger to `data/reference/eodhd_lse_starter_corporate_actions.csv`
+- a reconstructed split-and-dividend total-return series via `adjustment_policy = "splits_and_dividends_from_actions"`
+
+For LSE instruments, the EODHD dividend feed is normalized from GBP cash units onto the pence price scale used by the daily bars before canonical adjustment is applied.
+
 Then stage and ingest:
 
 ```bash
@@ -605,6 +621,8 @@ python -m trotters_trader.cli stage --config configs/eodhd.toml
 python -m trotters_trader.cli ingest --config configs/eodhd.toml
 python -m trotters_trader.cli backtest --config configs/eodhd.toml
 ```
+
+For the managed total-return path, run the same commands against `configs/eodhd_momentum_total_return.toml`.
 
 The downloader stores raw payloads in `data/raw/eodhd_json/`. The staging adapter preserves raw OHLC and uses EODHD `adjusted_close` when present. If `adjusted_close` is missing, staging falls back to `close`.
 

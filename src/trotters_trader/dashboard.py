@@ -924,11 +924,23 @@ def _research_family_comparison_section(summary: dict[str, object]) -> str:
     counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
     families = [family for family in summary.get("families", []) if isinstance(family, dict)] if isinstance(summary.get("families"), list) else []
     approved_backlog = [family for family in summary.get("approved_backlog", []) if isinstance(family, dict)] if isinstance(summary.get("approved_backlog"), list) else []
-    rows = "".join(_research_family_row(family) for family in families[:8]) or "<tr><td colspan='8'>No research family proposals recorded.</td></tr>"
+    visible_families = families[:8]
+    visible_backlog = approved_backlog[:5]
+    rows = "".join(_research_family_row(family) for family in visible_families) or "<tr><td colspan='8'>No research family proposals recorded.</td></tr>"
     backlog_items = "".join(
         f"<li>{escape(str(family.get('title', family.get('proposal_id', 'unknown family'))))} ({escape(str(family.get('plan_id', 'none') or 'none'))})</li>"
-        for family in approved_backlog[:5]
+        for family in visible_backlog
     ) or "<li>No approved standby families recorded.</li>"
+    backlog_overflow = (
+        f"<p class='subtle'>Showing first {len(visible_backlog)} of {len(approved_backlog)} approved standby families.</p>"
+        if len(approved_backlog) > len(visible_backlog)
+        else ""
+    )
+    family_overflow = (
+        f"<p class='subtle'>Showing first {len(visible_families)} of {len(families)} recorded families.</p>"
+        if len(families) > len(visible_families)
+        else ""
+    )
     return f"""
     <section class="panel">
       <h2>Research Family Comparison</h2>
@@ -943,7 +955,9 @@ def _research_family_comparison_section(summary: dict[str, object]) -> str:
         {_summary_card("backlog status", str(summary.get("approved_backlog_status", "empty") or "empty"))}
       </section>
       <p><strong>Approved backlog:</strong> {escape(str(summary.get("approved_backlog_message", "No approved backlog summary is available.") or "No approved backlog summary is available."))}</p>
+      {backlog_overflow}
       <ul>{backlog_items}</ul>
+      {family_overflow}
       <table>
         <thead><tr><th>Proposal</th><th>Status</th><th>Approval</th><th>Novelty</th><th>Readiness</th><th>Recommendation</th><th>Plan</th><th>Program</th></tr></thead>
         <tbody>{rows}</tbody>

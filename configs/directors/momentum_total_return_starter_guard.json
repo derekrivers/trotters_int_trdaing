@@ -1,0 +1,14 @@
+{
+  "plan_name": "momentum_total_return_starter_guard",
+  "campaigns": [
+    {
+      "campaign_name": "momentum-total-return-starter-primary",
+      "config_path": "configs/eodhd_momentum_total_return.toml",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1200,
+      "stage_candidate_limit": 24,
+      "shortlist_size": 3,
+      "quality_gate": "pass_warn"
+    }
+  ]
+}

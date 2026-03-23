@@ -1,0 +1,55 @@
+﻿{
+  "program_id": "mean_reversion_broad_residual_cap_program",
+  "title": "Broad Mean-Reversion Residual Cap Program",
+  "strategy_family": "mean_reversion",
+  "objective": "Run one smaller, higher-threshold mean-reversion branch that forces benchmark-bucket balance before the family is retired for good.",
+  "branch_rationale": "The active fast-cycle branch made mean reversion faster and more diversified, but it still left open whether the family only works when the basket is materially smaller and forced across benchmark buckets. This branch is the bounded test for that hypothesis.",
+  "positive_hypotheses": [
+    "A smaller six-name basket with a stronger residual threshold can strip out weak mean-reversion candidates that diluted the earlier broad attempts.",
+    "Benchmark-bucket caps can keep the family from collapsing into one valuation bucket when mean reversion appears strongest in a narrow market pocket."
+  ],
+  "seed_stack": [
+    {
+      "label": "Fast-cycle control",
+      "profile_name": "mean_reversion_broad_candidate_n10_ms003_rf10",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+      "rationale": "Reference control for the currently active faster mean-reversion branch."
+    },
+    {
+      "label": "Residual-cap seed",
+      "profile_name": "mean_reversion_broad_candidate_n6_ms006_rf7_bb2",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n6_ms006_rf7_bb2.toml",
+      "rationale": "Repo-backed smaller-basket mean-reversion branch with stronger entry and explicit benchmark-bucket balance."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "mean_reversion_residual_cap_seed",
+      "label": "Mean-Reversion Residual-Cap Seed",
+      "profile_name": "mean_reversion_broad_candidate_n6_ms006_rf7_bb2",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n6_ms006_rf7_bb2.toml",
+      "purpose": "Execute the selective mean-reversion family and decide whether it should be promoted or retired."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "mean_reversion_residual_cap_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The residual-cap seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ]
+}

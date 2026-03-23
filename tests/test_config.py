@@ -95,6 +95,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.data.source_bars_csv, Path("data/raw/eodhd_json"))
         self.assertEqual(config.data.source_instruments_csv, Path("data/universes/uk_starter_instrument_master.csv"))
         self.assertEqual(config.data.download_instruments_csv, Path("data/universes/uk_starter_watchlist.csv"))
+        self.assertEqual(config.data.download_exchange_code, "LSE")
         self.assertEqual(config.data.adjustment_policy, "vendor_adjusted_close")
         self.assertEqual(config.universe.min_history_days, 252)
         self.assertEqual(config.universe.allowed_tradability_statuses, ("TRADABLE",))
@@ -197,6 +198,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(defensive.features.set_name, "momentum_defensive")
 
         self.assertEqual(core.data.download_instruments_csv, Path("data/universes/uk_core_watchlist.csv"))
+        self.assertEqual(core.data.download_exchange_code, "LSE")
         self.assertEqual(core.universe.allowed_universe_buckets, ("core",))
         self.assertEqual(core.research.profile_name, "momentum_core")
         self.assertEqual(core.features.set_name, "momentum_core")
@@ -215,6 +217,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(candidate.research.research_tranche, "refine_seed")
         self.assertEqual(candidate.research.control_profile, "momentum_balanced")
         self.assertTrue(candidate.research.promotion_candidate)
+
+    def test_load_eodhd_total_return_config(self) -> None:
+        config = load_config(Path("configs/eodhd_momentum_total_return.toml"))
+
+        self.assertEqual(config.run.name, "eodhd_momentum_total_return_backtest")
+        self.assertEqual(config.data.source_instruments_csv, Path("data/reference/eodhd_lse_starter_instrument_master.csv"))
+        self.assertEqual(config.data.source_corporate_actions_csv, Path("data/reference/eodhd_lse_starter_corporate_actions.csv"))
+        self.assertEqual(config.data.download_exchange_code, "LSE")
+        self.assertEqual(config.data.adjustment_policy, "splits_and_dividends_from_actions")
+        self.assertEqual(config.research.profile_name, "momentum_total_return")
+        self.assertFalse(config.features.use_precomputed)
 
     def test_scope_app_config_isolates_intermediate_paths(self) -> None:
         config = load_config(Path("configs/backtest.toml"))

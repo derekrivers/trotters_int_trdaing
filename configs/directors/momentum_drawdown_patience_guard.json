@@ -1,0 +1,14 @@
+﻿{
+  "plan_name": "momentum_drawdown_patience_guard",
+  "campaigns": [
+    {
+      "campaign_name": "momentum-drawdown-patience-primary",
+      "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_patience_n5_ms002_rf63.toml",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 36,
+      "shortlist_size": 3,
+      "quality_gate": "pass_warn"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+﻿{
+  "plan_name": "momentum_beta_bucket_guard",
+  "campaigns": [
+    {
+      "campaign_name": "momentum-beta-bucket-guard-primary",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_bucket_n5_ms002_rf42.toml",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 36,
+      "shortlist_size": 3,
+      "quality_gate": "pass_warn"
+    }
+  ]
+}

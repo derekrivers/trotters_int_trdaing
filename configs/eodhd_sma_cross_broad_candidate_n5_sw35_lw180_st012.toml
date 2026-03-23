@@ -1,14 +1,13 @@
-[run]
-name = "eodhd_momentum_backtest"
+﻿[run]
+name = "eodhd_sma_cross_broad_candidate_n5_sw35_lw180_st012_backtest"
 initial_cash = 100000.0
 output_dir = "runs"
 
 [data]
 source_name = "eodhd_json"
 source_bars_csv = "data/raw/eodhd_json"
-source_instruments_csv = "data/universes/uk_starter_instrument_master.csv"
-download_instruments_csv = "data/universes/uk_starter_watchlist.csv"
-download_exchange_code = "LSE"
+source_instruments_csv = "data/universes/uk_broad_instrument_master.csv"
+download_instruments_csv = "data/universes/uk_broad_watchlist.csv"
 source_corporate_actions_csv = "data/sample/corporate_actions.csv"
 staging_dir = "data/staging"
 canonical_dir = "data/canonical"
@@ -27,41 +26,41 @@ allowed_universe_buckets = []
 excluded_liquidity_buckets = []
 
 [strategy]
-name = "cross_sectional_momentum"
-top_n = 8
-weighting = "vol_inverse"
+name = "sma_cross"
+top_n = 5
+weighting = "equal"
 ranking_mode = "global"
 score_transform = "raw"
 min_candidates_per_group = 1
 
 [strategy.sma_cross]
-short_window = 20
-long_window = 100
-signal_threshold = 0.002
+short_window = 35
+long_window = 180
+signal_threshold = 0.012
 
 [strategy.cross_sectional_momentum]
 lookback_window = 126
-min_score = 0.03
+min_score = 0.02
 max_trailing_drawdown = 1.0
 drawdown_lookback_window = 0
 
 [strategy.mean_reversion]
 lookback_window = 5
-min_score = 0.0
+min_score = 0.05
 
 [portfolio]
-cash_buffer_pct = 0.10
-target_gross_exposure = 0.60
-max_position_weight = 0.10
-rebalance_threshold_bps = 150.0
+cash_buffer_pct = 0.12
+target_gross_exposure = 0.50
+max_position_weight = 0.09
+rebalance_threshold_bps = 100.0
 rebalance_frequency_days = 63
-max_rebalance_turnover_pct = 0.06
-initial_deployment_turnover_pct = 0.20
-selection_buffer_slots = 3
-max_positions_per_sector = 0
+max_rebalance_turnover_pct = 0.07
+initial_deployment_turnover_pct = 0.12
+selection_buffer_slots = 2
+max_positions_per_sector = 2
 max_positions_per_industry = 0
-max_positions_per_benchmark_bucket = 0
-min_holding_days = 84
+max_positions_per_benchmark_bucket = 1
+min_holding_days = 63
 adv_window_days = 20
 max_target_adv_participation = 0.01
 volatility_target = 0.0
@@ -99,42 +98,6 @@ fail_min_excess_return = -0.05
 flag_underperform_benchmark = true
 fail_on_zero_trade_run = true
 
-[evaluation_profiles.lenient]
-warn_turnover = 3.0
-fail_turnover = 4.5
-warn_min_trade_count = 5
-fail_min_trade_count = 1
-warn_max_drawdown = 0.15
-fail_max_drawdown = 0.30
-warn_min_excess_return = -0.02
-fail_min_excess_return = -0.10
-flag_underperform_benchmark = false
-fail_on_zero_trade_run = false
-
-[evaluation_profiles.research]
-warn_turnover = 2.0
-fail_turnover = 3.0
-warn_min_trade_count = 10
-fail_min_trade_count = 3
-warn_max_drawdown = 0.10
-fail_max_drawdown = 0.20
-warn_min_excess_return = 0.0
-fail_min_excess_return = -0.05
-flag_underperform_benchmark = true
-fail_on_zero_trade_run = true
-
-[evaluation_profiles.strict]
-warn_turnover = 1.5
-fail_turnover = 2.5
-warn_min_trade_count = 20
-fail_min_trade_count = 5
-warn_max_drawdown = 0.08
-fail_max_drawdown = 0.15
-warn_min_excess_return = 0.01
-fail_min_excess_return = -0.02
-flag_underperform_benchmark = true
-fail_on_zero_trade_run = true
-
 [validation.train]
 label = "train"
 start_date = "2019-01-02"
@@ -151,21 +114,21 @@ start_date = "2025-01-01"
 end_date = "2026-03-19"
 
 [research]
-profile_name = "momentum_balanced"
-profile_version = "2026-03-20.1"
-frozen_on = "2026-03-20"
+profile_name = "sma_cross_broad_candidate_n5_sw35_lw180_st012"
+profile_version = "2026-03-23.1"
+frozen_on = "2026-03-23"
 promoted = false
-research_tranche = ""
+research_tranche = "sma_cross_trend_guard_seed"
 research_slice_name = "all"
-control_profile = ""
-promotion_candidate = false
+control_profile = "sma_cross_broad_candidate_n6_sw50_lw150_st010"
+promotion_candidate = true
 
 [features]
-enabled = true
+enabled = false
 feature_dir = "data/features"
-set_name = "momentum_balanced"
-use_precomputed = true
-materialize_on_backtest = true
+set_name = "sma_cross_broad_candidate_n5_sw35_lw180_st012"
+use_precomputed = false
+materialize_on_backtest = false
 
 [walkforward]
 enabled = true

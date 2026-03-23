@@ -14,8 +14,10 @@ from trotters_trader.alpha_vantage import (
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.config import DataConfig, load_config
 from trotters_trader.eodhd import (
+    download_corporate_actions as download_eodhd_corporate_actions,
     default_api_symbol as default_eodhd_api_symbol,
     download_daily_series as download_eodhd_daily_series,
+    download_exchange_symbols as download_eodhd_exchange_symbols,
     load_api_key as load_eodhd_api_key,
 )
 from trotters_trader.staging import stage_source_data
@@ -354,6 +356,241 @@ class IngestionTests(IsolatedWorkspaceTestCase):
             if root.exists():
                 shutil.rmtree(root)
 
+    def test_eodhd_download_exchange_symbols_writes_instrument_master(self) -> None:
+        root = Path("tests/.tmp_eodhd_reference")
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            env_file = root / ".env"
+            env_file.write_text("EODHD_API_KEY=test-key\n", encoding="utf-8")
+            watchlist = root / "watchlist.csv"
+            watchlist.write_text(
+                "instrument\n"
+                "TSCO.L\n"
+                "SBRY.L\n",
+                encoding="utf-8",
+            )
+            instruments = root / "instruments.csv"
+            actions = root / "corporate_actions.csv"
+
+            config = DataConfig(
+                source_name="eodhd_json",
+                source_bars_csv=root / "eodhd",
+                source_instruments_csv=instruments,
+                download_instruments_csv=watchlist,
+                source_corporate_actions_csv=actions,
+                staging_dir=root / "staging",
+                canonical_dir=root / "canonical",
+                raw_dir=root / "raw",
+                download_exchange_code="LSE",
+            )
+
+            class _Response:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return json.dumps(
+                        [
+                            {
+                                "Code": "TSCO",
+                                "Name": "Tesco PLC",
+                                "Exchange": "LSE",
+                                "Currency": "GBP",
+                                "Type": "Common Stock",
+                                "Isin": "GB0008847096",
+                            },
+                            {
+                                "Code": "SBRY",
+                                "Name": "J Sainsbury plc",
+                                "Exchange": "LSE",
+                                "Currency": "GBP",
+                                "Type": "Common Stock",
+                                "Isin": "GB00B019KW72",
+                            },
+                            {
+                                "Code": "IGNORED",
+                                "Name": "Ignored Name",
+                                "Exchange": "LSE",
+                                "Currency": "GBP",
+                                "Type": "Common Stock",
+                                "Isin": "GB0000000000",
+                            },
+                        ]
+                    ).encode("utf-8")
+
+            with patch("trotters_trader.eodhd.urlopen", return_value=_Response()):
+                result = download_eodhd_exchange_symbols(config, env_path=env_file)
+
+            instrument_rows = instruments.read_text(encoding="utf-8")
+            self.assertEqual(result["missing_instruments"], [])
+            self.assertEqual(result["instrument_count"], 2)
+            self.assertIn("TSCO.L,XLON,GBP,GB0008847096", instrument_rows)
+            self.assertIn("SBRY.L,XLON,GBP,GB00B019KW72", instrument_rows)
+            self.assertNotIn("IGNORED", instrument_rows)
+            self.assertTrue((root / "raw" / "eodhd_reference" / "LSE.json").exists())
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+
+    def test_eodhd_download_corporate_actions_writes_csv(self) -> None:
+        root = Path("tests/.tmp_eodhd_actions")
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            env_file = root / ".env"
+            env_file.write_text("EODHD_API_KEY=test-key\n", encoding="utf-8")
+            watchlist = root / "watchlist.csv"
+            watchlist.write_text(
+                "instrument\n"
+                "TSCO.L\n",
+                encoding="utf-8",
+            )
+            instruments = root / "instruments.csv"
+            instruments.write_text(
+                "instrument,exchange_mic,currency,isin,sedol,company_number,status,listing_date,delisting_date,sector,industry,benchmark_bucket,liquidity_bucket,tradability_status,universe_bucket\n"
+                "TSCO.L,XLON,GBP,GB0008847096,,,ACTIVE,,,,,,,TRADABLE,\n",
+                encoding="utf-8",
+            )
+            actions = root / "corporate_actions.csv"
+
+            config = DataConfig(
+                source_name="eodhd_json",
+                source_bars_csv=root / "eodhd",
+                source_instruments_csv=instruments,
+                download_instruments_csv=watchlist,
+                source_corporate_actions_csv=actions,
+                staging_dir=root / "staging",
+                canonical_dir=root / "canonical",
+                raw_dir=root / "raw",
+                download_exchange_code="LSE",
+            )
+
+            class _DividendResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return json.dumps(
+                        [
+                            {
+                                "date": "2024-01-03",
+                                "recordDate": None,
+                                "paymentDate": None,
+                                "value": 0.10,
+                                "unadjustedValue": 0.10,
+                            }
+                        ]
+                    ).encode("utf-8")
+
+            class _SplitResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return json.dumps([{"date": "2024-01-04", "split": "3.000000/2.000000"}]).encode("utf-8")
+
+            responses = [_DividendResponse(), _SplitResponse()]
+            with patch("trotters_trader.eodhd.urlopen", side_effect=responses):
+                result = download_eodhd_corporate_actions(config, env_path=env_file)
+
+            action_rows = actions.read_text(encoding="utf-8")
+            self.assertEqual(result["errors"], [])
+            self.assertIn("TSCO.L,DIVIDEND,2024-01-03,2024-01-03,2024-01-03,10.0", action_rows)
+            self.assertIn("TSCO.L,SPLIT,2024-01-04,2024-01-04,2024-01-04,1.5", action_rows)
+            self.assertTrue((root / "raw" / "eodhd_dividends" / "TSCO.L.json").exists())
+            self.assertTrue((root / "raw" / "eodhd_splits" / "TSCO.L.json").exists())
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+
+    def test_eodhd_download_corporate_actions_keeps_gbx_dividends_unscaled(self) -> None:
+        root = Path("tests/.tmp_eodhd_actions_gbx")
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            env_file = root / ".env"
+            env_file.write_text("EODHD_API_KEY=test-key\n", encoding="utf-8")
+            watchlist = root / "watchlist.csv"
+            watchlist.write_text(
+                "instrument\n"
+                "BATS.L\n",
+                encoding="utf-8",
+            )
+            instruments = root / "instruments.csv"
+            instruments.write_text(
+                "instrument,exchange_mic,currency,isin,sedol,company_number,status,listing_date,delisting_date,sector,industry,benchmark_bucket,liquidity_bucket,tradability_status,universe_bucket\n"
+                "BATS.L,XLON,GBX,GB0002875804,,,ACTIVE,,,,,,,TRADABLE,\n",
+                encoding="utf-8",
+            )
+            actions = root / "corporate_actions.csv"
+
+            config = DataConfig(
+                source_name="eodhd_json",
+                source_bars_csv=root / "eodhd",
+                source_instruments_csv=instruments,
+                download_instruments_csv=watchlist,
+                source_corporate_actions_csv=actions,
+                staging_dir=root / "staging",
+                canonical_dir=root / "canonical",
+                raw_dir=root / "raw",
+                download_exchange_code="LSE",
+            )
+
+            class _DividendResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return json.dumps(
+                        [
+                            {
+                                "date": "2024-03-21",
+                                "recordDate": None,
+                                "paymentDate": None,
+                                "value": 58.88,
+                                "unadjustedValue": 58.88,
+                            }
+                        ]
+                    ).encode("utf-8")
+
+            class _SplitResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return json.dumps([]).encode("utf-8")
+
+            responses = [_DividendResponse(), _SplitResponse()]
+            with patch("trotters_trader.eodhd.urlopen", side_effect=responses):
+                result = download_eodhd_corporate_actions(config, env_path=env_file)
+
+            action_rows = actions.read_text(encoding="utf-8")
+            self.assertEqual(result["errors"], [])
+            self.assertIn("BATS.L,DIVIDEND,2024-03-21,2024-03-21,2024-03-21,58.88", action_rows)
+            self.assertNotIn("5888.0", action_rows)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+
     def test_staging_writes_staging_tables(self) -> None:
         config = self.isolated_config(load_config(Path("configs/backtest.toml")))
         outputs = stage_source_data(config.data)
@@ -614,6 +851,75 @@ class IngestionTests(IsolatedWorkspaceTestCase):
             self.assertIn("adjusted_close", staged_rows)
             self.assertIn("TSCO.L", staged_rows)
             self.assertIn("10.4", staged_rows)
+        finally:
+            if root.exists():
+                shutil.rmtree(root)
+
+    def test_eodhd_total_return_config_can_materialize_canonical_data(self) -> None:
+        root = Path("tests/.tmp_eodhd_total_return")
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        try:
+            source_dir = root / "eodhd"
+            source_dir.mkdir(parents=True)
+            (source_dir / "TSCO.L.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "date": "2024-01-02",
+                            "open": 10.0,
+                            "high": 10.0,
+                            "low": 10.0,
+                            "close": 10.0,
+                            "adjusted_close": 10.0,
+                            "volume": 900,
+                        },
+                        {
+                            "date": "2024-01-03",
+                            "open": 8.0,
+                            "high": 8.0,
+                            "low": 8.0,
+                            "close": 8.0,
+                            "adjusted_close": 8.0,
+                            "volume": 1000,
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            instruments = root / "instruments.csv"
+            instruments.write_text(
+                "instrument,exchange_mic,currency,isin,sedol,company_number,status,listing_date,delisting_date,sector,industry,benchmark_bucket,liquidity_bucket,tradability_status,universe_bucket\n"
+                "TSCO.L,XLON,GBP,GB0008847096,,,ACTIVE,2024-01-01,,,,,,TRADABLE,\n",
+                encoding="utf-8",
+            )
+            actions = root / "corporate_actions.csv"
+            actions.write_text(
+                "instrument,action_type,ex_date,record_date,payable_date,ratio_or_amount\n"
+                "TSCO.L,DIVIDEND,2024-01-03,2024-01-03,2024-01-03,2.0\n",
+                encoding="utf-8",
+            )
+
+            config = DataConfig(
+                source_name="eodhd_json",
+                source_bars_csv=source_dir,
+                source_instruments_csv=instruments,
+                download_instruments_csv=None,
+                source_corporate_actions_csv=actions,
+                staging_dir=root / "staging",
+                canonical_dir=root / "canonical",
+                raw_dir=root / "raw",
+                download_exchange_code="LSE",
+                adjustment_policy="splits_and_dividends_from_actions",
+            )
+
+            outputs = materialize_canonical_data(config)
+            canonical_rows = (root / "canonical" / "daily_bars.csv").read_text(encoding="utf-8")
+
+            self.assertTrue(Path(outputs["bars"]).exists())
+            self.assertIn("2024-01-02,TSCO.L,10.0,10.0,10.0,10.0,7.5,900.0", canonical_rows)
+            self.assertIn("2024-01-03,TSCO.L,8.0,8.0,8.0,8.0,6.0,1000.0", canonical_rows)
         finally:
             if root.exists():
                 shutil.rmtree(root)

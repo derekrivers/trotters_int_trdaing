@@ -1,0 +1,84 @@
+﻿{
+  "proposal_id": "sma_cross_broad_trend_guard",
+  "title": "Broad SMA Cross Trend Guard",
+  "strategy_family": "sma_cross",
+  "hypothesis": "A narrower SMA-cross branch with a 35/180 trend window and benchmark-bucket caps can test whether the family works only when confirmation stays patient but the basket is more selective and balanced.",
+  "why_different_from_retired": [
+    "The retired fast reentry branch and the later 50/150 confirmation branch changed trend speed, but neither forced a five-name basket with one-slot benchmark-bucket caps.",
+    "This branch sits between the fast and slow SMA-cross variants on timing while materially tightening the basket-construction controls."
+  ],
+  "success_criteria": [
+    "The trend-guard seed must pass the existing validation, holdout, and walk-forward promotion policy without exceptions before it can move toward paper-trade preparation.",
+    "If it fails, it must still produce enough evidence to decide whether any guarded SMA-cross path deserves future backlog space."
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The trend-guard seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ],
+  "approval_status": "approved",
+  "novelty_vs_retired": "material",
+  "implementation_readiness": "ready",
+  "expected_evidence_cost": "medium",
+  "promotion_path_compatibility": "compatible",
+  "recorded_at_utc": "2026-03-23T19:46:00+00:00",
+  "bootstrap": {
+    "plan_id": "sma_cross_broad_trend_guard",
+    "program_id": "sma_cross_broad_trend_guard_program",
+    "program_title": "Broad SMA Cross Trend Guard Program",
+    "director_name": "sma-cross-trend-guard-director",
+    "campaign_name": "sma-cross-trend-guard-primary",
+    "config_path": "configs/eodhd_sma_cross_broad_candidate_n5_sw35_lw180_st012.toml",
+    "quality_gate": "pass_warn",
+    "campaign_max_hours": 24,
+    "campaign_max_jobs": 1500,
+    "stage_candidate_limit": 36,
+    "shortlist_size": 3,
+    "queue_priority": 12,
+    "objective": "Run one narrower, longer-horizon SMA-cross branch that forces benchmark-bucket balance before the family is retired for good.",
+    "branch_rationale": "The fast reentry and slower confirmation SMA-cross branches tested speed and patience, but they did not test whether the family needs fewer names and stricter bucket balance at the same time. This branch is the bounded confirmation of that hypothesis.",
+    "positive_hypotheses": [
+      "A 35/180 crossover can keep the trend thesis slower than reentry while still reacting sooner than the 50/150 confirmation branch.",
+      "Limiting the basket to five names with one benchmark-bucket slot can reduce the benchmark-relative fragility that hurt the earlier SMA-cross branches."
+    ],
+    "seed_stack": [
+      {
+        "label": "SMA-cross confirmation control",
+        "profile_name": "sma_cross_broad_candidate_n6_sw50_lw150_st010",
+        "config_path": "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+        "rationale": "Reference control for the slower SMA-cross confirmation branch."
+      },
+      {
+        "label": "Trend-guard seed",
+        "profile_name": "sma_cross_broad_candidate_n5_sw35_lw180_st012",
+        "config_path": "configs/eodhd_sma_cross_broad_candidate_n5_sw35_lw180_st012.toml",
+        "rationale": "Repo-backed trend-guard branch using a narrower basket and explicit benchmark-bucket balance."
+      }
+    ],
+    "campaign_path": [
+      {
+        "step_id": "sma_cross_trend_guard_seed",
+        "label": "SMA-Cross Trend-Guard Seed",
+        "profile_name": "sma_cross_broad_candidate_n5_sw35_lw180_st012",
+        "config_path": "configs/eodhd_sma_cross_broad_candidate_n5_sw35_lw180_st012.toml",
+        "purpose": "Execute the guarded SMA-cross family and decide whether it should be promoted or retired."
+      }
+    ],
+    "artifact_expectations": [
+      {
+        "step_id": "sma_cross_trend_guard_seed",
+        "artifacts": [
+          "promotion",
+          "operability_program",
+          "operator_scorecard",
+          "research_program"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,55 @@
+﻿{
+  "program_id": "momentum_beta_bucket_guard_program",
+  "title": "Broad Momentum Beta Bucket Guard Program",
+  "strategy_family": "cross_sectional_momentum",
+  "objective": "Run one beta-aware momentum branch with explicit benchmark-bucket caps and a faster recycle window so the family can test bucket balance without relying on drawdown-penalized ranking.",
+  "branch_rationale": "The guarded drawdown branch answers one concentration question, but it still leaves open whether the momentum engine works better when beta-aware weighting is kept and benchmark-bucket balance becomes the main guardrail. This branch is the bounded test for that alternative.",
+  "positive_hypotheses": [
+    "Keeping beta-vol-inverse weighting while shortening the recycle window can preserve breadth without giving up the defensive posture learned from the beta-defensive branch.",
+    "One-name benchmark-bucket caps can stop the family from drifting back into the benchmark-relative concentration pattern that damaged prior holdout evidence."
+  ],
+  "seed_stack": [
+    {
+      "label": "Beta-defensive control",
+      "profile_name": "momentum_broad_candidate_beta_defensive_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
+      "rationale": "Reference control for the governed defensive beta-aware continuation branch."
+    },
+    {
+      "label": "Beta-bucket guard seed",
+      "profile_name": "momentum_broad_candidate_beta_bucket_n5_ms002_rf42",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_bucket_n5_ms002_rf42.toml",
+      "rationale": "Repo-backed beta-aware branch with explicit benchmark-bucket caps and a faster recycle window."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "beta_bucket_guard_seed",
+      "label": "Momentum Beta-Bucket Guard Seed",
+      "profile_name": "momentum_broad_candidate_beta_bucket_n5_ms002_rf42",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_bucket_n5_ms002_rf42.toml",
+      "purpose": "Execute the beta-aware bucket-guard momentum family and decide whether it should be promoted or retired."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "beta_bucket_guard_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The beta-bucket guard seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ]
+}

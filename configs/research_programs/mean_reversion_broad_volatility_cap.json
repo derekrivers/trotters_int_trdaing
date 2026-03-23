@@ -1,0 +1,55 @@
+﻿{
+  "program_id": "mean_reversion_broad_volatility_cap_program",
+  "title": "Broad Mean-Reversion Volatility Cap Program",
+  "strategy_family": "mean_reversion",
+  "objective": "Run one volatility-targeted mean-reversion branch so the family can test whether a softer recycle cadence works better when the portfolio is risk-capped instead of made ultra-small.",
+  "branch_rationale": "The residual-cap branch tests the smallest selective basket. This follow-up keeps mean reversion selective but asks whether volatility targeting and a slightly broader basket are a better fit for the family.",
+  "positive_hypotheses": [
+    "A modest volatility target can stop mean reversion from oversizing into unstable short-horizon rebounds.",
+    "An eight-name basket can restore enough diversification to help split stability while still keeping the family more selective than the retired broad branches."
+  ],
+  "seed_stack": [
+    {
+      "label": "Residual-cap control",
+      "profile_name": "mean_reversion_broad_candidate_n6_ms006_rf7_bb2",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n6_ms006_rf7_bb2.toml",
+      "rationale": "Reference control for the smaller selective mean-reversion branch."
+    },
+    {
+      "label": "Volatility-cap seed",
+      "profile_name": "mean_reversion_broad_candidate_n8_ms005_rf14_vt10",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n8_ms005_rf14_vt10.toml",
+      "rationale": "Repo-backed mean-reversion branch that uses volatility targeting instead of an ultra-small basket as the main risk control."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "mean_reversion_volatility_cap_seed",
+      "label": "Mean-Reversion Volatility-Cap Seed",
+      "profile_name": "mean_reversion_broad_candidate_n8_ms005_rf14_vt10",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n8_ms005_rf14_vt10.toml",
+      "purpose": "Execute the volatility-targeted mean-reversion family and decide whether it should be promoted or retired."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "mean_reversion_volatility_cap_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The volatility-cap seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ]
+}

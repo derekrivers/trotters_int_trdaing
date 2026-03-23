@@ -1,0 +1,84 @@
+﻿{
+  "proposal_id": "momentum_drawdown_patience_guard",
+  "title": "Broad Momentum Drawdown Patience Guard",
+  "strategy_family": "cross_sectional_momentum",
+  "hypothesis": "A slower drawdown-penalized momentum branch can test whether the guarded momentum family fails mainly on timing noise rather than concentration once sector and benchmark-bucket caps are already in place.",
+  "why_different_from_retired": [
+    "The earlier drawdown-guarded momentum branch focused on concentration controls, while this branch keeps those controls and materially changes the holding cadence and recycle timing.",
+    "This is also distinct from the beta-aware bucket-guard path because it keeps drawdown-penalized scoring instead of shifting back to raw beta-aware ranking."
+  ],
+  "success_criteria": [
+    "The drawdown patience-guard seed must pass the existing validation, holdout, and walk-forward promotion policy without exceptions before it can move toward paper-trade preparation.",
+    "If it fails, it must still produce enough evidence to decide whether slower guarded drawdown momentum deserves any future backlog space."
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The drawdown patience-guard seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ],
+  "approval_status": "approved",
+  "novelty_vs_retired": "material",
+  "implementation_readiness": "ready",
+  "expected_evidence_cost": "medium",
+  "promotion_path_compatibility": "compatible",
+  "recorded_at_utc": "2026-03-23T20:14:00+00:00",
+  "bootstrap": {
+    "plan_id": "momentum_drawdown_patience_guard",
+    "program_id": "momentum_drawdown_patience_guard_program",
+    "program_title": "Broad Momentum Drawdown Patience Guard Program",
+    "director_name": "momentum-drawdown-patience-director",
+    "campaign_name": "momentum-drawdown-patience-primary",
+    "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_patience_n5_ms002_rf63.toml",
+    "quality_gate": "pass_warn",
+    "campaign_max_hours": 24,
+    "campaign_max_jobs": 1500,
+    "stage_candidate_limit": 36,
+    "shortlist_size": 3,
+    "queue_priority": 15,
+    "objective": "Run one slower drawdown-penalized momentum branch so the family can test whether the engine needs longer holding patience once concentration guardrails are already in place.",
+    "branch_rationale": "The sector-guard branch answers whether concentration controls help drawdown-aware momentum. This follow-up asks whether the remaining weakness is timing noise rather than concentration alone.",
+    "positive_hypotheses": [
+      "Longer holding windows can reduce turnover noise that may still be washing out the guarded drawdown signal.",
+      "Keeping one benchmark-bucket slot while slowing recycle timing can preserve concentration discipline without overfitting to short-horizon reversals."
+    ],
+    "seed_stack": [
+      {
+        "label": "Drawdown sector-guard control",
+        "profile_name": "momentum_broad_candidate_drawdown_sector_n6_ms002_rf42",
+        "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml",
+        "rationale": "Reference control for the first guarded drawdown momentum branch."
+      },
+      {
+        "label": "Drawdown patience-guard seed",
+        "profile_name": "momentum_broad_candidate_drawdown_patience_n5_ms002_rf63",
+        "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_patience_n5_ms002_rf63.toml",
+        "rationale": "Repo-backed slower drawdown-penalized branch using longer holding cadence and tighter benchmark-bucket balance."
+      }
+    ],
+    "campaign_path": [
+      {
+        "step_id": "drawdown_patience_guard_seed",
+        "label": "Momentum Drawdown Patience-Guard Seed",
+        "profile_name": "momentum_broad_candidate_drawdown_patience_n5_ms002_rf63",
+        "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_patience_n5_ms002_rf63.toml",
+        "purpose": "Execute the slower guarded drawdown momentum family and decide whether it should be promoted or retired."
+      }
+    ],
+    "artifact_expectations": [
+      {
+        "step_id": "drawdown_patience_guard_seed",
+        "artifacts": [
+          "promotion",
+          "operability_program",
+          "operator_scorecard",
+          "research_program"
+        ]
+      }
+    ]
+  }
+}
