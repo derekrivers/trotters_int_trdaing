@@ -209,6 +209,21 @@ Rule:
 - treat trusted plugin config as part of bootstrap sequencing, not just static JSON
 - if OpenClaw says a custom trusted plugin is missing, verify whether the plugin path exists at validation time before assuming the id is wrong
 
+## 15. Local-only operator surfaces need to stay local-only
+
+The dashboard originally behaved like a convenient internal page, but in practice it was an unauthenticated control surface with mutating routes.
+
+What changed:
+- dashboard now requires dedicated auth
+- dashboard POST controls require CSRF protection
+- dashboard and research API are loopback-bound by default
+- ops-bridge stays internal-only
+
+Rule:
+- treat operator surfaces as privileged interfaces even on a single machine
+- default host exposure to `127.0.0.1`
+- require explicit actor identity on mutation routes so audit trails are meaningful
+
 ## Concrete Gotchas
 
 ### Encoding gotchas
@@ -222,6 +237,7 @@ Rule:
 ### Runtime gotchas
 - partial Compose startup can mimic service failure
 - zero workers with active campaigns is a service-health fault, not a reason to start more directors
+- a host-side CLI pointed at `runtime/research_runtime` can still diverge from the live named-volume runtime if you forget which surface you are talking to
 
 ### Cost gotchas
 - broad overview payloads are too expensive
@@ -243,6 +259,7 @@ Rule:
 8. Separate service bugs from agent bugs aggressively.
 9. Confirm the Compose graph before diagnosing behavioral faults.
 10. Never call the supervisor "working" until an actual scheduled turn succeeds end-to-end.
+11. Keep the dashboard and API on loopback unless there is a deliberate deployment design that replaces the local-only assumption.
 
 ## Useful Verification Commands
 

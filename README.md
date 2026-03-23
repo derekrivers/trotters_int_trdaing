@@ -241,7 +241,7 @@ The runtime stack can also run an `openclaw-gateway` container alongside the res
 
 What is wired today:
 
-- `research-api` is exposed on `http://localhost:8890`
+- `research-api` is exposed on `http://127.0.0.1:8890` by default
 - `ops-bridge` runs on the internal Compose network and exposes narrow service restarts for the allowlisted runtime services only
 - `openclaw-gateway` runs on the same Compose network and receives `TROTTERS_API_BASE=http://research-api:8890`
 - `openclaw-gateway` also receives `TROTTERS_OPS_BRIDGE_TOKEN` so the supervisor plugin can call the internal ops bridge
@@ -253,11 +253,18 @@ What is wired today:
 Required `.env` entries:
 
 - `TROTTERS_API_TOKEN`
+- `TROTTERS_DASHBOARD_USERNAME`
+- `TROTTERS_DASHBOARD_PASSWORD`
 - `OPENCLAW_IMAGE`
 - `OPENCLAW_GATEWAY_BIND`
 - `OPENCLAW_GATEWAY_PORT`
 - `OPENCLAW_GATEWAY_TOKEN`
 - `TROTTERS_OPS_BRIDGE_TOKEN`
+
+Optional local-host bind overrides:
+
+- `TROTTERS_DASHBOARD_BIND_HOST`
+- `TROTTERS_API_BIND_HOST`
 
 Runtime-supervisor model auth:
 
@@ -276,19 +283,24 @@ Local endpoints:
 - OpenClaw gateway websocket: `ws://localhost:18789`
 - OpenClaw control UI: `http://127.0.0.1:18789/`
 - OpenClaw canvas UI assets: `http://127.0.0.1:18789/__openclaw__/canvas/`
-- Research API: `http://localhost:8890`
+- Research API: `http://127.0.0.1:8890`
+- Dashboard: `http://127.0.0.1:8888`
 - Ops bridge: `http://ops-bridge:8891` on the internal Compose network only
 
 Authentication:
 
 - the OpenClaw UI is easiest to bootstrap with `http://127.0.0.1:18789/#token=<OPENCLAW_GATEWAY_TOKEN>`
 - the research API requires `Authorization: Bearer <TROTTERS_API_TOKEN>` on all `/api/v1/*` routes
+- API and ops-bridge mutation requests also require `X-Trotters-Actor`
+- the dashboard requires HTTP Basic auth using `TROTTERS_DASHBOARD_USERNAME` / `TROTTERS_DASHBOARD_PASSWORD`
+- dashboard POST controls use CSRF protection, so replaying a bare form POST without the dashboard cookie + token pair is rejected
 - on first browser connection, OpenClaw may require one-time device pairing approval
 
 Operational notes:
 
 - OpenClaw serves its Control UI at `/`, but authentication happens on the websocket handshake, so a plain unauthenticated browser hit may show `Disconnected from gateway` until the token is provided
 - the gateway is intentionally published on loopback only: `127.0.0.1:${OPENCLAW_GATEWAY_PORT}`
+- the dashboard and research API are intentionally published on loopback only by default; override the bind host env vars only if you are deliberately widening exposure
 - if you change [`configs/openclaw/openclaw.json`](c:/Dev/TrottersIndependantTraders/configs/openclaw/openclaw.json), restart the gateway with `docker compose up -d openclaw-gateway`
 - if the UI shows `pairing required`, approve the pending browser device from the gateway host with `docker compose exec openclaw-gateway openclaw devices list` and `docker compose exec openclaw-gateway openclaw devices approve <request_id>`
 - the gateway startup now seeds a recurring isolated cron job named `trotters-runtime-supervisor`, so the default `runtime-supervisor` agent wakes every 2 minutes and checks the runtime without a manual prompt
@@ -313,6 +325,7 @@ What runs in the background:
 - `campaign-manager`: decides what tranche to run next and advances campaigns until they finish
 - `research-director`: decides what campaign to run next and chains campaigns until a viable strategy is found or the approved queue is exhausted
 - `dashboard`: shows queue health, worker status, campaign detail, notifications, and stop controls
+- `dashboard`: is now an authenticated local operator surface, not an anonymous LAN-visible page
 - `dashboard` also includes a plain-English `/guide` page explaining the system, the terminology, and the intended path from research candidate to later paper/live trading
 - the paper-trading boundary and current readiness state are documented in [`context/16_paper_trading_status.md`](context/16_paper_trading_status.md)
 - the current OpenClaw control-plane status is documented in [`context/18_openclaw_status_and_backlog.md`](context/18_openclaw_status_and_backlog.md)
@@ -403,6 +416,7 @@ Important campaign controls:
 - `research-director-stop`: stops higher-level orchestration; optionally also stops the active campaign
 - `research-director-status`: shows which campaign the director is currently supervising
 - `research-dashboard`: serves the local dashboard on `--dashboard-host` / `--dashboard-port`
+- dashboard `/healthz` stays unauthenticated for container healthchecks, but all other dashboard pages and JSON views require dashboard auth
 - the dashboard includes a `/guide` page for non-technical / non-trading users who want a high-level explanation of the application
 - the dashboard now includes `/directors/<director_id>` so the operator can inspect the full director queue and plan progress
 - `--director-plan-file`: supplies an explicit queue of campaign configs for the director
@@ -449,6 +463,7 @@ Runtime outputs:
 
 - runtime database: [`runtime/research_runtime/state/research_runtime.sqlite3`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/state/research_runtime.sqlite3)
 - runtime exports: [`runtime/research_runtime/exports`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/exports)
+- service heartbeat json: [`runtime/research_runtime/exports/service_heartbeats`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/exports/service_heartbeats)
 - director spec files: [`runtime/research_runtime/director_specs`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/director_specs)
 - campaign notifications jsonl: [`runtime/research_runtime/exports/campaign_notifications.jsonl`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/exports/campaign_notifications.jsonl)
 - per-event notification payloads and hook logs: [`runtime/research_runtime/exports/campaign_notifications`](c:/Dev/TrottersIndependantTraders/runtime/research_runtime/exports/campaign_notifications)

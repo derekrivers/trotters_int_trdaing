@@ -9,6 +9,7 @@
 | `FW-005` | Risk-sector promotion program | `done` | `FW-001` | strongest `risk + sector` branch is either promoted under the current policy or explicitly retired with evidence | use the retired branch artifact as the baseline for selecting the next research family instead of re-opening the same path |
 | `FW-006` | Next research family and supervisor continuation | `done` | `FW-005` | a new research family is defined, encoded as an approved director plan/runbook item, and the OpenClaw supervisor can auto-advance into it after idle exhaustion | use the beta-defensive branch and `current_plan_id` continuation path as the baseline for the next research-family workflow |
 | `FW-007` | Queue expansion and family pipeline | `done` | `FW-006` | the OpenClaw runbook has a third approved family, queue growth rules are documented, and weaker families are kept out unless justified | use the three-item queue as the baseline and add future families through workflow-first evidence review |
+| `FW-008` | Security and fault-tolerance hardening | `done` | `FW-001`, `FW-004` | dashboard requires auth and CSRF, API and ops-bridge mutation calls require actor identity, runtime services self-report health, and local host exposure is narrowed by default | use the hardened localhost operator model and service-heartbeat contract as the baseline for future deployment work |
 
 ## Ordering Notes
 
@@ -16,3 +17,4 @@
 2. `FW-004` can run in parallel with `FW-002` if the write scopes stay separate.
 3. `FW-005` is a standing research track and should keep its evidence current while the product/runtime work proceeds.
 4. `FW-006` should start from the retired-branch evidence in `FW-005` rather than reusing stale assumptions about the old `risk + sector` family.
+5. `FW-008` establishes the minimum acceptable security posture for the single-host operator runtime before any broader deployment or remote-access work is considered.
