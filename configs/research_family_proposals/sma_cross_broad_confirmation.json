@@ -1,0 +1,84 @@
+﻿{
+  "proposal_id": "sma_cross_broad_confirmation",
+  "title": "Broad SMA Cross Confirmation",
+  "strategy_family": "sma_cross",
+  "hypothesis": "A slower SMA-cross confirmation branch can keep the absolute-trend thesis alive without repeating the fast reentry profile that already retired.",
+  "why_different_from_retired": [
+    "The retired SMA-cross branch used a faster 20/100 crossover with a looser reentry threshold, while this branch slows confirmation to 50/150 with a higher signal bar and fewer names.",
+    "This branch also adds a sector cap and longer holding cadence so the evidence tests whether slower trend persistence, not fast reentry, is the better way to use the repo's SMA-cross engine."
+  ],
+  "success_criteria": [
+    "The confirmation seed must pass the existing validation, holdout, and walk-forward promotion policy without exceptions before it can move toward paper-trade preparation.",
+    "If it fails, it must still produce enough evidence to either retire slower SMA-cross confirmation or justify a later family-generation workflow with explicit operator approval."
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The confirmation seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ],
+  "approval_status": "approved",
+  "novelty_vs_retired": "material",
+  "implementation_readiness": "ready",
+  "expected_evidence_cost": "medium",
+  "promotion_path_compatibility": "compatible",
+  "recorded_at_utc": "2026-03-23T18:10:00+00:00",
+  "bootstrap": {
+    "plan_id": "sma_cross_broad_confirmation",
+    "program_id": "sma_cross_broad_confirmation_program",
+    "program_title": "Broad SMA Cross Confirmation Program",
+    "director_name": "sma-cross-confirmation-director",
+    "campaign_name": "sma-cross-confirmation-primary",
+    "config_path": "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+    "quality_gate": "pass_warn",
+    "campaign_max_hours": 24,
+    "campaign_max_jobs": 1500,
+    "stage_candidate_limit": 36,
+    "shortlist_size": 3,
+    "queue_priority": 6,
+    "objective": "Run one slower absolute-trend confirmation branch on the broad universe and decide whether a more patient SMA-cross family deserves promotion-path follow-up or retirement.",
+    "branch_rationale": "The fast SMA-cross reentry branch retired, but that does not settle whether slower absolute-trend confirmation can reduce benchmark-relative fragility. This branch keeps the same engine while materially changing the evidence shape.",
+    "positive_hypotheses": [
+      "Slower confirmation can reduce false-positive reentries that likely hurt the earlier SMA-cross branch.",
+      "A smaller basket with longer holding periods can preserve trend exposure while improving split stability."
+    ],
+    "seed_stack": [
+      {
+        "label": "Retired SMA-cross control",
+        "profile_name": "sma_cross_broad_candidate_n8_sw20_lw100_st015",
+        "config_path": "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml",
+        "rationale": "Reference control for the retired faster SMA-cross family."
+      },
+      {
+        "label": "SMA-cross confirmation seed",
+        "profile_name": "sma_cross_broad_candidate_n6_sw50_lw150_st010",
+        "config_path": "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+        "rationale": "Repo-backed slower confirmation branch using the existing SMA-cross strategy with a more selective evidence profile."
+      }
+    ],
+    "campaign_path": [
+      {
+        "step_id": "sma_cross_confirmation_seed",
+        "label": "SMA-Cross Confirmation Seed",
+        "profile_name": "sma_cross_broad_candidate_n6_sw50_lw150_st010",
+        "config_path": "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+        "purpose": "Execute the slower absolute-trend confirmation family and decide whether it should be promoted or retired."
+      }
+    ],
+    "artifact_expectations": [
+      {
+        "step_id": "sma_cross_confirmation_seed",
+        "artifacts": [
+          "promotion",
+          "operability_program",
+          "operator_scorecard",
+          "research_program"
+        ]
+      }
+    ]
+  }
+}

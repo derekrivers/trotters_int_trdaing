@@ -51,7 +51,7 @@ class SupervisorRunbook:
 
 def load_supervisor_runbook(path: Path | str) -> SupervisorRunbook:
     source_path = Path(path)
-    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    payload = json.loads(source_path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError("Supervisor runbook must contain a JSON object")
 

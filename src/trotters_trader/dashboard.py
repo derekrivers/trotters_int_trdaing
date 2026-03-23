@@ -6,9 +6,10 @@ from html import escape
 import json
 import os
 from pathlib import Path
+import socketserver
 from typing import Callable
 from urllib.parse import parse_qs, quote, urlencode
-from wsgiref.simple_server import make_server
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries
@@ -29,6 +30,10 @@ from trotters_trader.research_runtime import (
     stop_campaign,
 )
 from trotters_trader.reports import build_operability_scorecard, operability_artifact_paths
+
+
+class _ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
+    daemon_threads = True
 
 
 @dataclass(frozen=True)
@@ -368,7 +373,7 @@ def serve_dashboard(
         auth_username=os.environ.get("TROTTERS_DASHBOARD_USERNAME", "operator"),
         auth_password=os.environ.get("TROTTERS_DASHBOARD_PASSWORD", "change-me-local-only"),
     )
-    with make_server(host, port, app) as server:
+    with make_server(host, port, app, server_class=_ThreadingWSGIServer, handler_class=WSGIRequestHandler) as server:
         print(f"Dashboard listening on http://{host}:{port}", flush=True)
         server.serve_forever()
     return {"host": host, "port": port}
@@ -794,8 +799,17 @@ def _active_runtime_now_section(
     next_family_state = str(next_family.get("status", "")).lower()
     blocked_by_governance = next_family_state in {"blocked_pending_approval", "blocked_pending_bootstrap"}
     blocked_message = str(next_family.get("message", "")).strip()
+    next_runnable_plan = str(next_family.get("next_runnable_plan_id", "") or "none")
+    backlog_depth = int(next_family.get("approved_backlog_depth", 0) or 0)
+    backlog_message = str(next_family.get("approved_backlog_message", "")).strip()
     if directors or campaigns:
         summary = "The runtime is currently executing live research work."
+    elif next_family_state == "queued":
+        summary = (
+            f"The runtime is currently waiting for the next approved family '{next_runnable_plan}' to resume. {backlog_message}"
+            if backlog_message
+            else f"The runtime is currently waiting for the next approved family '{next_runnable_plan}' to resume."
+        )
     elif blocked_by_governance:
         summary = (
             f"The runtime is currently blocked by queue governance. {blocked_message}"
@@ -813,6 +827,7 @@ def _active_runtime_now_section(
         {_summary_card("active campaigns", str(len(campaigns)))}
         {_summary_card("queued jobs", str(counts.get("queued", 0)))}
         {_summary_card("running jobs", str(counts.get("running", 0)))}
+        {_summary_card("approved standby", str(backlog_depth))}
       </section>
       <p>{escape(summary)}</p>
       <p><strong>Directors:</strong> {escape(active_director_names)}</p>
@@ -871,6 +886,17 @@ def _next_family_status_section(summary: dict[str, object]) -> str:
     if not summary:
         return ""
     current_proposal = summary.get("current_proposal", {}) if isinstance(summary.get("current_proposal"), dict) else {}
+    approved_backlog = [family for family in summary.get("approved_backlog", []) if isinstance(family, dict)] if isinstance(summary.get("approved_backlog"), list) else []
+    backlog_plan_ids = [
+        str(plan_id)
+        for plan_id in summary.get("approved_backlog_plan_ids", [])
+        if str(plan_id).strip()
+    ] if isinstance(summary.get("approved_backlog_plan_ids"), list) else [
+        str(family.get("plan_id", family.get("proposal_id", "")) or "").strip()
+        for family in approved_backlog
+        if str(family.get("plan_id", family.get("proposal_id", "")) or "").strip()
+    ]
+    backlog_items = "".join(f"<li>{escape(plan_id)}</li>" for plan_id in backlog_plan_ids) or "<li>No approved standby families recorded.</li>"
     return f"""
     <section class="panel">
       <h2>Next Family Status</h2>
@@ -881,9 +907,13 @@ def _next_family_status_section(summary: dict[str, object]) -> str:
         {_summary_card("active plan", str(summary.get("active_plan_id", "none") or "none"))}
         {_summary_card("next runnable", str(summary.get("next_runnable_plan_id", "none") or "none"))}
         {_summary_card("current proposal", str(current_proposal.get("proposal_id", "none") or "none"))}
+        {_summary_card("backlog status", str(summary.get("approved_backlog_status", "empty") or "empty"))}
+        {_summary_card("approved standby", str(summary.get("approved_backlog_depth", 0) or 0))}
       </section>
       <p>{escape(str(summary.get("message", "No next-family status is available.")))}</p>
+      <p><strong>Approved backlog:</strong> {escape(str(summary.get("approved_backlog_message", "No approved backlog summary is available.") or "No approved backlog summary is available."))}</p>
       {f"<p><strong>Blocking reason:</strong> {escape(str(summary.get('blocking_reason', '')))}</p>" if str(summary.get('blocking_reason', '')).strip() else ""}
+      <ul>{backlog_items}</ul>
     </section>
     """
 
@@ -893,7 +923,12 @@ def _research_family_comparison_section(summary: dict[str, object]) -> str:
         return ""
     counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
     families = [family for family in summary.get("families", []) if isinstance(family, dict)] if isinstance(summary.get("families"), list) else []
+    approved_backlog = [family for family in summary.get("approved_backlog", []) if isinstance(family, dict)] if isinstance(summary.get("approved_backlog"), list) else []
     rows = "".join(_research_family_row(family) for family in families[:8]) or "<tr><td colspan='8'>No research family proposals recorded.</td></tr>"
+    backlog_items = "".join(
+        f"<li>{escape(str(family.get('title', family.get('proposal_id', 'unknown family'))))} ({escape(str(family.get('plan_id', 'none') or 'none'))})</li>"
+        for family in approved_backlog[:5]
+    ) or "<li>No approved standby families recorded.</li>"
     return f"""
     <section class="panel">
       <h2>Research Family Comparison</h2>
@@ -904,7 +939,11 @@ def _research_family_comparison_section(summary: dict[str, object]) -> str:
         {_summary_card("queued", str(counts.get("queued", 0)))}
         {_summary_card("active", str(counts.get("active", 0)))}
         {_summary_card("under review", str(counts.get("under_review", 0)))}
+        {_summary_card("standby backlog", str(summary.get("approved_backlog_depth", 0) or 0))}
+        {_summary_card("backlog status", str(summary.get("approved_backlog_status", "empty") or "empty"))}
       </section>
+      <p><strong>Approved backlog:</strong> {escape(str(summary.get("approved_backlog_message", "No approved backlog summary is available.") or "No approved backlog summary is available."))}</p>
+      <ul>{backlog_items}</ul>
       <table>
         <thead><tr><th>Proposal</th><th>Status</th><th>Approval</th><th>Novelty</th><th>Readiness</th><th>Recommendation</th><th>Plan</th><th>Program</th></tr></thead>
         <tbody>{rows}</tbody>
@@ -1022,8 +1061,11 @@ def _runbook_queue_summary_section(summary: dict[str, object]) -> str:
         {_summary_card("enabled", str(counts.get("enabled", 0)))}
         {_summary_card("blocked", str(counts.get("blocked", 0)))}
         {_summary_card("untracked", str(counts.get("untracked", 0)))}
+        {_summary_card("continuity", str(summary.get("continuity_status", "empty") or "empty"))}
+        {_summary_card("standby ready", str(summary.get("standby_ready_depth", 0) or 0))}
       </section>
       <p>{escape(str(summary.get("message", "No runbook summary is available.")))}</p>
+      <p><strong>Queue continuity:</strong> {escape(str(summary.get("continuity_message", "No queue continuity summary is available.") or "No queue continuity summary is available."))}</p>
       {f"<ul>{warning_items}</ul>" if warnings else ""}
       <table>
         <thead><tr><th>Plan</th><th>Status</th><th>Enabled</th><th>Program</th><th>Director</th><th>Detail</th></tr></thead>

@@ -6,10 +6,11 @@ from html import escape
 import json
 import os
 from pathlib import Path, PurePosixPath
+import socketserver
 from typing import Callable
 from urllib.parse import parse_qs
 import uuid
-from wsgiref.simple_server import make_server
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.active_branch import build_active_branch_summary
@@ -41,6 +42,10 @@ from trotters_trader.research_runtime import (
     stop_campaign,
     stop_director,
 )
+
+
+class _ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
+    daemon_threads = True
 
 
 @dataclass(frozen=True)
@@ -341,10 +346,32 @@ class ApiController:
         )
 
     def readiness(self) -> dict[str, object]:
-        overview = self.overview()
+        status = runtime_status(self._paths)
+        active_directors = [
+            dict(director)
+            for director in status.get("directors", [])
+            if isinstance(director, dict) and str(director.get("status", "")).lower() in {"queued", "running", "paused"}
+        ] if isinstance(status.get("directors"), list) else []
+        active_campaigns = [
+            dict(campaign)
+            for campaign in status.get("campaigns", [])
+            if isinstance(campaign, dict) and str(campaign.get("status", "")).lower() in {"queued", "running"}
+        ] if isinstance(status.get("campaigns"), list) else []
+        service_heartbeats = [
+            dict(record)
+            for record in status.get("service_heartbeats", [])
+            if isinstance(record, dict)
+        ] if isinstance(status.get("service_heartbeats"), list) else []
         return {
             "ready": True,
-            "health": overview.get("health", {}),
+            "health": _runtime_health(
+                status=status,
+                campaigns=active_campaigns,
+                directors=active_directors,
+                next_family_status=None,
+            ),
+            "counts": dict(status.get("counts", {})) if isinstance(status.get("counts"), dict) else {},
+            "service_heartbeats": service_heartbeats,
         }
 
 
@@ -565,7 +592,7 @@ def serve_api(
 ) -> dict[str, object]:
     auth_token = os.environ.get("TROTTERS_API_TOKEN", "").strip()
     app = ApiApp(ApiController(paths), auth_token=auth_token)
-    with make_server(host, port, app) as server:
+    with make_server(host, port, app, server_class=_ThreadingWSGIServer, handler_class=WSGIRequestHandler) as server:
         print(f"Research API listening on http://{host}:{port}", flush=True)
         server.serve_forever()
     return {"host": host, "port": port}
@@ -826,7 +853,7 @@ def _resolve_repo_config_path(value: object, *, expected_root: PurePosixPath, su
 
 def _load_plan_payload(path_text: str) -> dict[str, object]:
     path = Path.cwd() / Path(*PurePosixPath(path_text).parts)
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError(f"Director plan '{path_text}' must contain a JSON object")
     return payload

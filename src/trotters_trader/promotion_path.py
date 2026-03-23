@@ -758,7 +758,7 @@ def _load_runbook() -> dict[str, object]:
     if not path.exists():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}

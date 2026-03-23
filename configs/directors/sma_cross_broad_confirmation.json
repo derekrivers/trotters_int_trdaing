@@ -1,0 +1,14 @@
+﻿{
+  "plan_name": "sma_cross_broad_confirmation",
+  "campaigns": [
+    {
+      "campaign_name": "sma-cross-confirmation-primary",
+      "config_path": "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 36,
+      "shortlist_size": 3,
+      "quality_gate": "pass_warn"
+    }
+  ]
+}

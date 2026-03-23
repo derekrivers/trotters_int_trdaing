@@ -1,0 +1,55 @@
+﻿{
+  "program_id": "sma_cross_broad_confirmation_program",
+  "title": "Broad SMA Cross Confirmation Program",
+  "strategy_family": "sma_cross",
+  "objective": "Run one slower absolute-trend confirmation branch on the broad universe and decide whether a more patient SMA-cross family deserves promotion-path follow-up or retirement.",
+  "branch_rationale": "The fast SMA-cross reentry branch retired, but that does not settle whether slower absolute-trend confirmation can reduce benchmark-relative fragility. This branch keeps the same engine while materially changing the evidence shape.",
+  "positive_hypotheses": [
+    "Slower confirmation can reduce false-positive reentries that likely hurt the earlier SMA-cross branch.",
+    "A smaller basket with longer holding periods can preserve trend exposure while improving split stability."
+  ],
+  "seed_stack": [
+    {
+      "label": "Retired SMA-cross control",
+      "profile_name": "sma_cross_broad_candidate_n8_sw20_lw100_st015",
+      "config_path": "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml",
+      "rationale": "Reference control for the retired faster SMA-cross family."
+    },
+    {
+      "label": "SMA-cross confirmation seed",
+      "profile_name": "sma_cross_broad_candidate_n6_sw50_lw150_st010",
+      "config_path": "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+      "rationale": "Repo-backed slower confirmation branch using the existing SMA-cross strategy with a more selective evidence profile."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "sma_cross_confirmation_seed",
+      "label": "SMA-Cross Confirmation Seed",
+      "profile_name": "sma_cross_broad_candidate_n6_sw50_lw150_st010",
+      "config_path": "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+      "purpose": "Execute the slower absolute-trend confirmation family and decide whether it should be promoted or retired."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "sma_cross_confirmation_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The confirmation seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ]
+}

@@ -27,6 +27,8 @@ RESEARCH_FAMILY_ALLOWED_APPROVALS = {
     "retired",
     "rejected",
 }
+RESEARCH_FAMILY_READY_STATUSES = {"active", "queued", "approved"}
+RESEARCH_FAMILY_BACKLOG_LOW_WATERMARK = 2
 
 
 def build_research_family_comparison_summary(
@@ -126,16 +128,11 @@ def build_research_family_comparison_summary(
         }
         families.append(record)
 
-    families.sort(key=_family_sort_key, reverse=True)
+    families.sort(key=_family_sort_key)
     current_proposal = _current_research_family(families)
-    next_approved = next(
-        (
-            family
-            for family in families
-            if str(family.get("family_status", "")) in {"queued", "approved", "active"}
-        ),
-        None,
-    )
+    approved_backlog = _approved_backlog(families, current_proposal=current_proposal)
+    approved_backlog_summary = _approved_backlog_summary(approved_backlog)
+    next_approved = approved_backlog[0] if approved_backlog else None
     summary = {
         "schema_version": RESEARCH_FAMILY_SCHEMA_VERSION,
         "summary_type": "research_family_comparison_summary",
@@ -144,6 +141,12 @@ def build_research_family_comparison_summary(
         "families": families,
         "current_proposal": current_proposal,
         "next_approved_family": next_approved,
+        "approved_backlog": approved_backlog,
+        "approved_backlog_depth": approved_backlog_summary["depth"],
+        "approved_backlog_status": approved_backlog_summary["status"],
+        "approved_backlog_message": approved_backlog_summary["message"],
+        "approved_backlog_plan_ids": approved_backlog_summary["plan_ids"],
+        "low_backlog_threshold": RESEARCH_FAMILY_BACKLOG_LOW_WATERMARK,
         "counts": {
             "total": len(families),
             "proposed": sum(1 for family in families if str(family.get("family_status", "")) == "proposed"),
@@ -153,6 +156,8 @@ def build_research_family_comparison_summary(
             "active": sum(1 for family in families if str(family.get("family_status", "")) == "active"),
             "retired": sum(1 for family in families if str(family.get("family_status", "")) == "retired"),
             "rejected": sum(1 for family in families if str(family.get("family_status", "")) == "rejected"),
+            "ready": sum(1 for family in families if str(family.get("family_status", "")) in RESEARCH_FAMILY_READY_STATUSES),
+            "standby": approved_backlog_summary["depth"],
         },
     }
     _write_summary(catalog_output_dir, "research_family_comparison_summary", summary)
@@ -172,8 +177,25 @@ def build_next_family_status(
     director = active_branch.get("director", {}) if isinstance(active_branch.get("director"), dict) else {}
     current_family = family_summary.get("current_proposal", {}) if isinstance(family_summary.get("current_proposal"), dict) else {}
     next_family = family_summary.get("next_approved_family", {}) if isinstance(family_summary.get("next_approved_family"), dict) else {}
+    approved_backlog = [
+        dict(family)
+        for family in family_summary.get("approved_backlog", [])
+        if isinstance(family, dict)
+    ] if isinstance(family_summary.get("approved_backlog"), list) else []
     active_plan_id = str(queue_summary.get("active_plan_id", "") or str(director.get("plan_name", "") or "")).strip()
     next_runnable_plan_id = str(queue_summary.get("next_runnable_plan_id", "") or "").strip()
+    approved_backlog_depth = int(family_summary.get("approved_backlog_depth", len(approved_backlog)) or 0)
+    approved_backlog_status = str(family_summary.get("approved_backlog_status", "") or "")
+    approved_backlog_message = str(family_summary.get("approved_backlog_message", "") or "")
+    approved_backlog_plan_ids = [
+        str(plan_id)
+        for plan_id in family_summary.get("approved_backlog_plan_ids", [])
+        if str(plan_id).strip()
+    ] if isinstance(family_summary.get("approved_backlog_plan_ids"), list) else [
+        str(family.get("plan_id", family.get("proposal_id", "")) or "").strip()
+        for family in approved_backlog
+        if str(family.get("plan_id", family.get("proposal_id", "")) or "").strip()
+    ]
 
     status = "blocked_pending_approval"
     recommended_action = "define_next_research_family"
@@ -235,6 +257,12 @@ def build_next_family_status(
         "next_runnable_plan_id": next_runnable_plan_id or None,
         "current_proposal": current_family,
         "next_approved_family": next_family,
+        "approved_backlog": approved_backlog,
+        "approved_backlog_depth": approved_backlog_depth,
+        "approved_backlog_status": approved_backlog_status,
+        "approved_backlog_message": approved_backlog_message,
+        "approved_backlog_plan_ids": approved_backlog_plan_ids,
+        "low_backlog_threshold": int(family_summary.get("low_backlog_threshold", RESEARCH_FAMILY_BACKLOG_LOW_WATERMARK) or RESEARCH_FAMILY_BACKLOG_LOW_WATERMARK),
     }
     _write_summary(catalog_output_dir, "next_family_status", summary)
     return summary
@@ -350,7 +378,7 @@ def load_research_family_proposal(proposal_id: str) -> dict[str, object]:
 
 
 def load_research_family_proposal_definition(path: Path) -> dict[str, object]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError(f"Research family proposal '{path}' must contain a JSON object")
     required = [
@@ -382,12 +410,60 @@ def _current_research_family(families: list[dict[str, object]]) -> dict[str, obj
     return families[0] if families else None
 
 
-def _family_sort_key(record: dict[str, object]) -> tuple[int, int, str]:
+def _family_sort_key(record: dict[str, object]) -> tuple[int, int, int, str]:
     family_status = str(record.get("family_status", "proposed"))
     approval_status = str(record.get("approval_status", "proposed"))
-    queue_rank = 1 if bool(record.get("queue_enabled", False)) else 0
+    queue_rank = 0 if bool(record.get("queue_enabled", False)) else 1
+    queue_priority = int(record.get("queue_priority", 999) or 999)
     rank = RESEARCH_FAMILY_STATUS_ORDER.get(family_status, RESEARCH_FAMILY_STATUS_ORDER.get(approval_status, 0))
-    return (rank, queue_rank, str(record.get("proposal_id", "")))
+    return (-rank, queue_rank, queue_priority, str(record.get("proposal_id", "")))
+
+
+def _approved_backlog(
+    families: list[dict[str, object]],
+    *,
+    current_proposal: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    ready = [
+        family
+        for family in families
+        if str(family.get("family_status", "")) in RESEARCH_FAMILY_READY_STATUSES
+    ]
+    if not current_proposal or str(current_proposal.get("family_status", "")) not in RESEARCH_FAMILY_READY_STATUSES:
+        return ready
+    current_proposal_id = str(current_proposal.get("proposal_id", "") or "")
+    backlog: list[dict[str, object]] = []
+    skipped_current = False
+    for family in ready:
+        proposal_id = str(family.get("proposal_id", "") or "")
+        if not skipped_current and proposal_id == current_proposal_id:
+            skipped_current = True
+            continue
+        backlog.append(family)
+    return backlog
+
+
+def _approved_backlog_summary(backlog: list[dict[str, object]]) -> dict[str, object]:
+    depth = len(backlog)
+    if depth <= 0:
+        status = "empty"
+        message = "No approved standby families remain beyond the current queue head."
+    elif depth < RESEARCH_FAMILY_BACKLOG_LOW_WATERMARK:
+        status = "low"
+        message = f"Only {depth} approved standby family remains beyond the current queue head."
+    else:
+        status = "healthy"
+        message = f"{depth} approved standby families remain beyond the current queue head."
+    return {
+        "depth": depth,
+        "status": status,
+        "message": message,
+        "plan_ids": [
+            str(family.get("plan_id", family.get("proposal_id", "")) or "").strip()
+            for family in backlog
+            if str(family.get("plan_id", family.get("proposal_id", "")) or "").strip()
+        ],
+    }
 
 
 def _research_family_status(
@@ -474,7 +550,7 @@ def _load_runbook() -> dict[str, object]:
     path = _runbook_path()
     if not path.exists():
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
     return payload if isinstance(payload, dict) else {}
 
 

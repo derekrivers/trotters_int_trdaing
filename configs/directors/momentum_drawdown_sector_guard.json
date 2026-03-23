@@ -1,0 +1,14 @@
+﻿{
+  "plan_name": "momentum_drawdown_sector_guard",
+  "campaigns": [
+    {
+      "campaign_name": "momentum-drawdown-sector-guard-primary",
+      "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 36,
+      "shortlist_size": 3,
+      "quality_gate": "pass_warn"
+    }
+  ]
+}

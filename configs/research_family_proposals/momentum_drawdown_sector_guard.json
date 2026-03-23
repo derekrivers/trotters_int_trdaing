@@ -1,0 +1,84 @@
+﻿{
+  "proposal_id": "momentum_drawdown_sector_guard",
+  "title": "Broad Momentum Drawdown Sector Guard",
+  "strategy_family": "cross_sectional_momentum",
+  "hypothesis": "A drawdown-penalized broad momentum branch with sector and benchmark-bucket caps can test whether the family remains salvageable when the basket is forced away from the concentrated late-period losers that kept breaking holdout evidence.",
+  "why_different_from_retired": [
+    "The retired broad momentum branches mostly relied on raw-score ranking or weighting-only changes, while this branch combines drawdown-penalized scoring with explicit sector and benchmark-bucket caps in one bounded family.",
+    "This branch keeps the repo's strongest engine in play, but it changes both candidate ranking and portfolio concentration controls instead of reopening the exact retired broad-momentum queue."
+  ],
+  "success_criteria": [
+    "The guarded momentum seed must pass the existing validation, holdout, and walk-forward promotion policy without exceptions before it can move toward paper-trade preparation.",
+    "If it fails, it must still produce enough evidence to decide whether concentration-aware momentum deserves future backlog space or should be retired explicitly."
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The guarded momentum seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ],
+  "approval_status": "approved",
+  "novelty_vs_retired": "material",
+  "implementation_readiness": "ready",
+  "expected_evidence_cost": "medium",
+  "promotion_path_compatibility": "compatible",
+  "recorded_at_utc": "2026-03-23T18:30:00+00:00",
+  "bootstrap": {
+    "plan_id": "momentum_drawdown_sector_guard",
+    "program_id": "momentum_drawdown_sector_guard_program",
+    "program_title": "Broad Momentum Drawdown Sector Guard Program",
+    "director_name": "momentum-drawdown-sector-guard-director",
+    "campaign_name": "momentum-drawdown-sector-guard-primary",
+    "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml",
+    "quality_gate": "pass_warn",
+    "campaign_max_hours": 24,
+    "campaign_max_jobs": 1500,
+    "stage_candidate_limit": 36,
+    "shortlist_size": 3,
+    "queue_priority": 8,
+    "objective": "Run one concentration-aware drawdown-penalized momentum branch so the system can decide whether broad momentum still has a materially new guarded path left.",
+    "branch_rationale": "Broad momentum remains the strongest engine in the repo, but it has retired under weaker concentration controls. This branch is the bounded test for whether guarded ranking plus sector discipline can justify keeping the family alive.",
+    "positive_hypotheses": [
+      "Drawdown-penalized scoring can filter the late-period names that kept damaging holdout evidence.",
+      "Sector and benchmark-bucket caps can prevent the basket from collapsing back into one concentration pattern even when the ranking engine finds attractive short-term winners."
+    ],
+    "seed_stack": [
+      {
+        "label": "Retired drawdown control",
+        "profile_name": "momentum_broad_candidate_drawdown_n4_ms002_rf63",
+        "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_n4_ms002_rf63.toml",
+        "rationale": "Reference control for the earlier drawdown-penalized broad-momentum attempt."
+      },
+      {
+        "label": "Drawdown sector-guard seed",
+        "profile_name": "momentum_broad_candidate_drawdown_sector_n6_ms002_rf42",
+        "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml",
+        "rationale": "Repo-backed guarded momentum branch combining drawdown-aware ranking with basket concentration controls."
+      }
+    ],
+    "campaign_path": [
+      {
+        "step_id": "drawdown_sector_guard_seed",
+        "label": "Momentum Drawdown Sector Guard Seed",
+        "profile_name": "momentum_broad_candidate_drawdown_sector_n6_ms002_rf42",
+        "config_path": "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml",
+        "purpose": "Execute the guarded momentum family and decide whether it should be promoted or retired."
+      }
+    ],
+    "artifact_expectations": [
+      {
+        "step_id": "drawdown_sector_guard_seed",
+        "artifacts": [
+          "promotion",
+          "operability_program",
+          "operator_scorecard",
+          "research_program"
+        ]
+      }
+    ]
+  }
+}

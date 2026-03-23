@@ -1,67 +1,91 @@
-{
-  "version": 1,
-  "work_queue": [
-    {
-      "plan_id": "broad_operability",
-      "plan_file": "configs/directors/broad_operability.json",
-      "director_name": "broad-operability-director",
-      "enabled": false,
-      "priority": 1
-    },
-    {
-      "plan_id": "beta_defensive_continuation",
-      "plan_file": "configs/directors/beta_defensive_continuation.json",
-      "director_name": "beta-defensive-director",
-      "enabled": false,
-      "priority": 2
-    },
-    {
-      "plan_id": "refine_seed_continuation",
-      "plan_file": "configs/directors/refine_seed_continuation.json",
-      "director_name": "refine-seed-director",
-      "enabled": false,
-      "priority": 3
-    },
-    {
-      "plan_id": "mean_reversion_broad_reentry",
-      "plan_file": "configs/directors/mean_reversion_broad_reentry.json",
-      "director_name": "mean-reversion-director",
-      "enabled": false,
-      "priority": 4
-    },
-    {
-      "plan_id": "sma_cross_broad_reentry",
-      "plan_file": "configs/directors/sma_cross_broad_reentry.json",
-      "director_name": "sma-cross-director",
-      "enabled": true,
-      "priority": 5
-    }
-  ],
-  "config_registry": {
-    "broad_primary": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
-    "broad_sector_pivot": "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
-    "broad_beta_pivot": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
-    "broad_beta_defensive": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
-    "broad_refine_seed": "configs/eodhd_momentum_broad_candidate_refine_n4_ms002_rf63.toml",
-    "broad_sma_cross_seed": "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml"
-  },
-  "service_allowlist": [
-    "research-api",
-    "coordinator",
-    "campaign-manager",
-    "research-director",
-    "worker"
-  ],
-  "agent_allowlist": [
-    "research-triage",
-    "candidate-review",
-    "paper-trade-readiness",
-    "failure-postmortem"
-  ],
-  "limits": {
-    "max_same_item_recoveries": 2,
-    "recovery_window_hours": 12,
-    "max_service_restarts_per_service_15m": 1,
-    "max_service_restarts_per_service_24h": 2
-  }
+﻿{
+    "version":  1,
+    "work_queue":  [
+                       {
+                           "plan_id":  "broad_operability",
+                           "plan_file":  "configs/directors/broad_operability.json",
+                           "director_name":  "broad-operability-director",
+                           "enabled":  false,
+                           "priority":  1
+                       },
+                       {
+                           "plan_id":  "beta_defensive_continuation",
+                           "plan_file":  "configs/directors/beta_defensive_continuation.json",
+                           "director_name":  "beta-defensive-director",
+                           "enabled":  false,
+                           "priority":  2
+                       },
+                       {
+                           "plan_id":  "refine_seed_continuation",
+                           "plan_file":  "configs/directors/refine_seed_continuation.json",
+                           "director_name":  "refine-seed-director",
+                           "enabled":  false,
+                           "priority":  3
+                       },
+                       {
+                           "plan_id":  "mean_reversion_broad_reentry",
+                           "plan_file":  "configs/directors/mean_reversion_broad_reentry.json",
+                           "director_name":  "mean-reversion-director",
+                           "enabled":  false,
+                           "priority":  4
+                       },
+                       {
+                           "plan_id":  "sma_cross_broad_reentry",
+                           "plan_file":  "configs/directors/sma_cross_broad_reentry.json",
+                           "director_name":  "sma-cross-director",
+                           "enabled":  false,
+                           "priority":  5
+                       },
+                       {
+                           "plan_id":  "sma_cross_broad_confirmation",
+                           "plan_file":  "configs/directors/sma_cross_broad_confirmation.json",
+                           "director_name":  "sma-cross-confirmation-director",
+                           "enabled":  true,
+                           "priority":  6
+                       },
+                       {
+                           "plan_id":  "mean_reversion_broad_fastcycle",
+                           "plan_file":  "configs/directors/mean_reversion_broad_fastcycle.json",
+                           "director_name":  "mean-reversion-fastcycle-director",
+                           "enabled":  true,
+                           "priority":  7
+                       },
+                       {
+                           "plan_id":  "momentum_drawdown_sector_guard",
+                           "plan_file":  "configs/directors/momentum_drawdown_sector_guard.json",
+                           "director_name":  "momentum-drawdown-sector-guard-director",
+                           "enabled":  true,
+                           "priority":  8
+                       }
+                   ],
+    "config_registry":  {
+                            "broad_primary":  "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
+                            "broad_sector_pivot":  "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
+                            "broad_beta_pivot":  "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+                            "broad_beta_defensive":  "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
+                            "broad_refine_seed":  "configs/eodhd_momentum_broad_candidate_refine_n4_ms002_rf63.toml",
+                            "broad_sma_cross_seed":  "configs/eodhd_sma_cross_broad_candidate_n8_sw20_lw100_st015.toml",
+                            "broad_sma_cross_confirmation":  "configs/eodhd_sma_cross_broad_candidate_n6_sw50_lw150_st010.toml",
+                            "broad_mean_reversion_fastcycle":  "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+                            "broad_momentum_drawdown_sector_guard":  "configs/eodhd_momentum_broad_candidate_drawdown_sector_n6_ms002_rf42.toml"
+                        },
+    "service_allowlist":  [
+                              "research-api",
+                              "coordinator",
+                              "campaign-manager",
+                              "research-director",
+                              "worker"
+                          ],
+    "agent_allowlist":  [
+                            "research-triage",
+                            "candidate-review",
+                            "paper-trade-readiness",
+                            "failure-postmortem"
+                        ],
+    "limits":  {
+                   "max_same_item_recoveries":  2,
+                   "recovery_window_hours":  12,
+                   "max_service_restarts_per_service_15m":  1,
+                   "max_service_restarts_per_service_24h":  2
+               }
 }

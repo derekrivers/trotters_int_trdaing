@@ -9,7 +9,7 @@ from trotters_trader.reports import safe_artifact_dirname
 
 
 def load_research_program_definition(path: Path) -> dict[str, object]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError(f"Research program definition '{path}' must contain a JSON object")
     return payload

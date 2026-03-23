@@ -5,10 +5,10 @@ from pathlib import Path
 import json
 import shutil
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import uuid
 
-from trotters_trader.api import ApiApp, ApiController
+from trotters_trader.api import ApiApp, ApiController, _ThreadingWSGIServer, serve_api
 from trotters_trader.research_runtime import runtime_paths
 
 
@@ -23,6 +23,38 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertEqual(dict(headers)["Content-Type"], "text/plain; charset=utf-8")
         self.assertEqual(body, "ok")
+
+    def test_readyz_returns_lightweight_health_without_full_overview(self) -> None:
+        root = self._workspace_root("readyz")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with (
+                patch(
+                    "trotters_trader.api.runtime_status",
+                    return_value={
+                        "counts": {"queued": 1, "running": 0},
+                        "workers": [{"worker_id": "worker-01", "status": "idle", "heartbeat_at": "2999-03-23T08:59:59+00:00"}],
+                        "jobs": [],
+                        "campaigns": [],
+                        "directors": [],
+                        "service_heartbeats": [
+                            {"service": "coordinator", "status": "ok", "recorded_at_utc": "2999-03-23T08:59:59+00:00", "detail": "Heartbeat is fresh."},
+                        ],
+                    },
+                ),
+                patch.object(ApiController, "overview", side_effect=AssertionError("readyz should not call overview")),
+            ):
+                status, headers, body = self._invoke(app, "GET", "/readyz")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(dict(headers)["Content-Type"], "application/json; charset=utf-8")
+        self.assertTrue(payload["ready"])
+        self.assertEqual(payload["counts"], {"queued": 1, "running": 0})
+        self.assertIn("health", payload)
 
     def test_runtime_overview_returns_json_health_snapshot(self) -> None:
         root = self._workspace_root("overview")
@@ -942,6 +974,73 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Research runtime is intentionally blocked", payload["health"]["summary"])
         queue_check = next(check for check in payload["health"]["checks"] if check["name"] == "queue governance")
         self.assertIn("retired and cannot re-enter the queue", queue_check["detail"])
+
+    def test_runtime_overview_exposes_next_family_backlog_fields(self) -> None:
+        root = self._workspace_root("next_family_backlog")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with (
+                patch(
+                    "trotters_trader.api.runtime_status",
+                    return_value={
+                        "counts": {"queued": 0, "running": 0},
+                        "workers": [{"worker_id": "worker-01", "status": "idle", "heartbeat_at": "2999-03-23T08:59:59+00:00"}],
+                        "jobs": [],
+                        "campaigns": [],
+                        "directors": [],
+                        "service_heartbeats": [
+                            {"service": "coordinator", "status": "ok", "recorded_at_utc": "2999-03-23T08:59:59+00:00", "detail": "Heartbeat is fresh."},
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.api.build_next_family_status",
+                    return_value={
+                        "status": "queued",
+                        "recommended_action": "start_approved_family",
+                        "message": "Approved family 'sma_cross_broad_confirmation' is queued and ready for controlled resumption.",
+                        "blocking_reason": "",
+                        "next_runnable_plan_id": "sma_cross_broad_confirmation",
+                        "approved_backlog_depth": 2,
+                        "approved_backlog_status": "healthy",
+                        "approved_backlog_message": "2 approved standby families remain beyond the current queue head.",
+                        "approved_backlog_plan_ids": ["mean_reversion_broad_fastcycle", "momentum_drawdown_sector_guard"],
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/api/v1/runtime/overview", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["next_family_status"]["approved_backlog_depth"], 2)
+        self.assertEqual(payload["next_family_status"]["approved_backlog_status"], "healthy")
+        self.assertEqual(
+            payload["next_family_status"]["approved_backlog_plan_ids"],
+            ["mean_reversion_broad_fastcycle", "momentum_drawdown_sector_guard"],
+        )
+
+    def test_serve_api_uses_threaded_wsgi_server(self) -> None:
+        root = self._workspace_root("serve_api")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            server = MagicMock()
+            server.__enter__.return_value = server
+            server.__exit__.return_value = False
+            server.serve_forever.side_effect = RuntimeError("stop-server")
+            with (
+                patch.dict("os.environ", {"TROTTERS_API_TOKEN": self.AUTH_TOKEN}, clear=False),
+                patch("trotters_trader.api.make_server", return_value=server) as make_server,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stop-server"):
+                    serve_api(paths, host="127.0.0.1", port=8890)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertIs(make_server.call_args.kwargs["server_class"], _ThreadingWSGIServer)
+
     def _invoke(
         self,
         app: ApiApp,

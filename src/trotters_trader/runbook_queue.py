@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+QUEUE_CONTINUITY_LOW_WATERMARK = 2
+
 
 def build_runbook_queue_summary(
     *,
@@ -115,7 +117,12 @@ def build_runbook_queue_summary(
             }
         )
 
-    next_runnable = _next_runnable_entry(entries, start_index=(active_entry_index + 1) if isinstance(active_entry_index, int) else 0)
+    continuity_entries = _standby_ready_entries(
+        entries,
+        start_index=(active_entry_index + 1) if isinstance(active_entry_index, int) else 0,
+    )
+    continuity = _continuity_summary(continuity_entries)
+    next_runnable = continuity_entries[0] if continuity_entries else None
     if next_runnable is None and entries:
         if not active_plan_id and any(bool(entry.get("enabled", False)) for entry in entries):
             warnings.append(
@@ -152,6 +159,11 @@ def build_runbook_queue_summary(
         "recommended_action": _recommended_action(warnings, next_runnable, active_plan_id=active_plan_id),
         "active_plan_id": active_plan_id or None,
         "next_runnable_plan_id": str(next_runnable.get("plan_id", "") or "") if isinstance(next_runnable, dict) else None,
+        "standby_ready_depth": continuity["depth"],
+        "continuity_status": continuity["status"],
+        "continuity_message": continuity["message"],
+        "standby_ready_plan_ids": continuity["plan_ids"],
+        "low_backlog_threshold": QUEUE_CONTINUITY_LOW_WATERMARK,
         "counts": counts,
         "entries": entries,
         "warnings": warnings,
@@ -285,6 +297,37 @@ def _next_runnable_entry(entries: list[dict[str, object]], *, start_index: int) 
     return None
 
 
+def _standby_ready_entries(entries: list[dict[str, object]], *, start_index: int) -> list[dict[str, object]]:
+    return [
+        entry
+        for entry in entries[start_index:]
+        if str(entry.get("queue_status", "")) == "ready"
+    ]
+
+
+def _continuity_summary(entries: list[dict[str, object]]) -> dict[str, object]:
+    depth = len(entries)
+    if depth <= 0:
+        status = "empty"
+        message = "No ready standby queue items remain after the current queue head."
+    elif depth < QUEUE_CONTINUITY_LOW_WATERMARK:
+        status = "low"
+        message = f"Only {depth} ready standby queue item remains after the current queue head."
+    else:
+        status = "healthy"
+        message = f"{depth} ready standby queue items remain after the current queue head."
+    return {
+        "depth": depth,
+        "status": status,
+        "message": message,
+        "plan_ids": [
+            str(entry.get("plan_id", "") or "").strip()
+            for entry in entries
+            if str(entry.get("plan_id", "") or "").strip()
+        ],
+    }
+
+
 def _summary_status(warnings: list[dict[str, object]], next_runnable: dict[str, object] | None) -> str:
     if warnings:
         return "attention"
@@ -338,7 +381,7 @@ def _load_runbook() -> dict[str, object]:
     if not path.exists():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}

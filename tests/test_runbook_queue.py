@@ -121,6 +121,8 @@ class RunbookQueueTests(unittest.TestCase):
         self.assertEqual(summary["status"], "ready")
         self.assertEqual(summary["next_runnable_plan_id"], "approved_family")
         self.assertEqual(summary["recommended_action"], "start_approved_family")
+        self.assertEqual(summary["continuity_status"], "low")
+        self.assertEqual(summary["standby_ready_depth"], 1)
 
     def test_build_runbook_queue_summary_stays_aligned_when_last_active_plan_has_no_followup(self) -> None:
         with patch(
@@ -157,6 +159,7 @@ class RunbookQueueTests(unittest.TestCase):
         self.assertEqual(summary["status"], "aligned")
         self.assertEqual(summary["next_runnable_plan_id"], None)
         self.assertEqual(summary["recommended_action"], "monitor_active_plan")
+        self.assertEqual(summary["continuity_status"], "empty")
         warning_codes = {warning["code"] for warning in summary["warnings"]}
         self.assertNotIn("no_next_runnable_queue_item", warning_codes)
 
@@ -216,6 +219,39 @@ class RunbookQueueTests(unittest.TestCase):
 
         self.assertEqual(summary["entries"][0]["queue_status"], "blocked_pending_approval")
         self.assertEqual(summary["recommended_action"], "approve_research_family")
+
+    def test_build_runbook_queue_summary_reports_healthy_continuity_for_multi_item_backlog(self) -> None:
+        with patch(
+            "trotters_trader.runbook_queue._load_runbook",
+            return_value={
+                "work_queue": [
+                    {"plan_id": "alpha_family", "director_name": "alpha-family-director", "enabled": True, "priority": 1},
+                    {"plan_id": "beta_family", "director_name": "beta-family-director", "enabled": True, "priority": 2},
+                    {"plan_id": "gamma_family", "director_name": "gamma-family-director", "enabled": True, "priority": 3},
+                ]
+            },
+        ):
+            summary = build_runbook_queue_summary(
+                active_branch_summary={"director": {"plan_name": "alpha_family"}},
+                research_program_portfolio={
+                    "programs": [
+                        {"queue_plan_id": "alpha_family", "title": "Alpha Family Program", "status": "active"},
+                        {"queue_plan_id": "beta_family", "title": "Beta Family Program", "status": "active"},
+                        {"queue_plan_id": "gamma_family", "title": "Gamma Family Program", "status": "active"},
+                    ]
+                },
+                research_family_comparison_summary={
+                    "families": [
+                        {"plan_id": "alpha_family", "proposal_id": "alpha_family", "approval_status": "approved", "family_status": "queued"},
+                        {"plan_id": "beta_family", "proposal_id": "beta_family", "approval_status": "approved", "family_status": "queued"},
+                        {"plan_id": "gamma_family", "proposal_id": "gamma_family", "approval_status": "approved", "family_status": "queued"},
+                    ]
+                },
+            )
+
+        self.assertEqual(summary["continuity_status"], "healthy")
+        self.assertEqual(summary["standby_ready_depth"], 2)
+        self.assertEqual(summary["standby_ready_plan_ids"], ["beta_family", "gamma_family"])
 
 
 if __name__ == "__main__":

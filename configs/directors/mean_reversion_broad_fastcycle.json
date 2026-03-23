@@ -1,0 +1,14 @@
+﻿{
+  "plan_name": "mean_reversion_broad_fastcycle",
+  "campaigns": [
+    {
+      "campaign_name": "mean-reversion-fastcycle-primary",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+      "campaign_max_hours": 24,
+      "campaign_max_jobs": 1500,
+      "stage_candidate_limit": 36,
+      "shortlist_size": 3,
+      "quality_gate": "pass_warn"
+    }
+  ]
+}

@@ -7,10 +7,10 @@ import base64
 import json
 import shutil
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import uuid
 
-from trotters_trader.dashboard import DashboardApp, DashboardController
+from trotters_trader.dashboard import DashboardApp, DashboardController, _ThreadingWSGIServer, serve_dashboard
 from trotters_trader.research_runtime import runtime_paths
 
 
@@ -1492,6 +1492,67 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Research runtime is intentionally blocked", body)
         self.assertIn("queue governance", body)
         self.assertIn("Current family proposal &#x27;sma-cross&#x27; is retired and cannot re-enter the queue.", body)
+
+    def test_overview_renders_approved_backlog_status_for_next_family(self) -> None:
+        root = self._workspace_root("next_family_backlog")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 0, "running": 0},
+                        "workers": [{"worker_id": "worker-01", "status": "idle", "heartbeat_at": "2999-03-23T08:59:59+00:00"}],
+                        "jobs": [],
+                        "campaigns": [],
+                        "directors": [],
+                        "service_heartbeats": [
+                            {"service": "coordinator", "label": "Coordinator", "status": "ok", "recorded_at_utc": "2999-03-23T08:59:59+00:00", "pid": 101, "detail": "Heartbeat is fresh."},
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.build_next_family_status",
+                    return_value={
+                        "status": "queued",
+                        "recommended_action": "start_approved_family",
+                        "message": "Approved family 'sma_cross_broad_confirmation' is queued and ready for controlled resumption.",
+                        "blocking_reason": "",
+                        "next_runnable_plan_id": "sma_cross_broad_confirmation",
+                        "approved_backlog_depth": 2,
+                        "approved_backlog_status": "healthy",
+                        "approved_backlog_message": "2 approved standby families remain beyond the current queue head.",
+                        "approved_backlog_plan_ids": ["mean_reversion_broad_fastcycle", "momentum_drawdown_sector_guard"],
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("approved standby", body)
+        self.assertIn("backlog status", body)
+        self.assertIn("2 approved standby families remain beyond the current queue head.", body)
+        self.assertIn("mean_reversion_broad_fastcycle", body)
+
+    def test_serve_dashboard_uses_threaded_wsgi_server(self) -> None:
+        root = self._workspace_root("serve_dashboard")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            server = MagicMock()
+            server.__enter__.return_value = server
+            server.__exit__.return_value = False
+            server.serve_forever.side_effect = RuntimeError("stop-server")
+            with patch("trotters_trader.dashboard.make_server", return_value=server) as make_server:
+                with self.assertRaisesRegex(RuntimeError, "stop-server"):
+                    serve_dashboard(paths, host="127.0.0.1", port=8888, refresh_seconds=0)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertIs(make_server.call_args.kwargs["server_class"], _ThreadingWSGIServer)
+
     def _invoke(
         self,
         app: DashboardApp,

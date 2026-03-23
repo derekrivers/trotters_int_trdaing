@@ -408,3 +408,11 @@ Governed idle health alignment checkpoint on March 23, 2026:
 - API overview and dashboard health now report `blocked` when no director, campaign, or queued work remains and `next_family_status` is governance-blocked
 - the health panel now adds an explicit `queue governance` check so the operator can see why the runtime is intentionally stopped without having to infer it from a separate panel
 - the dashboard live-runtime section now says the stack is blocked by queue governance instead of simply idle when the current approved family has retired
+
+Approved backlog continuity checkpoint on March 23, 2026:
+
+- the governed runtime no longer depends on one approved family at a time; family and queue summaries now expose standby backlog depth and low-backlog state explicitly
+- the runbook queue now carries three fresh approved follow-up families with new plan IDs instead of re-enabling already-retired branches
+- the first new head is `sma_cross_broad_confirmation`, followed by `mean_reversion_broad_fastcycle` and `momentum_drawdown_sector_guard`
+- the live runtime was resumed on `sma-cross-confirmation-director` / `sma-cross-confirmation-primary`, and the queue still retains two approved standby families behind the active head
+- config JSON readers were hardened to accept UTF-8 BOM files so Windows-authored governance artifacts do not break the live stack

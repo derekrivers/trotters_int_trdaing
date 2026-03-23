@@ -1,0 +1,84 @@
+﻿{
+  "proposal_id": "mean_reversion_broad_fastcycle",
+  "title": "Broad Mean-Reversion Fast Cycle",
+  "strategy_family": "mean_reversion",
+  "hypothesis": "A faster mean-reversion cycle with tighter oversold entry and sector caps can test whether the family failed because the earlier branch stayed in positions too long rather than because mean reversion is categorically wrong.",
+  "why_different_from_retired": [
+    "The retired mean-reversion branch used a 14-day cadence and a broader 12-name basket, while this branch tightens the score threshold, reduces the basket to 10 names, and recycles every 10 days.",
+    "This branch also adds sector and industry caps so the evidence tests whether faster recycling plus diversification control can preserve any short-horizon edge without reopening the exact retired branch."
+  ],
+  "success_criteria": [
+    "The fast-cycle seed must pass the existing validation, holdout, and walk-forward promotion policy without exceptions before it can move toward paper-trade preparation.",
+    "If it fails, it must still produce enough evidence to decide whether faster mean reversion should stay in the standby backlog or be retired explicitly."
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The fast-cycle seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ],
+  "approval_status": "approved",
+  "novelty_vs_retired": "material",
+  "implementation_readiness": "ready",
+  "expected_evidence_cost": "medium",
+  "promotion_path_compatibility": "compatible",
+  "recorded_at_utc": "2026-03-23T18:20:00+00:00",
+  "bootstrap": {
+    "plan_id": "mean_reversion_broad_fastcycle",
+    "program_id": "mean_reversion_broad_fastcycle_program",
+    "program_title": "Broad Mean-Reversion Fast Cycle Program",
+    "director_name": "mean-reversion-fastcycle-director",
+    "campaign_name": "mean-reversion-fastcycle-primary",
+    "config_path": "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+    "quality_gate": "pass_warn",
+    "campaign_max_hours": 24,
+    "campaign_max_jobs": 1500,
+    "stage_candidate_limit": 36,
+    "shortlist_size": 3,
+    "queue_priority": 7,
+    "objective": "Run one tighter mean-reversion branch that explicitly tests faster recycling and diversification controls before the family is retired for good.",
+    "branch_rationale": "The first mean-reversion branch retired, but it did so on a slower cadence with a broader basket. This branch keeps the family in-bounds while materially changing the execution profile.",
+    "positive_hypotheses": [
+      "A shorter recycle window can realize short-horizon mean-reversion before positions drift into trend-following noise.",
+      "Sector and industry caps can prevent the family from concentrating into one weak pocket of the broad universe."
+    ],
+    "seed_stack": [
+      {
+        "label": "Retired mean-reversion control",
+        "profile_name": "mean_reversion_broad_candidate_n12_ms004_rf14",
+        "config_path": "configs/eodhd_mean_reversion_broad_candidate_n12_ms004_rf14.toml",
+        "rationale": "Reference control for the first retired mean-reversion family."
+      },
+      {
+        "label": "Mean-reversion fast-cycle seed",
+        "profile_name": "mean_reversion_broad_candidate_n10_ms003_rf10",
+        "config_path": "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+        "rationale": "Repo-backed faster mean-reversion branch with tighter entry and diversification controls."
+      }
+    ],
+    "campaign_path": [
+      {
+        "step_id": "mean_reversion_fastcycle_seed",
+        "label": "Mean-Reversion Fast-Cycle Seed",
+        "profile_name": "mean_reversion_broad_candidate_n10_ms003_rf10",
+        "config_path": "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+        "purpose": "Execute the faster mean-reversion family and decide whether it should be promoted or retired."
+      }
+    ],
+    "artifact_expectations": [
+      {
+        "step_id": "mean_reversion_fastcycle_seed",
+        "artifacts": [
+          "promotion",
+          "operability_program",
+          "operator_scorecard",
+          "research_program"
+        ]
+      }
+    ]
+  }
+}

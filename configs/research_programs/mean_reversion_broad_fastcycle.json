@@ -1,0 +1,55 @@
+﻿{
+  "program_id": "mean_reversion_broad_fastcycle_program",
+  "title": "Broad Mean-Reversion Fast Cycle Program",
+  "strategy_family": "mean_reversion",
+  "objective": "Run one tighter mean-reversion branch that explicitly tests faster recycling and diversification controls before the family is retired for good.",
+  "branch_rationale": "The first mean-reversion branch retired, but it did so on a slower cadence with a broader basket. This branch keeps the family in-bounds while materially changing the execution profile.",
+  "positive_hypotheses": [
+    "A shorter recycle window can realize short-horizon mean-reversion before positions drift into trend-following noise.",
+    "Sector and industry caps can prevent the family from concentrating into one weak pocket of the broad universe."
+  ],
+  "seed_stack": [
+    {
+      "label": "Retired mean-reversion control",
+      "profile_name": "mean_reversion_broad_candidate_n12_ms004_rf14",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n12_ms004_rf14.toml",
+      "rationale": "Reference control for the first retired mean-reversion family."
+    },
+    {
+      "label": "Mean-reversion fast-cycle seed",
+      "profile_name": "mean_reversion_broad_candidate_n10_ms003_rf10",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+      "rationale": "Repo-backed faster mean-reversion branch with tighter entry and diversification controls."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "mean_reversion_fastcycle_seed",
+      "label": "Mean-Reversion Fast-Cycle Seed",
+      "profile_name": "mean_reversion_broad_candidate_n10_ms003_rf10",
+      "config_path": "configs/eodhd_mean_reversion_broad_candidate_n10_ms003_rf10.toml",
+      "purpose": "Execute the faster mean-reversion family and decide whether it should be promoted or retired."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "mean_reversion_fastcycle_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The fast-cycle seed passes validation, holdout, and walk-forward promotion rules under the current policy."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The seed records a terminal promotion decision and still fails the policy, especially on benchmark-relative split or walk-forward evidence."
+    }
+  ]
+}
