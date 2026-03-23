@@ -1772,6 +1772,7 @@ def director_manager_loop(
 ) -> dict[str, object]:
     initialize_runtime(paths)
     stepped = 0
+    auto_started_director: dict[str, object] | None = None
     while True:
         write_service_heartbeat(
             paths.runtime_root,
@@ -1796,9 +1797,111 @@ def director_manager_loop(
             except Exception as exc:
                 _handle_director_runtime_error(paths, director_id, exc)
             stepped += 1
+        if not director_ids:
+            auto_started_director = _maybe_start_next_governed_director(paths)
         if once:
-            return {"stepped_directors": stepped, "active_directors": len(director_ids)}
+            return {
+                "stepped_directors": stepped,
+                "active_directors": len(director_ids),
+                "auto_started_director": auto_started_director,
+            }
         time.sleep(max(poll_seconds, 0.1))
+
+
+def _maybe_start_next_governed_director(paths: ResearchRuntimePaths) -> dict[str, object] | None:
+    from trotters_trader.active_branch import build_active_branch_summary
+    from trotters_trader.promotion_path import materialize_promotion_path
+    from trotters_trader.research_families import (
+        build_next_family_status,
+        build_research_family_comparison_summary,
+    )
+    from trotters_trader.runbook_queue import build_runbook_queue_summary
+    from trotters_trader.supervisor_runbook import load_supervisor_runbook, resolve_runbook_plan
+
+    status = runtime_status(paths)
+    if _has_active_runtime(status):
+        return None
+    latest_terminal = _latest_governed_terminal(status)
+    if isinstance(latest_terminal, dict) and str(latest_terminal.get("status", "")).lower() in {"failed", "stopped"}:
+        return None
+
+    promotion_path = materialize_promotion_path(catalog_output_dir=paths.catalog_output_dir)
+    active_branch_summary = build_active_branch_summary(active_directors=[], active_campaigns=[])
+    family_summary = build_research_family_comparison_summary(
+        catalog_output_dir=paths.catalog_output_dir,
+        research_program_portfolio=promotion_path.get("research_program_portfolio"),
+    )
+    queue_summary = build_runbook_queue_summary(
+        active_branch_summary=active_branch_summary,
+        research_program_portfolio=promotion_path.get("research_program_portfolio"),
+        research_family_comparison_summary=family_summary,
+    )
+    next_family_status = build_next_family_status(
+        catalog_output_dir=paths.catalog_output_dir,
+        runbook_queue_summary=queue_summary,
+        research_family_comparison_summary=family_summary,
+        active_branch_summary=active_branch_summary,
+    )
+    if str(next_family_status.get("status", "")).lower() != "queued":
+        return None
+    plan_id = str(next_family_status.get("next_runnable_plan_id", "") or "").strip()
+    if not plan_id:
+        return None
+
+    runbook_path = Path.cwd() / "configs" / "openclaw" / "trotters-runbook.json"
+    runbook = load_supervisor_runbook(runbook_path)
+    work_item = resolve_runbook_plan(runbook, plan_id)
+    if not work_item.enabled:
+        return None
+
+    started = start_director(
+        paths,
+        director_name=work_item.director_name,
+        plan_file_path=work_item.plan_file,
+        adopt_active_campaigns=True,
+    )
+    return {
+        "plan_id": plan_id,
+        "director_id": str(started.get("director_id", "") or ""),
+        "director_name": work_item.director_name,
+        "plan_file": work_item.plan_file,
+    }
+
+
+def _has_active_runtime(status: dict[str, object]) -> bool:
+    directors = status.get("directors")
+    if isinstance(directors, list):
+        for director in directors:
+            if isinstance(director, dict) and str(director.get("status", "")).lower() in {"queued", "running", "paused"}:
+                return True
+    campaigns = status.get("campaigns")
+    if isinstance(campaigns, list):
+        for campaign in campaigns:
+            if isinstance(campaign, dict) and str(campaign.get("status", "")).lower() in {"queued", "running"}:
+                return True
+    return False
+
+
+def _latest_governed_terminal(status: dict[str, object]) -> dict[str, object] | None:
+    terminal: list[dict[str, object]] = []
+    for key in ("directors", "campaigns"):
+        entries = status.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            normalized = str(entry.get("status", "")).lower()
+            if normalized not in {"exhausted", "failed", "stopped"}:
+                continue
+            terminal.append(entry)
+    if not terminal:
+        return None
+    terminal.sort(
+        key=lambda entry: str(entry.get("finished_at") or entry.get("updated_at") or entry.get("created_at") or ""),
+        reverse=True,
+    )
+    return terminal[0]
 
 
 def _resolve_director_plan(

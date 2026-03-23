@@ -16,6 +16,7 @@ from trotters_trader.research_runtime import (
     campaign_manager_loop,
     campaign_status,
     coordinator_cycle,
+    director_manager_loop,
     director_status,
     get_job,
     initialize_runtime,
@@ -34,6 +35,7 @@ from trotters_trader.research_runtime import (
     submit_jobs,
     worker_loop,
 )
+from trotters_trader.supervisor_runbook import RunbookWorkItem
 from tests.support import IsolatedWorkspaceTestCase
 
 
@@ -115,6 +117,94 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
 
         status = runtime_status(paths)
         self.assertEqual(status["jobs"][0]["output_root"], "/runtime/docker_smoke/job_outputs/compose-smoke-01")
+
+    def test_director_manager_loop_autostarts_next_queued_family_when_idle(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+
+        with (
+            patch(
+                "trotters_trader.research_runtime.runtime_status",
+                return_value={"directors": [], "campaigns": [], "counts": {}, "workers": [], "jobs": []},
+            ),
+            patch(
+                "trotters_trader.promotion_path.materialize_promotion_path",
+                return_value={"research_program_portfolio": {"programs": []}},
+            ),
+            patch(
+                "trotters_trader.research_families.build_research_family_comparison_summary",
+                return_value={},
+            ),
+            patch(
+                "trotters_trader.runbook_queue.build_runbook_queue_summary",
+                return_value={"next_runnable_plan_id": "mean_reversion_broad_fastcycle"},
+            ),
+            patch(
+                "trotters_trader.research_families.build_next_family_status",
+                return_value={
+                    "status": "queued",
+                    "recommended_action": "start_approved_family",
+                    "next_runnable_plan_id": "mean_reversion_broad_fastcycle",
+                },
+            ),
+            patch(
+                "trotters_trader.supervisor_runbook.load_supervisor_runbook",
+                return_value=object(),
+            ),
+            patch(
+                "trotters_trader.supervisor_runbook.resolve_runbook_plan",
+                return_value=RunbookWorkItem(
+                    plan_id="mean_reversion_broad_fastcycle",
+                    plan_file="configs/directors/mean_reversion_broad_fastcycle.json",
+                    director_name="mean-reversion-fastcycle-director",
+                    enabled=True,
+                    priority=7,
+                    fallback_to=None,
+                ),
+            ),
+            patch(
+                "trotters_trader.research_runtime.start_director",
+                return_value={"director_id": "director-fastcycle"},
+            ) as start_mock,
+        ):
+            payload = director_manager_loop(paths, once=True, poll_seconds=0.01)
+
+        self.assertEqual(payload["active_directors"], 0)
+        self.assertEqual(payload["auto_started_director"]["plan_id"], "mean_reversion_broad_fastcycle")
+        start_mock.assert_called_once_with(
+            paths,
+            director_name="mean-reversion-fastcycle-director",
+            plan_file_path="configs/directors/mean_reversion_broad_fastcycle.json",
+            adopt_active_campaigns=True,
+        )
+
+    def test_director_manager_loop_does_not_autostart_after_failed_terminal(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+
+        with (
+            patch(
+                "trotters_trader.research_runtime.runtime_status",
+                return_value={
+                    "directors": [],
+                    "campaigns": [
+                        {
+                            "campaign_id": "campaign-failed",
+                            "status": "failed",
+                            "updated_at": "2026-03-23T19:15:08+00:00",
+                        }
+                    ],
+                    "counts": {},
+                    "workers": [],
+                    "jobs": [],
+                },
+            ),
+            patch(
+                "trotters_trader.research_runtime.start_director",
+            ) as start_mock,
+        ):
+            payload = director_manager_loop(paths, once=True, poll_seconds=0.01)
+
+        self.assertIsNone(payload["auto_started_director"])
+        start_mock.assert_not_called()
 
     def test_three_workers_complete_independent_jobs_and_export_catalog(self) -> None:
         canonical_dir = self._prepared_dataset()

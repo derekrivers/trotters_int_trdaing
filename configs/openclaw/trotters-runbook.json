@@ -1,4 +1,4 @@
-﻿{
+{
     "version":  1,
     "work_queue":  [
                        {
@@ -40,7 +40,7 @@
                            "plan_id":  "sma_cross_broad_confirmation",
                            "plan_file":  "configs/directors/sma_cross_broad_confirmation.json",
                            "director_name":  "sma-cross-confirmation-director",
-                           "enabled":  true,
+                           "enabled":  false,
                            "priority":  6
                        },
                        {
