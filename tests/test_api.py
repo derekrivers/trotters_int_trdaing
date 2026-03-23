@@ -78,6 +78,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["most_recent_terminal"]["director"], None)
         self.assertIn("paper_rehearsal", payload)
         self.assertIn("active_branch_summary", payload)
+        self.assertIn("runbook_queue_summary", payload)
         self.assertIn("candidate_progression_summary", payload)
         self.assertIn("paper_trade_entry_gate", payload)
         self.assertIn("research_program_portfolio", payload)
@@ -249,6 +250,7 @@ class ApiTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual(status, "200 OK")
         self.assertEqual(payload["current_best_candidate"]["campaign_id"], "campaign-1")
+        self.assertEqual(payload["current_best_candidate"]["status"], "available")
         self.assertEqual(payload["current_best_candidate"]["best_candidate"]["run_name"], "candidate-run")
         self.assertEqual(payload["current_best_candidate"]["source"], "active_campaign")
         self.assertEqual(
@@ -805,10 +807,22 @@ class ApiTests(unittest.TestCase):
                 "/api/v1/promotion-path/candidate-progression",
                 headers=self._auth_headers(),
             )
+            current_best_status, _, current_best_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/runtime/current-best-candidate",
+                headers=self._auth_headers(),
+            )
             active_branch_status, _, active_branch_body = self._invoke(
                 app,
                 "GET",
                 "/api/v1/runtime/active-branch",
+                headers=self._auth_headers(),
+            )
+            queue_status, _, queue_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/runtime/runbook-queue",
                 headers=self._auth_headers(),
             )
             gate_status, _, gate_body = self._invoke(
@@ -823,21 +837,36 @@ class ApiTests(unittest.TestCase):
                 "/api/v1/promotion-path/research-program-portfolio",
                 headers=self._auth_headers(),
             )
+            portfolio_alias_status, _, portfolio_alias_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/research-programs/portfolio",
+                headers=self._auth_headers(),
+            )
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
         progression = json.loads(progression_body)
+        current_best = json.loads(current_best_body)
         active_branch = json.loads(active_branch_body)
+        queue_summary = json.loads(queue_body)
         gate = json.loads(gate_body)
         portfolio = json.loads(portfolio_body)
+        portfolio_alias = json.loads(portfolio_alias_body)
         self.assertEqual(progression_status, "200 OK")
+        self.assertEqual(current_best_status, "200 OK")
         self.assertEqual(active_branch_status, "200 OK")
+        self.assertEqual(queue_status, "200 OK")
         self.assertEqual(gate_status, "200 OK")
         self.assertEqual(portfolio_status, "200 OK")
+        self.assertEqual(portfolio_alias_status, "200 OK")
         self.assertEqual(progression["summary_type"], "candidate_progression_summary")
+        self.assertIn(current_best["status"], {"available", "no_selected_candidate", "unavailable"})
         self.assertIn(active_branch["status"], {"idle", "active"})
+        self.assertEqual(queue_summary["summary_type"], "runbook_queue_summary")
         self.assertEqual(gate["summary_type"], "paper_trade_entry_gate")
         self.assertEqual(portfolio["summary_type"], "research_program_portfolio")
+        self.assertEqual(portfolio_alias["summary_type"], "research_program_portfolio")
     def _invoke(
         self,
         app: ApiApp,

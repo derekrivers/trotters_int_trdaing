@@ -38,14 +38,32 @@ def resolve_current_best_candidate(
                 focus_campaign = terminal_campaign
             source = "most_recent_terminal_campaign"
     if not isinstance(focus_campaign, dict) or not focus_campaign:
-        return None
+        return {
+            "status": "unavailable",
+            "candidate_available": False,
+            "source": "none",
+            "operator_recommendation": "needs_more_research",
+            "recommendation_state": "research_only",
+            "headline": "No active or recent campaign is available for operator review.",
+            "display_message": "No active or recent campaign is available for operator review.",
+            "what_failed_or_is_missing": ["No active or recent campaign is available for operator review."],
+            "next_action": "wait_for_next_branch",
+            "next_steps": ["Wait for the next active or terminal campaign before choosing a leading candidate."],
+            "best_candidate": None,
+            "supporting_summaries": {},
+            "campaign_id": "",
+            "campaign_name": "",
+            "campaign_status": "missing",
+            "campaign_phase": "unknown",
+            "progression": {"selected_candidate_eligible": False},
+            "artifact_paths": {},
+        }
     summary = build_campaign_operator_summary(
         focus_campaign,
         candidate_readiness=agent_summaries.get("candidate_readiness_summary"),
         paper_trade_readiness=agent_summaries.get("paper_trade_readiness_summary"),
     )
-    summary["source"] = source
-    return summary
+    return _normalize_current_best_candidate(summary, source=source)
 
 
 def materialize_promotion_path(
@@ -173,7 +191,14 @@ def build_candidate_progression_summary(
 
     current_summary = current_best_candidate if isinstance(current_best_candidate, dict) else None
     if current_summary:
+        if "status" not in current_summary:
+            current_summary = _normalize_current_best_candidate(
+                current_summary,
+                source=str(current_summary.get("source", "active_campaign") or "active_campaign"),
+            )
         current_record = _record_from_current_best_candidate(current_summary)
+        if current_record is None:
+            current_record = {}
         profile_name = str(current_record.get("profile_name", "") or "")
         if profile_name and profile_name in records_by_profile:
             records_by_profile[profile_name] = _merge_candidate_records(records_by_profile[profile_name], current_record)
@@ -493,7 +518,9 @@ def _record_from_history(*, profile_name: str, history_entry: dict[str, object])
     }
 
 
-def _record_from_current_best_candidate(summary: dict[str, object]) -> dict[str, object]:
+def _record_from_current_best_candidate(summary: dict[str, object]) -> dict[str, object] | None:
+    if str(summary.get("status", "") or "") != "available":
+        return None
     candidate = summary.get("best_candidate", {}) if isinstance(summary.get("best_candidate"), dict) else {}
     progression = summary.get("progression", {}) if isinstance(summary.get("progression"), dict) else {}
     operator_recommendation = str(summary.get("operator_recommendation", "needs_more_research"))
@@ -510,6 +537,8 @@ def _record_from_current_best_candidate(summary: dict[str, object]) -> dict[str,
         program_status=str(summary.get("campaign_status", "unknown")),
     )
     profile_name = str(candidate.get("profile_name", "") or progression.get("selected_profile_name", "") or "")
+    if not profile_name:
+        return None
     return {
         "candidate_id": profile_name or str(summary.get("campaign_id", "")),
         "profile_name": profile_name,
@@ -549,6 +578,35 @@ def _record_from_current_best_candidate(summary: dict[str, object]) -> dict[str,
         },
         "recorded_at_utc": str(summary.get("campaign_updated_at", "")),
     }
+
+
+def _normalize_current_best_candidate(summary: dict[str, object], *, source: str) -> dict[str, object]:
+    normalized = dict(summary)
+    candidate = normalized.get("best_candidate") if isinstance(normalized.get("best_candidate"), dict) else None
+    progression = normalized.get("progression") if isinstance(normalized.get("progression"), dict) else {}
+    has_selected_candidate = bool(candidate and (str(candidate.get("run_name", "") or "").strip() or str(candidate.get("profile_name", "") or "").strip()))
+    normalized["source"] = source
+    normalized["status"] = "available" if has_selected_candidate else "no_selected_candidate"
+    normalized["candidate_available"] = has_selected_candidate
+    normalized["recommendation_state"] = _recommendation_state(
+        operator_recommendation=str(normalized.get("operator_recommendation", "needs_more_research")),
+        fail_reasons=[],
+        promoted=False,
+        eligible=bool(progression.get("selected_candidate_eligible", False)),
+        program_status=str(normalized.get("campaign_status", "unknown")),
+    )
+    if has_selected_candidate:
+        normalized["display_message"] = str(normalized.get("headline", "") or "")
+        return normalized
+    normalized["best_candidate"] = None
+    missing = [
+        str(item)
+        for item in normalized.get("what_failed_or_is_missing", [])
+        if str(item).strip()
+    ] if isinstance(normalized.get("what_failed_or_is_missing"), list) else []
+    fallback = missing[0] if missing else "No selected candidate is available for operator review."
+    normalized["display_message"] = fallback
+    return normalized
 
 
 def _merge_record_with_history(record: dict[str, object], history_entry: dict[str, object]) -> dict[str, object]:

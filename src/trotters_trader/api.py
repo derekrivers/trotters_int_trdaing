@@ -18,6 +18,7 @@ from trotters_trader.dashboard import _runtime_health
 from trotters_trader.http_security import actor_label, is_bearer_authorized, request_actor
 from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action
 from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
+from trotters_trader.runbook_queue import build_runbook_queue_summary
 from trotters_trader.research_runtime import (
     DEFAULT_NOTIFICATION_EVENTS,
     ResearchRuntimePaths,
@@ -90,11 +91,16 @@ class ApiController:
             active_directors=active_directors,
             active_campaigns=active_campaigns,
         )
+        runbook_queue_summary = build_runbook_queue_summary(
+            active_branch_summary=active_branch_summary,
+            research_program_portfolio=promotion_path["research_program_portfolio"],
+        )
         return {
             "status": compact_status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "active_branch_summary": active_branch_summary,
+            "runbook_queue_summary": runbook_queue_summary,
             "notifications": notifications,
             "most_recent_terminal": most_recent_terminal,
             "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
@@ -265,6 +271,16 @@ class ApiController:
         payload = overview.get("active_branch_summary")
         return payload if isinstance(payload, dict) else {}
 
+    def current_best_candidate_summary(self) -> dict[str, object]:
+        overview = self.overview()
+        payload = overview.get("current_best_candidate")
+        return payload if isinstance(payload, dict) else {}
+
+    def runbook_queue_summary(self) -> dict[str, object]:
+        overview = self.overview()
+        payload = overview.get("runbook_queue_summary")
+        return payload if isinstance(payload, dict) else {}
+
     def paper_trade_entry_gate(self) -> dict[str, object]:
         return materialize_promotion_path(catalog_output_dir=self._paths.catalog_output_dir)["paper_trade_entry_gate"]
 
@@ -415,13 +431,19 @@ class ApiApp:
             return self._json_response(self._controller.list_agent_dispatches(query))
         if method == "GET" and path == "/api/v1/paper-trading/status":
             return self._json_response(self._controller.paper_rehearsal_status(query))
+        if method == "GET" and path == "/api/v1/runtime/current-best-candidate":
+            return self._json_response(self._controller.current_best_candidate_summary())
         if method == "GET" and path == "/api/v1/promotion-path/candidate-progression":
             return self._json_response(self._controller.candidate_progression_summary())
         if method == "GET" and path == "/api/v1/runtime/active-branch":
             return self._json_response(self._controller.active_branch_summary())
+        if method == "GET" and path == "/api/v1/runtime/runbook-queue":
+            return self._json_response(self._controller.runbook_queue_summary())
         if method == "GET" and path == "/api/v1/promotion-path/paper-trade-entry-gate":
             return self._json_response(self._controller.paper_trade_entry_gate())
         if method == "GET" and path == "/api/v1/promotion-path/research-program-portfolio":
+            return self._json_response(self._controller.research_program_portfolio())
+        if method == "GET" and path == "/api/v1/research-programs/portfolio":
             return self._json_response(self._controller.research_program_portfolio())
         if method == "POST" and path == "/api/v1/paper-trading/actions":
             return self._json_response(self._controller.record_paper_rehearsal_action(_json_body(body)), status="201 Created")

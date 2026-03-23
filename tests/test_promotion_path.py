@@ -7,6 +7,7 @@ from trotters_trader.promotion_path import (
     build_candidate_progression_summary,
     build_paper_trade_entry_gate,
     build_research_program_portfolio,
+    resolve_current_best_candidate,
 )
 from tests.support import IsolatedWorkspaceTestCase
 
@@ -82,10 +83,79 @@ class PromotionPathTests(IsolatedWorkspaceTestCase):
         )
 
         self.assertEqual(summary["summary_type"], "candidate_progression_summary")
-        self.assertEqual(summary["leading_candidate"]["profile_name"], "candidate-profile")
-        self.assertEqual(summary["leading_candidate"]["source_type"], "active_campaign")
-        self.assertEqual(summary["leading_candidate"]["run_name"], "candidate-run")
-        self.assertEqual(summary["leading_candidate"]["validation_excess_return"], 0.03)
+        candidate_record = next(
+            record
+            for record in summary["records"]
+            if record["profile_name"] == "candidate-profile"
+        )
+        self.assertEqual(candidate_record["source_type"], "active_campaign")
+        self.assertEqual(candidate_record["run_name"], "candidate-run")
+        self.assertEqual(candidate_record["validation_excess_return"], 0.03)
+
+    def test_candidate_progression_ignores_current_best_candidate_without_selected_candidate(self) -> None:
+        catalog_output_dir = self.temp_root / "catalog"
+
+        summary = build_candidate_progression_summary(
+            catalog_output_dir,
+            current_best_candidate={
+                "status": "no_selected_candidate",
+                "campaign_id": "campaign-1",
+                "campaign_name": "broad-operability-primary",
+                "campaign_status": "running",
+                "campaign_updated_at": "2026-03-23T11:00:00+00:00",
+                "operator_recommendation": "needs_more_research",
+                "headline": "No candidate is ready.",
+                "best_candidate": None,
+                "what_failed_or_is_missing": ["No selected candidate is available for operator review."],
+                "next_action": "continue_research",
+                "progression": {"selected_candidate_eligible": False},
+                "artifact_paths": {},
+                "supporting_summaries": {},
+                "source": "active_campaign",
+            },
+        )
+
+        self.assertTrue(all(record["campaign_id"] != "campaign-1" for record in summary["records"]))
+
+    def test_resolve_current_best_candidate_normalizes_missing_selected_candidate(self) -> None:
+        catalog_output_dir = self.temp_root / "catalog"
+
+        summary = resolve_current_best_candidate(
+            catalog_output_dir=catalog_output_dir,
+            active_campaigns=[
+                {
+                    "campaign_id": "campaign-1",
+                    "campaign_name": "broad-operability-primary",
+                    "status": "running",
+                    "phase": "stability_pivot",
+                    "updated_at": "2026-03-23T11:00:00+00:00",
+                    "state": {
+                        "control_row": {
+                            "run_name": "control-run",
+                            "profile_name": "control-profile",
+                            "validation_excess_return": -0.02,
+                            "holdout_excess_return": -0.03,
+                            "walkforward_pass_windows": 1,
+                        },
+                        "shortlisted": [],
+                        "stress_results": [],
+                        "final_decision": {
+                            "recommended_action": "continue_research",
+                            "reason": "campaign_in_progress",
+                            "selected_candidate_eligible": False,
+                        },
+                    },
+                }
+            ],
+            most_recent_terminal={},
+            agent_summaries={},
+            fetch_campaign_detail=lambda campaign_id: {},
+        )
+
+        self.assertEqual(summary["status"], "no_selected_candidate")
+        self.assertFalse(summary["candidate_available"])
+        self.assertEqual(summary["source"], "active_campaign")
+        self.assertEqual(summary["best_candidate"], None)
 
     def test_paper_trade_entry_gate_blocks_without_promoted_candidate(self) -> None:
         catalog_output_dir = self.temp_root / "catalog"

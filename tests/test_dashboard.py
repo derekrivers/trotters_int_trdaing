@@ -460,6 +460,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("Candidate Progression", body)
         self.assertIn("Current Best Candidate", body)
+        self.assertIn("candidate available", body)
         self.assertIn("Why This Is The Current Lead", body)
         self.assertIn("What Failed Or Is Missing", body)
         self.assertIn("Immediate next action", body)
@@ -1405,6 +1406,8 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("Research Program Portfolio", body)
         self.assertIn("Beta-Defensive Continuation Program", body)
+        self.assertIn("Supervisor Work Queue", body)
+        self.assertIn("repair_runbook_alignment", body)
 
     def _invoke(
         self,

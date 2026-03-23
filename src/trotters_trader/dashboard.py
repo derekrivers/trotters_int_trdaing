@@ -16,6 +16,7 @@ from trotters_trader.active_branch import build_active_branch_summary
 from trotters_trader.http_security import is_basic_authorized, new_csrf_token, parse_cookies
 from trotters_trader.paper_rehearsal import paper_rehearsal_status
 from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
+from trotters_trader.runbook_queue import build_runbook_queue_summary
 from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
     campaign_status,
@@ -79,11 +80,16 @@ class DashboardController:
             active_directors=active_directors,
             active_campaigns=active_campaigns,
         )
+        runbook_queue_summary = build_runbook_queue_summary(
+            active_branch_summary=active_branch_summary,
+            research_program_portfolio=promotion_path["research_program_portfolio"],
+        )
         return {
             "status": status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "active_branch_summary": active_branch_summary,
+            "runbook_queue_summary": runbook_queue_summary,
             "notifications": _load_notifications(self._paths, limit=25),
             "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
             "current_best_candidate": current_best_candidate,
@@ -423,6 +429,11 @@ def _render_overview(
         if isinstance(payload.get("research_program_portfolio"), dict)
         else {}
     )
+    runbook_queue_summary = (
+        payload.get("runbook_queue_summary", {})
+        if isinstance(payload.get("runbook_queue_summary"), dict)
+        else {}
+    )
     paper_rehearsal = payload.get("paper_rehearsal", {}) if isinstance(payload.get("paper_rehearsal"), dict) else {}
     agent_summaries = payload.get("agent_summaries", {}) if isinstance(payload.get("agent_summaries"), dict) else {}
     agent_dispatches = payload.get("agent_dispatches", []) if isinstance(payload.get("agent_dispatches"), list) else []
@@ -515,6 +526,7 @@ def _render_overview(
     {_paper_trade_entry_gate_section(paper_trade_entry_gate)}
     {_paper_rehearsal_section(paper_rehearsal)}
     {_research_program_portfolio_section(research_program_portfolio)}
+    {_runbook_queue_summary_section(runbook_queue_summary)}
     <section class="summary-grid">{summary_cards}</section>
     <section class="panel">
       <h2>Decision Snapshots</h2>
@@ -680,15 +692,17 @@ def _current_best_candidate_section(summary: dict[str, object]) -> str:
       <h2>Current Best Candidate</h2>
       <p class="subtle">Single-screen operator view of the current lead branch, why it leads, what is still weak, and what should happen next.</p>
       <section class="summary-grid">
+        {_summary_card("status", str(summary.get("status", "unavailable")))}
         {_summary_card("source", str(summary.get("source", "active_campaign")))}
         {_summary_card("recommendation", str(summary.get("operator_recommendation", "needs_more_research")))}
+        {_summary_card("candidate available", "yes" if bool(summary.get("candidate_available", False)) else "no")}
         {_summary_card("campaign status", str(summary.get("campaign_status", "unknown")))}
         {_summary_card("phase", str(summary.get("campaign_phase", "unknown")))}
         {_summary_card("shortlist", str(progression.get("shortlist_count", 0)))}
         {_summary_card("pivot used", "yes" if bool(progression.get("pivot_used", False)) else "no")}
       </section>
       <p><strong>{escape(str(summary.get("campaign_name", "unknown campaign")))}</strong> ({escape(str(summary.get("campaign_id", "")))})</p>
-      <p>{escape(str(summary.get("headline", "")))}</p>
+      <p>{escape(str(summary.get("display_message", "") or summary.get("headline", "") or "No candidate summary is available yet."))}</p>
       <p><strong>Immediate next action:</strong> {escape(str(summary.get("next_action", "")) or "No next action recorded yet.")}</p>
       {_scorecard_artifact_paths(artifact_paths)}
     </section>
@@ -877,6 +891,51 @@ def _research_program_portfolio_section(summary: dict[str, object]) -> str:
       </table>
     </section>
     """
+
+
+def _runbook_queue_summary_section(summary: dict[str, object]) -> str:
+    if not summary:
+        return ""
+    counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
+    entries = [entry for entry in summary.get("entries", []) if isinstance(entry, dict)] if isinstance(summary.get("entries"), list) else []
+    warnings = [warning for warning in summary.get("warnings", []) if isinstance(warning, dict)] if isinstance(summary.get("warnings"), list) else []
+    rows = "".join(_runbook_queue_row(entry) for entry in entries) or "<tr><td colspan='6'>No supervisor queue entries recorded.</td></tr>"
+    warning_items = "".join(f"<li>{escape(str(warning.get('message', 'unknown warning')))}</li>" for warning in warnings) or "<li>No queue warnings recorded.</li>"
+    return f"""
+    <section class="panel">
+      <h2>Supervisor Work Queue</h2>
+      <p class="subtle">Alignment check between the OpenClaw runbook, the active branch, and the research-program portfolio.</p>
+      <section class="summary-grid">
+        {_summary_card("queue status", str(summary.get("status", "unknown")))}
+        {_summary_card("active plan", str(summary.get("active_plan_id", "none") or "none"))}
+        {_summary_card("next runnable", str(summary.get("next_runnable_plan_id", "none") or "none"))}
+        {_summary_card("recommended action", str(summary.get("recommended_action", "monitor_active_plan")))}
+        {_summary_card("enabled", str(counts.get("enabled", 0)))}
+        {_summary_card("blocked", str(counts.get("blocked", 0)))}
+        {_summary_card("untracked", str(counts.get("untracked", 0)))}
+      </section>
+      <p>{escape(str(summary.get("message", "No runbook summary is available.")))}</p>
+      {f"<ul>{warning_items}</ul>" if warnings else ""}
+      <table>
+        <thead><tr><th>Plan</th><th>Status</th><th>Enabled</th><th>Program</th><th>Director</th><th>Detail</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
+
+
+def _runbook_queue_row(entry: dict[str, object]) -> str:
+    program_title = str(entry.get("program_title", "") or "not tracked")
+    return (
+        "<tr>"
+        f"<td><code>{escape(str(entry.get('plan_id', 'unknown')))}</code></td>"
+        f"<td>{_status_pill(str(entry.get('queue_status', 'unknown')))}</td>"
+        f"<td>{'yes' if bool(entry.get('enabled', False)) else 'no'}</td>"
+        f"<td>{escape(program_title)}</td>"
+        f"<td>{escape(str(entry.get('director_name', '') or '-'))}</td>"
+        f"<td>{escape(str(entry.get('detail', '') or '-'))}</td>"
+        "</tr>"
+    )
 
 
 def _render_campaign_detail(
