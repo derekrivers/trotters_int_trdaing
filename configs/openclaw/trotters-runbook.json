@@ -14,13 +14,21 @@
       "director_name": "beta-defensive-director",
       "enabled": true,
       "priority": 2
+    },
+    {
+      "plan_id": "refine_seed_continuation",
+      "plan_file": "configs/directors/refine_seed_continuation.json",
+      "director_name": "refine-seed-director",
+      "enabled": true,
+      "priority": 3
     }
   ],
   "config_registry": {
     "broad_primary": "configs/eodhd_momentum_broad_candidate_risk_gross65_deploy20_n8_w09_cb12.toml",
     "broad_sector_pivot": "configs/eodhd_momentum_broad_candidate_risk_sector_sec3.toml",
     "broad_beta_pivot": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
-    "broad_beta_defensive": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml"
+    "broad_beta_defensive": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
+    "broad_refine_seed": "configs/eodhd_momentum_broad_candidate_refine_n4_ms002_rf63.toml"
   },
   "service_allowlist": [
     "research-api",

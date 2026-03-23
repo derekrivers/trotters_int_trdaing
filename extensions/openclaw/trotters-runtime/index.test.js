@@ -305,6 +305,11 @@ await runTest("supervisor drill harness advances the runbook from the exhausted 
           plan_file: "configs/directors/beta_defensive_continuation.json",
           director_name: "beta-defensive-director",
         },
+        {
+          plan_id: "refine_seed_continuation",
+          plan_file: "configs/directors/refine_seed_continuation.json",
+          director_name: "refine-seed-director",
+        },
       ],
     },
     async ({ runbookPath }) => {
@@ -367,6 +372,13 @@ await runTest("supervisor drill harness advances the runbook from the exhausted 
           assert.equal(currentPlanId, "broad_operability");
           assert.equal(nextItem.details.selected.plan_id, "beta_defensive_continuation");
           assert.equal(nextItem.details.selected.director_name, "beta-defensive-director");
+
+          const fallbackItem = await tools.trotters_runbook.execute("call-next-fallback", {
+            action: "next_work_item",
+            currentPlanId: "beta_defensive_continuation",
+          });
+          assert.equal(fallbackItem.details.selected.plan_id, "refine_seed_continuation");
+          assert.equal(fallbackItem.details.selected.director_name, "refine-seed-director");
         } finally {
           global.fetch = originalFetch;
         }

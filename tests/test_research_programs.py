@@ -102,6 +102,12 @@ class ResearchProgramTests(IsolatedWorkspaceTestCase):
         self.assertEqual(definition["program_id"], "risk_sector_promotion_program")
         self.assertEqual(len(definition["campaign_path"]), 2)
 
+    def test_refine_seed_program_definition_file_loads(self) -> None:
+        definition = load_research_program_definition(Path("configs/research_programs/refine_seed_continuation.json"))
+
+        self.assertEqual(definition["program_id"], "refine_seed_continuation_program")
+        self.assertEqual(definition["campaign_path"][0]["profile_name"], "momentum_broad_candidate_refine_n4_ms002_rf63")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,61 @@
+{
+  "program_id": "refine_seed_continuation_program",
+  "title": "Refine-Seed Continuation Program",
+  "strategy_family": "cross_sectional_momentum",
+  "objective": "Run the remaining repo-defined broad momentum refinement branch after the beta-defensive continuation, while keeping it explicitly lower priority than materially different robustness hypotheses.",
+  "branch_rationale": "The refine seed is still a bounded repo-backed follow-up that has not been executed in the current queued path. It is weaker than the beta-defensive branch because it is still a local momentum-family adjustment, but it remains a more credible fallback than reopening the retired risk + sector family or queueing the already-worse mean-reversion family.",
+  "positive_hypotheses": [
+    "Switching from beta-vol-inverse to vol-inverse weighting is a distinct enough basket-construction change to justify one bounded queued attempt.",
+    "The refine seed keeps the same broad momentum horizon and turnover envelope, so it is operationally compatible with the existing runtime and promotion tooling."
+  ],
+  "seed_stack": [
+    {
+      "label": "Broad beta control",
+      "profile_name": "momentum_broad_candidate_beta_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_n4_ms002_rf63.toml",
+      "rationale": "Reference broad candidate family before the defensive and refinement follow-ups."
+    },
+    {
+      "label": "Beta-defensive seed",
+      "profile_name": "momentum_broad_candidate_beta_defensive_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_beta_defensive_n4_ms002_rf63.toml",
+      "rationale": "Higher-priority materially different robustness branch that should run before the refine fallback."
+    },
+    {
+      "label": "Refine seed",
+      "profile_name": "momentum_broad_candidate_refine_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_refine_n4_ms002_rf63.toml",
+      "rationale": "Fallback broad-family refinement using vol-inverse weighting rather than beta-vol-inverse."
+    }
+  ],
+  "campaign_path": [
+    {
+      "step_id": "refine_seed",
+      "label": "Refine Seed",
+      "profile_name": "momentum_broad_candidate_refine_n4_ms002_rf63",
+      "config_path": "configs/eodhd_momentum_broad_candidate_refine_n4_ms002_rf63.toml",
+      "purpose": "Execute the last credible repo-defined broad momentum fallback before any future family creation workflow."
+    }
+  ],
+  "artifact_expectations": [
+    {
+      "step_id": "refine_seed",
+      "artifacts": [
+        "promotion",
+        "operability_program",
+        "operator_scorecard",
+        "research_program"
+      ]
+    }
+  ],
+  "stop_conditions": [
+    {
+      "decision": "promote",
+      "when": "The refine seed passes the existing promotion policy and remains acceptable for downstream paper-trading preparation."
+    },
+    {
+      "decision": "retire_branch",
+      "when": "The refine seed records a terminal promotion decision and still fails the policy, especially on validation, holdout, or walk-forward thresholds."
+    }
+  ]
+}
