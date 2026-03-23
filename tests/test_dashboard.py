@@ -1407,7 +1407,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Research Program Portfolio", body)
         self.assertIn("Beta-Defensive Continuation Program", body)
         self.assertIn("Supervisor Work Queue", body)
-        self.assertIn("repair_runbook_alignment", body)
+        self.assertIn("define_next_research_family", body)
 
     def _invoke(
         self,
@@ -1459,4 +1459,3 @@ class DashboardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

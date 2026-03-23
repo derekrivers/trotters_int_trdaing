@@ -66,6 +66,28 @@ class RunbookQueueTests(unittest.TestCase):
         self.assertEqual(summary["next_runnable_plan_id"], "next_family")
         self.assertEqual(summary["entries"][1]["queue_status"], "ready")
 
+    def test_build_runbook_queue_summary_does_not_treat_untracked_entries_as_runnable(self) -> None:
+        with patch(
+            "trotters_trader.runbook_queue._load_runbook",
+            return_value={
+                "work_queue": [
+                    {"plan_id": "broad_operability", "director_name": "broad-operability-director", "enabled": True, "priority": 1},
+                    {"plan_id": "unknown_followup", "director_name": "unknown-followup-director", "enabled": True, "priority": 2},
+                ]
+            },
+        ):
+            summary = build_runbook_queue_summary(
+                active_branch_summary={"director": {"plan_name": "broad_operability"}},
+                research_program_portfolio={"programs": []},
+            )
+
+        self.assertIsNone(summary["next_runnable_plan_id"])
+        self.assertEqual(summary["recommended_action"], "repair_runbook_alignment")
+        warning_codes = {warning["code"] for warning in summary["warnings"]}
+        self.assertIn("enabled_untracked_plan", warning_codes)
+        self.assertIn("active_plan_untracked", warning_codes)
+        self.assertIn("no_next_runnable_queue_item", warning_codes)
+
 
 if __name__ == "__main__":
     unittest.main()

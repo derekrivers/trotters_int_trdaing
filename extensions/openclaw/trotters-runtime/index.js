@@ -1,4 +1,4 @@
-﻿import fs from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -435,19 +435,25 @@ function createRunbookTool(cfg) {
     execute: async (_toolCallId, params) => {
       const action = requiredEnum(params, "action", RUNBOOK_ACTIONS);
       const runbook = loadRunbook(cfg);
+      const queueSummary = await loadRunbookQueueSummary(cfg);
       if (action === "get") {
         return jsonResult({
           runbook,
+          queue_summary: queueSummary,
           history: readHistory(cfg),
         });
       }
       if (action === "next_work_item") {
+        const currentPlanId = optionalString(params, "currentPlanId") || await inferCurrentPlanIdFromOverview(cfg, runbook);
         const item = nextWorkItem(runbook, {
-          currentPlanId: optionalString(params, "currentPlanId"),
+          currentPlanId,
           preferFallback: params?.preferFallback === true,
-        });
+        }, queueSummary);
         return jsonResult({
           selected: item,
+          current_plan_id: currentPlanId || null,
+          blocked_reason: item ? null : summarizeRunbookSelectionBlock(queueSummary),
+          queue_summary: queueSummary,
           runbook,
           history: readHistory(cfg),
         });
@@ -483,7 +489,6 @@ function createRunbookTool(cfg) {
     },
   };
 }
-
 function createServiceTool(cfg) {
   return {
     name: "trotters_service",
@@ -596,10 +601,14 @@ function resolveConfigPath(runbook, configId) {
   return pathValue;
 }
 
-function nextWorkItem(runbook, params) {
+function nextWorkItem(runbook, params, queueSummary = null) {
   const queue = Array.isArray(runbook.work_queue) ? runbook.work_queue.filter((entry) => entry?.enabled !== false) : [];
   if (queue.length === 0) {
     return null;
+  }
+  const governedItem = nextGovernedWorkItem(runbook, params, queueSummary);
+  if (governedItem !== undefined) {
+    return governedItem;
   }
   const currentPlanId = params.currentPlanId || null;
   if (!currentPlanId) {
@@ -614,11 +623,78 @@ function nextWorkItem(runbook, params) {
   }
   const currentIndex = queue.findIndex((entry) => entry.plan_id === currentPlanId);
   if (currentIndex === -1) {
-    return queue[0];
+    return null;
   }
   return queue[currentIndex + 1] || null;
 }
 
+function nextGovernedWorkItem(runbook, params, queueSummary) {
+  if (!queueSummary || typeof queueSummary !== "object") {
+    return undefined;
+  }
+  const entries = Array.isArray(queueSummary.entries) ? queueSummary.entries : [];
+  if (!entries.length) {
+    return undefined;
+  }
+  const queue = Array.isArray(runbook.work_queue) ? runbook.work_queue.filter((entry) => entry?.enabled !== false) : [];
+  const currentPlanId = params.currentPlanId || null;
+  if (params.preferFallback && currentPlanId) {
+    const current = queue.find((entry) => entry?.plan_id === currentPlanId);
+    const fallbackPlanId = optionalString(current, "fallback_to");
+    if (fallbackPlanId) {
+      const fallbackEntry = entries.find((entry) => optionalString(entry, "plan_id") === fallbackPlanId);
+      if (optionalString(fallbackEntry, "queue_status") === "ready") {
+        return resolveWorkItem(runbook, fallbackPlanId);
+      }
+    }
+  }
+  const nextPlanId = optionalString(queueSummary, "next_runnable_plan_id");
+  if (nextPlanId) {
+    return resolveWorkItem(runbook, nextPlanId);
+  }
+  if (!currentPlanId) {
+    const firstReady = entries.find((entry) => optionalString(entry, "queue_status") === "ready");
+    const firstReadyPlanId = optionalString(firstReady, "plan_id");
+    if (firstReadyPlanId) {
+      return resolveWorkItem(runbook, firstReadyPlanId);
+    }
+  }
+  if (optionalString(queueSummary, "recommended_action") || optionalString(queueSummary, "status")) {
+    return null;
+  }
+  return undefined;
+}
+
+function summarizeRunbookSelectionBlock(queueSummary) {
+  if (!queueSummary || typeof queueSummary !== "object") {
+    return "No approved runnable queue item is available.";
+  }
+  const message = optionalString(queueSummary, "message");
+  if (message) {
+    return message;
+  }
+  const recommendedAction = optionalString(queueSummary, "recommended_action");
+  if (recommendedAction === "repair_runbook_alignment") {
+    return "Supervisor work queue needs alignment repair before the next branch can be started safely.";
+  }
+  if (recommendedAction === "define_next_research_family") {
+    return "No approved runnable research family remains in the supervisor queue.";
+  }
+  return "No approved runnable queue item is available.";
+}
+
+async function loadRunbookQueueSummary(cfg) {
+  try {
+    return await callJsonApi({
+      baseUrl: cfg.apiBase,
+      tokenEnv: "TROTTERS_API_TOKEN",
+      actor: cfg.actor,
+      path: "/api/v1/runtime/runbook-queue",
+    });
+  } catch {
+    return null;
+  }
+}
 async function inferCurrentPlanIdFromOverview(cfg, runbook) {
   try {
     const overview = await callJsonApi({
@@ -1417,14 +1493,3 @@ function numberOrDefault(value, defaultValue) {
 }
 
 export default plugin;
-
-
-
-
-
-
-
-
-
-
-

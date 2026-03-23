@@ -190,7 +190,7 @@ def _entry_warning(entry: dict[str, object]) -> dict[str, object] | None:
 
 def _next_runnable_entry(entries: list[dict[str, object]], *, start_index: int) -> dict[str, object] | None:
     for entry in entries[start_index:]:
-        if str(entry.get("queue_status", "")) in {"ready", "untracked"}:
+        if str(entry.get("queue_status", "")) == "ready":
             return entry
     return None
 

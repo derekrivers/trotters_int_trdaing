@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -822,6 +822,79 @@ await runTest("summary records tolerate missing status and classification for sp
   }
 });
 
+await runTest("runbook tool exposes queue governance and skips untracked first entries", async () => {
+  await withRunbookFixture(
+    {
+      work_queue: [
+        {
+          plan_id: "broad_operability",
+          plan_file: "configs/directors/broad_operability.json",
+          director_name: "broad-operability-director",
+        },
+        {
+          plan_id: "refine_seed_continuation",
+          plan_file: "configs/directors/refine_seed_continuation.json",
+          director_name: "refine-seed-director",
+        },
+      ],
+    },
+    async ({ runbookPath }) => {
+      await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+          if (url === "https://research.example.test/api/v1/runtime/overview") {
+            return jsonResponse({
+              status: {
+                counts: { queued: 0, running: 0, completed: 12 },
+                workers: [],
+              },
+              active_directors: [],
+              active_campaigns: [],
+              notifications: [],
+              health: { status: "healthy", summary: "Idle." },
+            });
+          }
+          if (url === "https://research.example.test/api/v1/runtime/runbook-queue") {
+            return jsonResponse({
+              summary_type: "runbook_queue_summary",
+              status: "attention",
+              recommended_action: "repair_runbook_alignment",
+              message: "Runbook item 'broad_operability' is enabled but has no matching research-program definition.",
+              next_runnable_plan_id: "refine_seed_continuation",
+              entries: [
+                { plan_id: "broad_operability", queue_status: "untracked" },
+                { plan_id: "refine_seed_continuation", queue_status: "ready" },
+              ],
+            });
+          }
+          throw new Error("Unexpected fetch url: " + url);
+        };
+
+        try {
+          const tools = registerTools({
+            apiBase: "https://research.example.test",
+            runbookPath,
+            actor: "runtime-supervisor",
+          });
+          const summary = await tools.trotters_runbook.execute("call-governed-get", {
+            action: "get",
+          });
+          const nextItem = await tools.trotters_runbook.execute("call-governed-next", {
+            action: "next_work_item",
+          });
+
+          assert.equal(summary.details.queue_summary.next_runnable_plan_id, "refine_seed_continuation");
+          assert.equal(nextItem.details.selected.plan_id, "refine_seed_continuation");
+          assert.equal(nextItem.details.selected.director_name, "refine-seed-director");
+          assert.equal(nextItem.details.current_plan_id, null);
+          assert.equal(nextItem.details.blocked_reason, null);
+        } finally {
+          global.fetch = originalFetch;
+        }
+      });
+    },
+  );
+});
 await runTest("runbook history records recoveries and escalations", async () => {
   await withRunbookFixture(
     {
@@ -869,11 +942,3 @@ await runTest("runbook history records recoveries and escalations", async () => 
 if (process.exitCode && process.exitCode !== 0) {
   process.exit(process.exitCode);
 }
-
-
-
-
-
-
-
-
