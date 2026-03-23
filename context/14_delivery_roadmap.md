@@ -367,3 +367,12 @@ Risk-sector retirement checkpoint on March 22, 2026:
 - the branch is no longer "current best"; it is explicitly retired in `runtime/catalog/risk_sector_promotion_program/research_program.json`
 - the next research iteration should select a different family or a materially new hypothesis rather than reopening this path without new evidence
 
+
+Beta-defensive continuation checkpoint on March 23, 2026:
+
+- the next approved research family was set to `beta_defensive_continuation` using the existing `momentum_broad_candidate_beta_defensive_n4_ms002_rf63` seed
+- that branch was chosen because it is a repo-defined materially different robustness hypothesis, while the `risk + sector` family is explicitly retired and the broad/drawdown operability paths are already exhausted
+- the OpenClaw supervisor summary now carries the exhausted director plan forward as `current_plan_id`, so `trotters_runbook.next_work_item` can advance from `broad_operability` to the next approved item instead of restarting from queue position one
+- a new research-program artifact was written to `runtime/catalog/beta_defensive_continuation_program/research_program.json` with status `active` and `recommended_action = run_next_step`
+- the live Compose-backed runtime was resumed on `beta-defensive-director` / `beta-defensive-primary`, restoring active work after the earlier idle exhausted state
+

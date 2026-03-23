@@ -7,7 +7,7 @@
 | `FW-003` | Paper-trading rehearsal core | `done` | `FW-002` | persisted paper portfolio state, daily runner, operator decision log, and hard blocking rules exist | use the blocked/ready paper rehearsal contract as the baseline for trust hardening and any future paper-day automation |
 | `FW-004` | OpenClaw trust hardening | `done` | `FW-001` | repeated incidents are cooldown-limited, overnight drills are broader, plugin trust config is explicit, and summary quality is tighter | use the hardened supervisor decision contract and trusted plugin bootstrap as the baseline for future OpenClaw work |
 | `FW-005` | Risk-sector promotion program | `done` | `FW-001` | strongest `risk + sector` branch is either promoted under the current policy or explicitly retired with evidence | use the retired branch artifact as the baseline for selecting the next research family instead of re-opening the same path |
-| `FW-006` | Next research family and supervisor continuation | `ready` | `FW-005` | a new research family is defined, encoded as an approved director plan/runbook item, and the OpenClaw supervisor can auto-advance into it after idle exhaustion | choose the replacement family, define its stop conditions, and add it to the supervisor runbook |
+| `FW-006` | Next research family and supervisor continuation | `done` | `FW-005` | a new research family is defined, encoded as an approved director plan/runbook item, and the OpenClaw supervisor can auto-advance into it after idle exhaustion | use the beta-defensive branch and `current_plan_id` continuation path as the baseline for the next research-family workflow |
 
 ## Ordering Notes
 
