@@ -1,4 +1,4 @@
-﻿# Program Board
+# Program Board
 
 | ID | Title | Status | Dependency | Exit Criteria | Next Action |
 | --- | --- | --- | --- | --- | --- |
@@ -14,6 +14,7 @@
 | `FW-010` | Promotion cockpit and active-state clarity | `done` | `FW-009` | the dashboard clearly separates live runtime state, leading candidate state, paper-trade gate state, and terminal outcomes | use the new active-runtime and progression sections as the baseline for future operator UX work |
 | `FW-011` | Paper-trade entry gate | `done` | `FW-003`, `FW-009` | an explicit entry-gate artifact exists, the paper runner consumes it, and API/dashboard show the same gate decision and blocking reasons | use the gate artifact as the only supported readiness boundary for future paper-day automation |
 | `FW-012` | Research program portfolio board | `done` | `FW-005`, `FW-007`, `FW-009` | the app exposes active, retired, and queue-eligible research programs in one compact operator view | use the portfolio board as the branch-selection baseline instead of scattered roadmap prose |
+| `FW-013` | Runtime overview compaction and API truth | `done` | `FW-009`, `FW-010`, `FW-012` | the API overview returns compact current-state data instead of full runtime history, and live operator counts stay aligned with the shared runtime | use the compact overview contract as the baseline for future operator APIs and keep heavy history on dedicated detail endpoints |
 
 ## Ordering Notes
 
@@ -23,3 +24,4 @@
 4. `FW-006` should start from the retired-branch evidence in `FW-005` rather than reusing stale assumptions about the old `risk + sector` family.
 5. `FW-008` establishes the minimum acceptable security posture for the single-host operator runtime before any broader deployment or remote-access work is considered.
 6. `FW-009` through `FW-012` turn the promotion path into explicit read models; future paper-trading or operator work should extend those summaries instead of adding new dashboard-only logic.
+7. `FW-013` keeps the overview route operator-sized; future API additions should prefer compact summaries and dedicated detail endpoints instead of reintroducing full runtime history into `/api/v1/runtime/overview`.
