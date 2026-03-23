@@ -391,3 +391,13 @@ Runbook governance checkpoint on March 23, 2026:
 - all retired queue entries were then disabled in `configs/openclaw/trotters-runbook.json`
 - the live queue now resolves to an explicit governed idle state with `recommended_action = define_next_research_family`
 - this is the intended outcome: the supervisor must stop cleanly until a replacement research family is approved, rather than silently restarting stale branches
+
+New-family approval and controlled resumption checkpoint on March 23, 2026:
+
+- a first-class proposal layer now exists under `configs/research_family_proposals/`
+- the chosen replacement family is `mean_reversion_broad_reentry`, with explicit approval metadata, stop conditions, and a rationale for why it is materially different from the retired broad-momentum paths
+- API and dashboard now expose shared `research_family_comparison_summary` and `next_family_status` read models instead of relying on raw queue inspection
+- runbook queue eligibility is now approval-aware: a queue item is only runnable when it maps to an approved family definition
+- a bounded bootstrap path now materializes the director plan, research-program definition, and queue entry for one approved family at a time
+- the supervisor no longer presents a generic idle state when the queue is intentionally blocked; it now reports governed next-family states such as blocked pending approval, bootstrap required, or active approved family
+- the first approved replacement family was bootstrapped into the live stack, and the runtime resumed on `mean-reversion-director` / `mean-reversion-primary`
