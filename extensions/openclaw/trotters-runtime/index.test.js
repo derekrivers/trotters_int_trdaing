@@ -266,6 +266,7 @@ await runTest("overview treats stale exhausted context as wait-or-inspect instea
         notifications: [],
         most_recent_terminal: {
           campaign_id: "campaign-9",
+          status: "exhausted",
           event_type: "campaign_finished",
           severity: "info",
           message: "campaign exhausted cleanly",
@@ -289,6 +290,79 @@ await runTest("overview treats stale exhausted context as wait-or-inspect instea
       global.fetch = originalFetch;
     }
   });
+});
+
+await runTest("overview advances the runbook from API terminal status when notification fields are absent", async () => {
+  await withRunbookFixture(
+    {
+      work_queue: [
+        {
+          plan_id: "beta_defensive_continuation",
+          plan_file: "configs/directors/beta_defensive_continuation.json",
+          director_name: "beta-defensive-director",
+        },
+        {
+          plan_id: "refine_seed_continuation",
+          plan_file: "configs/directors/refine_seed_continuation.json",
+          director_name: "refine-seed-director",
+        },
+      ],
+    },
+    async ({ runbookPath }) => {
+      await withEnv({ TROTTERS_API_TOKEN: "api-token" }, async () => {
+        const originalFetch = global.fetch;
+        const freshTimestamp = new Date().toISOString();
+        global.fetch = async () =>
+          jsonResponse({
+            status: {
+              counts: { queued: 0, running: 0, completed: 24 },
+              workers: [],
+            },
+            active_directors: [],
+            active_campaigns: [],
+            notifications: [],
+            most_recent_terminal: {
+              director: {
+                director_id: "director-9",
+                director_name: "beta-defensive-director",
+                status: "exhausted",
+                finished_at: freshTimestamp,
+                spec: { plan_name: "beta_defensive_continuation" },
+              },
+              campaign: {
+                campaign_id: "campaign-9",
+                campaign_name: "beta-defensive-primary",
+                director_id: "director-9",
+                status: "exhausted",
+                finished_at: freshTimestamp,
+              },
+            },
+            health: { status: "healthy", summary: "Idle after clean exhaustion." },
+          });
+
+        try {
+          const tools = registerTools({
+            apiBase: "https://research.example.test",
+            runbookPath,
+            actor: "runtime-supervisor",
+          });
+          const overview = await tools.trotters_overview.execute("call-idle-exhausted-status", {});
+          const decision = overview.details.summary.supervisor_decision;
+          const nextItem = await tools.trotters_runbook.execute("call-next-item-status", {
+            action: "next_work_item",
+            currentPlanId: decision.current_plan_id,
+          });
+
+          assert.equal(decision.classification, "idle_exhausted_ready_for_next");
+          assert.equal(decision.recommended_mode, "advance_runbook");
+          assert.equal(decision.current_plan_id, "beta_defensive_continuation");
+          assert.equal(nextItem.details.selected.plan_id, "refine_seed_continuation");
+        } finally {
+          global.fetch = originalFetch;
+        }
+      });
+    },
+  );
 });
 
 await runTest("supervisor drill harness advances the runbook from the exhausted plan to the next approved item", async () => {
@@ -795,6 +869,11 @@ await runTest("runbook history records recoveries and escalations", async () => 
 if (process.exitCode && process.exitCode !== 0) {
   process.exit(process.exitCode);
 }
+
+
+
+
+
 
 
 

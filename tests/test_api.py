@@ -108,6 +108,45 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["most_recent_terminal"]["director"]["director_id"], "director-failed")
         self.assertEqual(payload["most_recent_terminal"]["campaign"]["campaign_id"], "campaign-failed")
 
+    def test_runtime_overview_preserves_terminal_director_plan_name(self) -> None:
+        root = self._workspace_root("overview_terminal_plan")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with patch(
+                "trotters_trader.api.runtime_status",
+                return_value={
+                    "counts": {},
+                    "workers": [],
+                    "jobs": [],
+                    "campaigns": [
+                        {
+                            "campaign_id": "campaign-exhausted",
+                            "status": "exhausted",
+                            "updated_at": "2026-03-23T07:46:20+00:00",
+                            "finished_at": "2026-03-23T07:46:20+00:00",
+                        }
+                    ],
+                    "directors": [
+                        {
+                            "director_id": "director-exhausted",
+                            "director_name": "beta-defensive-director",
+                            "plan_name": "beta_defensive_continuation",
+                            "status": "exhausted",
+                            "updated_at": "2026-03-23T07:47:22+00:00",
+                            "finished_at": "2026-03-23T07:47:22+00:00",
+                        }
+                    ],
+                },
+            ):
+                status, _, body = self._invoke(app, "GET", "/api/v1/runtime/overview", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["most_recent_terminal"]["director"]["plan_name"], "beta_defensive_continuation")
+
     def test_runtime_overview_exposes_current_best_candidate_summary(self) -> None:
         root = self._workspace_root("overview_best_candidate")
         try:

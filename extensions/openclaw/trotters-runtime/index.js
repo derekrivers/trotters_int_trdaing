@@ -619,6 +619,30 @@ function nextWorkItem(runbook, params) {
   return queue[currentIndex + 1] || null;
 }
 
+async function inferCurrentPlanIdFromOverview(cfg, runbook) {
+  try {
+    const overview = await callJsonApi({
+      baseUrl: cfg.apiBase,
+      tokenEnv: "TROTTERS_API_TOKEN",
+      actor: cfg.actor,
+      path: "/api/v1/runtime/overview",
+    });
+    const terminalDirector = overview?.most_recent_terminal?.director;
+    const planName = optionalString(terminalDirector, "plan_name");
+    if (planName) {
+      return planName;
+    }
+    const directorName = optionalString(terminalDirector, "director_name");
+    if (!directorName) {
+      return null;
+    }
+    const queue = Array.isArray(runbook?.work_queue) ? runbook.work_queue : [];
+    return queue.find((entry) => optionalString(entry, "director_name") === directorName)?.plan_id || null;
+  } catch {
+    return null;
+  }
+}
+
 function readHistory(cfg) {
   if (!fs.existsSync(cfg.runbookHistoryPath)) {
     return [];
@@ -712,6 +736,10 @@ function summarizeMostRecentTerminal(terminalPayload) {
     campaign_name: optionalString(campaignTerminal || legacyFlatTerminal, "campaign_name"),
     director_id: optionalString(directorTerminal || campaignTerminal, "director_id"),
     director_name: optionalString(directorTerminal, "director_name"),
+    status:
+      optionalString(campaignTerminal || legacyFlatTerminal, "status") ||
+      optionalString(directorTerminal, "status") ||
+      null,
     director_plan_name:
       optionalString(directorTerminal?.spec, "plan_name") ||
       optionalString(directorTerminal, "plan_name") ||
@@ -745,6 +773,7 @@ function buildSupervisorDecision(cfg, summary) {
   const activeCampaigns = Array.isArray(summary?.active_campaigns) ? summary.active_campaigns.length : 0;
   const workerCount = numberOrDefault(summary?.workers?.count, 0);
   const healthStatus = String(summary?.health?.status || "").trim().toLowerCase();
+  const terminalStatus = String(summary?.most_recent_terminal?.status || "").trim().toLowerCase();
   const terminalEvent = String(summary?.most_recent_terminal?.event_type || "").trim().toLowerCase();
   const terminalMessage = String(summary?.most_recent_terminal?.message || "").trim().toLowerCase();
   const terminalSeverity = String(summary?.most_recent_terminal?.severity || "").trim().toLowerCase();
@@ -801,7 +830,7 @@ function buildSupervisorDecision(cfg, summary) {
     };
   }
 
-  if (isFailureTerminalState(terminalEvent, terminalMessage, terminalSeverity)) {
+  if (isFailureTerminalState(terminalStatus, terminalEvent, terminalMessage, terminalSeverity)) {
     return {
       classification: "idle_investigate_failure",
       recommended_mode: "investigate_before_action",
@@ -815,7 +844,7 @@ function buildSupervisorDecision(cfg, summary) {
     };
   }
 
-  if (isExhaustedTerminalState(terminalEvent, terminalMessage) && exhaustedRecent) {
+  if (isExhaustedTerminalState(terminalStatus, terminalEvent, terminalMessage) && exhaustedRecent) {
     return {
       classification: "idle_exhausted_ready_for_next",
       recommended_mode: "advance_runbook",
@@ -830,7 +859,7 @@ function buildSupervisorDecision(cfg, summary) {
     };
   }
 
-  if (isExhaustedTerminalState(terminalEvent, terminalMessage)) {
+  if (isExhaustedTerminalState(terminalStatus, terminalEvent, terminalMessage)) {
     return {
       classification: "idle_exhausted_stale_context",
       recommended_mode: "inspect_runbook_or_wait",
@@ -1388,6 +1417,9 @@ function numberOrDefault(value, defaultValue) {
 }
 
 export default plugin;
+
+
+
 
 
 

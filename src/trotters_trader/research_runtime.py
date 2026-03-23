@@ -1393,10 +1393,10 @@ def director_status(paths: ResearchRuntimePaths, director_id: str | None = None)
     with _connect(paths) as connection:
         if director_id is None:
             directors = [
-                dict(row)
+                _director_summary_from_row(row)
                 for row in connection.execute(
                     """
-                    SELECT director_id, director_name, status, current_campaign_id, successful_campaign_id,
+                    SELECT director_id, director_name, status, spec_json, state_json, current_campaign_id, successful_campaign_id,
                            created_at, updated_at, finished_at, last_error
                     FROM directors
                     ORDER BY created_at ASC
@@ -3763,10 +3763,10 @@ def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
         ).fetchall()
     ]
     directors = [
-        dict(row)
+        _director_summary_from_row(row)
         for row in connection.execute(
             """
-            SELECT director_id, director_name, status, current_campaign_id, successful_campaign_id, created_at,
+            SELECT director_id, director_name, status, spec_json, state_json, current_campaign_id, successful_campaign_id, created_at,
                    updated_at, finished_at, last_error
             FROM directors
             ORDER BY created_at ASC
@@ -3801,6 +3801,33 @@ def _row_to_job(row: sqlite3.Row) -> ResearchJob:
         quality_gate=row["quality_gate"],
         evaluation_profile=row["evaluation_profile"],
     )
+
+
+def _director_summary_from_row(row: sqlite3.Row) -> dict[str, object]:
+    payload = dict(row)
+    payload["plan_name"] = _director_plan_name_from_json_strings(
+        payload.get("spec_json"),
+        payload.get("state_json"),
+    )
+    payload.pop("spec_json", None)
+    payload.pop("state_json", None)
+    return payload
+
+
+def _director_plan_name_from_json_strings(spec_json: object, state_json: object) -> str | None:
+    for raw in (spec_json, state_json):
+        if not isinstance(raw, str) or not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        plan_name = str(payload.get("plan_name") or "").strip()
+        if plan_name:
+            return plan_name
+    return None
 
 
 def _load_result_payload(value: object) -> dict[str, object]:

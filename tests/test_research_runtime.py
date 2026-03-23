@@ -554,6 +554,35 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertEqual(queue[0]["campaign_max_jobs"], 250)
         self.assertEqual(queue[0]["shortlist_size"], 2)
 
+    def test_runtime_and_director_list_expose_plan_name_for_terminal_directors(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with _db_connection(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO directors (
+                    director_id, director_name, status, spec_json, state_json, created_at, updated_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "director-terminal",
+                    "beta-defensive-director",
+                    "exhausted",
+                    json.dumps({"plan_name": "beta_defensive_continuation", "plan": [{"config_path": "configs/backtest.toml"}]}),
+                    json.dumps({"plan_name": "beta_defensive_continuation", "final_result": {"recommended_action": "exhausted"}}),
+                    "2026-03-23T07:29:56+00:00",
+                    "2026-03-23T07:47:22+00:00",
+                    "2026-03-23T07:29:56+00:00",
+                    "2026-03-23T07:47:22+00:00",
+                ),
+            )
+
+        runtime = runtime_status(paths)
+        listed = director_status(paths)["directors"]
+
+        self.assertEqual(runtime["directors"][0]["plan_name"], "beta_defensive_continuation")
+        self.assertEqual(listed[0]["plan_name"], "beta_defensive_continuation")
+
     def test_start_director_rejects_duplicate_active_plan_instances(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         plan_payload = {
