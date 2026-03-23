@@ -14,6 +14,7 @@ from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatc
 from trotters_trader.agent_summaries import load_latest_summaries
 from trotters_trader.http_security import is_basic_authorized, new_csrf_token, parse_cookies
 from trotters_trader.paper_rehearsal import paper_rehearsal_status
+from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
 from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
     campaign_status,
@@ -24,11 +25,7 @@ from trotters_trader.research_runtime import (
     skip_director_next,
     stop_campaign,
 )
-from trotters_trader.reports import (
-    build_campaign_operator_summary,
-    build_operability_scorecard,
-    operability_artifact_paths,
-)
+from trotters_trader.reports import build_operability_scorecard, operability_artifact_paths
 
 
 @dataclass(frozen=True)
@@ -65,18 +62,28 @@ class DashboardController:
             if campaign_id
         ]
         agent_summaries = load_latest_summaries(self._paths.catalog_output_dir)
+        current_best_candidate = resolve_current_best_candidate(
+            catalog_output_dir=self._paths.catalog_output_dir,
+            active_campaigns=active_campaigns,
+            most_recent_terminal={"campaign": _recent_outcomes(status.get("campaigns"), limit=1)[0]} if _recent_outcomes(status.get("campaigns"), limit=1) else {},
+            agent_summaries=agent_summaries,
+            fetch_campaign_detail=lambda campaign_id: campaign_status(self._paths, campaign_id).get("campaign", {}),
+        )
+        promotion_path = materialize_promotion_path(
+            catalog_output_dir=self._paths.catalog_output_dir,
+            current_best_candidate=current_best_candidate,
+            agent_summaries=agent_summaries,
+        )
         return {
             "status": status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
             "notifications": _load_notifications(self._paths, limit=25),
             "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
-            "current_best_candidate": _build_current_best_candidate(
-                self._paths,
-                status=status,
-                active_campaigns=active_campaigns,
-                agent_summaries=agent_summaries,
-            ),
+            "current_best_candidate": current_best_candidate,
+            "candidate_progression_summary": promotion_path["candidate_progression_summary"],
+            "paper_trade_entry_gate": promotion_path["paper_trade_entry_gate"],
+            "research_program_portfolio": promotion_path["research_program_portfolio"],
             "agent_summaries": agent_summaries,
             "agent_dispatches": load_dispatch_records(self._paths.catalog_output_dir, limit=10),
             "agent_dispatch_summary": load_dispatch_summary(self._paths.catalog_output_dir, limit=100),
@@ -357,43 +364,6 @@ def _load_notifications(paths: ResearchRuntimePaths, *, limit: int) -> list[dict
     return records[-limit:][::-1]
 
 
-def _build_current_best_candidate(
-    paths: ResearchRuntimePaths,
-    *,
-    status: dict[str, object],
-    active_campaigns: list[dict[str, object]],
-    agent_summaries: dict[str, dict[str, object]],
-) -> dict[str, object] | None:
-    focus_campaign = _latest_campaign(active_campaigns)
-    source = "active_campaign"
-    if focus_campaign is None:
-        terminal_campaign = _recent_outcomes(status.get("campaigns"), limit=1)
-        if terminal_campaign:
-            campaign_id = str(terminal_campaign[0].get("campaign_id", ""))
-            if campaign_id:
-                try:
-                    focus_campaign = campaign_status(paths, campaign_id).get("campaign", {})
-                except ValueError:
-                    focus_campaign = terminal_campaign[0]
-                source = "most_recent_terminal_campaign"
-    if not isinstance(focus_campaign, dict) or not focus_campaign:
-        return None
-    summary = build_campaign_operator_summary(
-        focus_campaign,
-        candidate_readiness=agent_summaries.get("candidate_readiness_summary"),
-        paper_trade_readiness=agent_summaries.get("paper_trade_readiness_summary"),
-    )
-    summary["source"] = source
-    return summary
-
-
-def _latest_campaign(campaigns: list[dict[str, object]]) -> dict[str, object] | None:
-    valid = [campaign for campaign in campaigns if isinstance(campaign, dict)]
-    if not valid:
-        return None
-    return max(valid, key=lambda campaign: str(campaign.get("updated_at", "") or ""))
-
-
 def _read_body(environ: dict[str, object]) -> bytes:
     length_text = str(environ.get("CONTENT_LENGTH", "") or "0").strip()
     try:
@@ -425,6 +395,21 @@ def _render_overview(
     current_best_candidate = (
         payload.get("current_best_candidate", {})
         if isinstance(payload.get("current_best_candidate"), dict)
+        else {}
+    )
+    candidate_progression_summary = (
+        payload.get("candidate_progression_summary", {})
+        if isinstance(payload.get("candidate_progression_summary"), dict)
+        else {}
+    )
+    paper_trade_entry_gate = (
+        payload.get("paper_trade_entry_gate", {})
+        if isinstance(payload.get("paper_trade_entry_gate"), dict)
+        else {}
+    )
+    research_program_portfolio = (
+        payload.get("research_program_portfolio", {})
+        if isinstance(payload.get("research_program_portfolio"), dict)
         else {}
     )
     paper_rehearsal = payload.get("paper_rehearsal", {}) if isinstance(payload.get("paper_rehearsal"), dict) else {}
@@ -512,8 +497,12 @@ def _render_overview(
     {_notification_banner(notifications, campaigns=campaigns, directors=directors)}
     {_health_panel(health)}
     {_service_heartbeat_section(service_heartbeats)}
-    {_paper_rehearsal_section(paper_rehearsal)}
+    {_active_runtime_now_section(directors, campaigns, counts)}
     {_current_best_candidate_section(current_best_candidate)}
+    {_candidate_progression_section(candidate_progression_summary)}
+    {_paper_trade_entry_gate_section(paper_trade_entry_gate)}
+    {_paper_rehearsal_section(paper_rehearsal)}
+    {_research_program_portfolio_section(research_program_portfolio)}
     <section class="summary-grid">{summary_cards}</section>
     <section class="panel">
       <h2>Decision Snapshots</h2>
@@ -582,14 +571,14 @@ def _render_overview(
     </section>
     <section class="split-grid">
       <section class="panel">
-        <h2>Recent Campaign Outcomes</h2>
+        <h2>Recent Terminal Campaign Outcomes</h2>
         <table>
           <thead><tr><th>Campaign</th><th>Status</th><th>Phase</th><th>Updated</th><th>Report</th><th>Action</th></tr></thead>
           <tbody>{recent_campaign_rows}</tbody>
         </table>
       </section>
       <section class="panel">
-        <h2>Recent Director Outcomes</h2>
+        <h2>Recent Terminal Director Outcomes</h2>
         <table>
           <thead><tr><th>Director</th><th>Status</th><th>Plan</th><th>Updated</th><th>Successful Campaign</th><th>Action</th></tr></thead>
           <tbody>{recent_director_rows}</tbody>
@@ -683,6 +672,89 @@ def _current_best_candidate_section(summary: dict[str, object]) -> str:
     """
 
 
+def _active_runtime_now_section(
+    directors: list[dict[str, object]],
+    campaigns: list[dict[str, object]],
+    counts: dict[str, object],
+) -> str:
+    active_director_names = ", ".join(
+        str(director.get("director_name") or director.get("director_id") or "unknown director")
+        for director in directors
+        if isinstance(director, dict)
+    ) or "None"
+    active_campaign_names = ", ".join(
+        str(campaign.get("campaign_name") or campaign.get("campaign_id") or "unknown campaign")
+        for campaign in campaigns
+        if isinstance(campaign, dict)
+    ) or "None"
+    summary = (
+        "The runtime is currently executing live research work."
+        if directors or campaigns
+        else "The runtime is currently idle. Recent terminal outcomes are historical, not live work."
+    )
+    return f"""
+    <section class="panel">
+      <h2>Active Runtime Now</h2>
+      <p class="subtle">This section is the live state. It is separate from the terminal-outcomes panels further down the page.</p>
+      <section class="summary-grid">
+        {_summary_card("active directors", str(len(directors)))}
+        {_summary_card("active campaigns", str(len(campaigns)))}
+        {_summary_card("queued jobs", str(counts.get("queued", 0)))}
+        {_summary_card("running jobs", str(counts.get("running", 0)))}
+      </section>
+      <p>{escape(summary)}</p>
+      <p><strong>Directors:</strong> {escape(active_director_names)}</p>
+      <p><strong>Campaigns:</strong> {escape(active_campaign_names)}</p>
+    </section>
+    """
+
+
+def _candidate_progression_section(summary: dict[str, object]) -> str:
+    records = [record for record in summary.get("records", []) if isinstance(record, dict)] if isinstance(summary.get("records"), list) else []
+    rows = "".join(_candidate_progression_row(record) for record in records[:8]) or "<tr><td colspan='8'>No candidate progression records yet.</td></tr>"
+    counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
+    return f"""
+    <section class="panel">
+      <h2>Candidate Progression</h2>
+      <p class="subtle">Normalized promotion-path view across active candidates, profile history, and research-program evidence.</p>
+      <section class="summary-grid">
+        {_summary_card("records", str(counts.get("total", 0)))}
+        {_summary_card("paper-trade next", str(counts.get("paper_trade_next", 0)))}
+        {_summary_card("needs follow-up", str(counts.get("needs_followup", 0)))}
+        {_summary_card("blocked", str(counts.get("promotion_blocked", 0)))}
+      </section>
+      <table>
+        <thead><tr><th>Profile</th><th>Source</th><th>Recommendation</th><th>Validation</th><th>Holdout</th><th>WF</th><th>Next Action</th><th>Recorded</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
+
+
+def _paper_trade_entry_gate_section(summary: dict[str, object]) -> str:
+    target = summary.get("target", {}) if isinstance(summary.get("target"), dict) else {}
+    reasons = summary.get("block_reasons", []) if isinstance(summary.get("block_reasons"), list) else []
+    reason_items = "".join(
+        f"<li>{escape(str(reason.get('message', 'unknown reason')))}</li>"
+        for reason in reasons
+        if isinstance(reason, dict)
+    ) or "<li>No blocking reasons recorded.</li>"
+    return f"""
+    <section class="panel">
+      <h2>Paper-Trade Entry Gate</h2>
+      <p class="subtle">Explicit decision boundary for whether the current lead candidate may enter paper-trade rehearsal.</p>
+      <section class="summary-grid">
+        {_summary_card("gate status", str(summary.get("status", "not_applicable")))}
+        {_summary_card("recommended action", str(summary.get("recommended_action", "wait_for_candidate")))}
+        {_summary_card("target profile", str(target.get("profile_name", "none") or "none"))}
+        {_summary_card("latest paper day", str((summary.get("paper_rehearsal_state", {}) if isinstance(summary.get("paper_rehearsal_state"), dict) else {}).get("latest_day_status", "none") or "none"))}
+      </section>
+      <p>{escape(str(summary.get("message", "No paper-trade gate decision is available.")))}</p>
+      <ul>{reason_items}</ul>
+    </section>
+    """
+
+
 def _paper_rehearsal_section(summary: dict[str, object]) -> str:
     state = summary.get("state") if isinstance(summary.get("state"), dict) else {}
     latest_day = summary.get("latest_day") if isinstance(summary.get("latest_day"), dict) else {}
@@ -731,6 +803,28 @@ def _paper_rehearsal_section(summary: dict[str, object]) -> str:
           <tbody>{action_rows}</tbody>
         </table>
       </section>
+    </section>
+    """
+
+
+def _research_program_portfolio_section(summary: dict[str, object]) -> str:
+    programs = [program for program in summary.get("programs", []) if isinstance(program, dict)] if isinstance(summary.get("programs"), list) else []
+    counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
+    rows = "".join(_research_program_row(program) for program in programs) or "<tr><td colspan='8'>No research programs recorded.</td></tr>"
+    return f"""
+    <section class="panel">
+      <h2>Research Program Portfolio</h2>
+      <p class="subtle">Evidence-backed view of active, retired, and queued research families.</p>
+      <section class="summary-grid">
+        {_summary_card("programs", str(counts.get("total", 0)))}
+        {_summary_card("active", str(counts.get("active", 0)))}
+        {_summary_card("retired", str(counts.get("retired", 0)))}
+        {_summary_card("queue eligible", str(counts.get("queue_eligible", 0)))}
+      </section>
+      <table>
+        <thead><tr><th>Program</th><th>Status</th><th>Queue</th><th>Focus Candidate</th><th>Next Step</th><th>Reason</th><th>Recorded</th><th>Artifacts</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
     </section>
     """
 
@@ -2002,6 +2096,42 @@ def _paper_action_row(action: dict[str, object]) -> str:
         f"<td>{escape(str(action.get('actor', 'unknown')))}</td>"
         f"<td>{escape(str(action.get('day_id', '') or '-'))}</td>"
         f"<td>{escape(str(action.get('reason', '') or '-'))}</td>"
+        "</tr>"
+    )
+
+
+def _candidate_progression_row(record: dict[str, object]) -> str:
+    validation = _percent(record.get("validation_excess_return"))
+    holdout = _percent(record.get("holdout_excess_return"))
+    return (
+        "<tr>"
+        f"<td>{escape(str(record.get('profile_name', '') or '-'))}</td>"
+        f"<td>{escape(str(record.get('source_type', '') or '-'))}</td>"
+        f"<td>{_status_pill(str(record.get('recommendation_state', 'unknown')))}</td>"
+        f"<td>{escape(str(record.get('validation_status', 'unknown')))} / {validation}</td>"
+        f"<td>{escape(str(record.get('holdout_status', 'unknown')))} / {holdout}</td>"
+        f"<td>{escape(str(int(record.get('walkforward_pass_windows', 0) or 0)))}</td>"
+        f"<td>{escape(str(record.get('next_action', '') or '-'))}</td>"
+        f"<td>{_timestamp_with_age(record.get('recorded_at_utc'))}</td>"
+        "</tr>"
+    )
+
+
+def _research_program_row(program: dict[str, object]) -> str:
+    queue_text = "enabled" if bool(program.get("queue_enabled", False)) else "not queued"
+    summary_path = str(program.get("summary_path", "") or "")
+    summary_html = f"<code>{escape(summary_path)}</code>" if summary_path else "-"
+    reason = str(program.get("decision_summary", "") or program.get("retirement_reason", "") or "-")
+    return (
+        "<tr>"
+        f"<td>{escape(str(program.get('title', '') or '-'))}</td>"
+        f"<td>{_status_pill(str(program.get('status', 'unknown')))}</td>"
+        f"<td>{escape(queue_text)}</td>"
+        f"<td>{escape(str(program.get('focus_profile_name', '') or '-'))}</td>"
+        f"<td>{escape(str(program.get('next_step', '') or '-'))}</td>"
+        f"<td>{escape(reason)}</td>"
+        f"<td>{_timestamp_with_age(program.get('recorded_at_utc'))}</td>"
+        f"<td>{summary_html}</td>"
         "</tr>"
     )
 

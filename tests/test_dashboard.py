@@ -141,10 +141,11 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("broad-operability-plan", body)
         self.assertIn("Strategy promoted:", body)
         self.assertIn("success", body)
+        self.assertIn("Active Runtime Now", body)
         self.assertIn("Outcome Summary", body)
         self.assertIn("What Changed Since Last Check", body)
-        self.assertIn("Recent Campaign Outcomes", body)
-        self.assertIn("Recent Director Outcomes", body)
+        self.assertIn("Recent Terminal Campaign Outcomes", body)
+        self.assertIn("Recent Terminal Director Outcomes", body)
         self.assertIn("completed-operability", body)
         self.assertIn("archived-director", body)
 
@@ -457,6 +458,7 @@ class DashboardTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         self.assertEqual(status, "200 OK")
+        self.assertIn("Candidate Progression", body)
         self.assertIn("Current Best Candidate", body)
         self.assertIn("Why This Is The Current Lead", body)
         self.assertIn("What Failed Or Is Missing", body)
@@ -1213,6 +1215,7 @@ class DashboardTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         self.assertEqual(status, "200 OK")
+        self.assertIn("Paper-Trade Entry Gate", body)
         self.assertIn("Paper Rehearsal", body)
         self.assertIn("No promoted frozen candidate is available for paper-trading rehearsal.", body)
         self.assertIn("Operator Decisions", body)
@@ -1323,6 +1326,20 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Service Heartbeats", body)
         self.assertIn("Campaign Manager", body)
         self.assertIn("Research runtime is degraded", body)
+
+    def test_overview_renders_research_program_portfolio_section(self) -> None:
+        root = self._workspace_root("program_portfolio")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch("trotters_trader.dashboard.runtime_status", return_value={"counts": {}, "workers": [], "jobs": [], "campaigns": [], "directors": []}):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Research Program Portfolio", body)
+        self.assertIn("Beta-Defensive Continuation Program", body)
 
     def _invoke(
         self,

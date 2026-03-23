@@ -9,6 +9,7 @@ import uuid
 
 from trotters_trader.backtest import build_daily_decision_package
 from trotters_trader.config import load_config
+from trotters_trader.promotion_path import build_candidate_progression_summary, build_paper_trade_entry_gate
 from trotters_trader.reports import render_paper_trade_decision_markdown
 
 PAPER_REHEARSAL_SCHEMA_VERSION = 1
@@ -23,12 +24,31 @@ def paper_rehearsal_status(catalog_output_dir: Path, *, limit: int = 10) -> dict
     state = load_paper_state(catalog_output_dir)
     recent_days = load_paper_days(catalog_output_dir, limit=max(1, limit))
     recent_actions = load_paper_actions(catalog_output_dir, limit=max(1, limit))
+    progression = build_candidate_progression_summary(catalog_output_dir)
+    latest_day = recent_days[0] if recent_days else None
+    explicit_target = None
+    active_profile = state.get("active_profile", {}) if isinstance(state.get("active_profile"), dict) else {}
+    if active_profile:
+        explicit_target = {
+            "config_path": str(active_profile.get("config_path", "") or ""),
+            "profile_name": str(active_profile.get("profile_name", "") or ""),
+            "profile_version": str(active_profile.get("profile_version", "") or ""),
+            "strategy_name": str(active_profile.get("strategy_name", "") or "cross_sectional_momentum"),
+            "promoted": bool((latest_day or {}).get("promoted", False)),
+            "frozen_on": str((latest_day or {}).get("decision_date", "") or ""),
+        }
+    entry_gate = build_paper_trade_entry_gate(
+        catalog_output_dir,
+        candidate_progression_summary=progression,
+        explicit_target=explicit_target,
+    )
     return {
         "state": state,
-        "latest_day": recent_days[0] if recent_days else None,
+        "latest_day": latest_day,
         "latest_action": recent_actions[0] if recent_actions else None,
         "recent_days": recent_days,
         "recent_actions": recent_actions,
+        "entry_gate": entry_gate,
     }
 
 
@@ -58,12 +78,28 @@ def run_paper_trade_runner(
     _ensure_paper_layout(paths)
     state = load_paper_state(catalog_output_dir)
     target = _resolve_runner_target(catalog_output_dir, config_path=config_path, evaluation_profile=evaluation_profile)
-    if target is None:
+    progression = build_candidate_progression_summary(catalog_output_dir)
+    entry_gate = build_paper_trade_entry_gate(
+        catalog_output_dir,
+        candidate_progression_summary=progression,
+        explicit_target=target,
+    )
+    gate_target = entry_gate.get("target", {}) if isinstance(entry_gate.get("target"), dict) else {}
+    if target is None and entry_gate.get("status") == "ready":
+        target = gate_target
+    if str(entry_gate.get("status", "")) != "ready":
         return _record_blocked_day(
             catalog_output_dir,
             state=state,
-            block_code="no_promoted_candidate",
-            block_message="No promoted frozen candidate is available for paper-trading rehearsal.",
+            block_reasons=[
+                reason
+                for reason in entry_gate.get("block_reasons", [])
+                if isinstance(reason, dict)
+            ],
+            config_path=str(gate_target.get("config_path", "")),
+            profile_name=str(gate_target.get("profile_name", "")),
+            profile_version=str(gate_target.get("profile_version", "")),
+            strategy_name=str(gate_target.get("strategy_name", "")),
             reference_date=reference_date,
         )
 

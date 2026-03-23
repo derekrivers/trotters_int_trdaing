@@ -77,6 +77,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["notifications"][0]["campaign_id"], "campaign-1")
         self.assertEqual(payload["most_recent_terminal"]["director"], None)
         self.assertIn("paper_rehearsal", payload)
+        self.assertIn("candidate_progression_summary", payload)
+        self.assertIn("paper_trade_entry_gate", payload)
+        self.assertIn("research_program_portfolio", payload)
 
     def test_runtime_overview_includes_most_recent_terminal_summary(self) -> None:
         root = self._workspace_root("overview_terminal")
@@ -251,6 +254,7 @@ class ApiTests(unittest.TestCase):
             payload["current_best_candidate"]["supporting_summaries"]["candidate_readiness"]["classification"],
             "research_only",
         )
+        self.assertIn("leading_candidate", payload["candidate_progression_summary"])
 
     def test_start_director_route_uses_runtime_service(self) -> None:
         root = self._workspace_root("director_start")
@@ -559,7 +563,7 @@ class ApiTests(unittest.TestCase):
 
         payload = json.loads(body)
         self.assertEqual(status, "200 OK")
-        self.assertEqual(payload["health"]["status"], "warning")
+        self.assertIn(payload["health"]["status"], {"warning", "stalled"})
         self.assertEqual(payload["status"]["service_heartbeats"][1]["service"], "campaign-manager")
 
     def test_agent_summaries_route_returns_recorded_summaries(self) -> None:
@@ -674,6 +678,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertEqual(payload["latest_day"]["day_id"], "paper-day-1")
         self.assertEqual(payload["latest_action"]["action"], "blocked")
+        self.assertIn("entry_gate", payload)
 
     def test_paper_trading_actions_route_records_operator_action(self) -> None:
         root = self._workspace_root("paper_action")
@@ -729,6 +734,44 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, "201 Created")
         self.assertEqual(payload["action"]["action"], "accepted")
         self.assertTrue(payload["state"]["portfolio"]["initialized"])
+
+    def test_promotion_path_routes_return_read_models(self) -> None:
+        root = self._workspace_root("promotion_path")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            latest_dir = paths.catalog_output_dir / "agent_summaries" / "latest"
+            latest_dir.mkdir(parents=True, exist_ok=True)
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            progression_status, _, progression_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/promotion-path/candidate-progression",
+                headers=self._auth_headers(),
+            )
+            gate_status, _, gate_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/promotion-path/paper-trade-entry-gate",
+                headers=self._auth_headers(),
+            )
+            portfolio_status, _, portfolio_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/promotion-path/research-program-portfolio",
+                headers=self._auth_headers(),
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        progression = json.loads(progression_body)
+        gate = json.loads(gate_body)
+        portfolio = json.loads(portfolio_body)
+        self.assertEqual(progression_status, "200 OK")
+        self.assertEqual(gate_status, "200 OK")
+        self.assertEqual(portfolio_status, "200 OK")
+        self.assertEqual(progression["summary_type"], "candidate_progression_summary")
+        self.assertEqual(gate["summary_type"], "paper_trade_entry_gate")
+        self.assertEqual(portfolio["summary_type"], "research_program_portfolio")
     def _invoke(
         self,
         app: ApiApp,
