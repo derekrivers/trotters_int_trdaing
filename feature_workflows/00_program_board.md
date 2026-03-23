@@ -1,4 +1,4 @@
-# Program Board
+﻿# Program Board
 
 | ID | Title | Status | Dependency | Exit Criteria | Next Action |
 | --- | --- | --- | --- | --- | --- |
@@ -10,6 +10,10 @@
 | `FW-006` | Next research family and supervisor continuation | `done` | `FW-005` | a new research family is defined, encoded as an approved director plan/runbook item, and the OpenClaw supervisor can auto-advance into it after idle exhaustion | use the beta-defensive branch and `current_plan_id` continuation path as the baseline for the next research-family workflow |
 | `FW-007` | Queue expansion and family pipeline | `done` | `FW-006` | the OpenClaw runbook has a third approved family, queue growth rules are documented, and weaker families are kept out unless justified | use the three-item queue as the baseline and add future families through workflow-first evidence review |
 | `FW-008` | Security and fault-tolerance hardening | `done` | `FW-001`, `FW-004` | dashboard requires auth and CSRF, API and ops-bridge mutation calls require actor identity, runtime services self-report health, and local host exposure is narrowed by default | use the hardened localhost operator model and service-heartbeat contract as the baseline for future deployment work |
+| `FW-009` | Candidate progression ledger | `done` | `FW-002`, `FW-005`, `FW-007` | normalized candidate-progression records exist under `runtime/catalog`, API surfaces them directly, and the leading candidate resolves from persisted evidence instead of dashboard-only shaping | use the progression ledger as the source of truth for future promotion and readiness views |
+| `FW-010` | Promotion cockpit and active-state clarity | `done` | `FW-009` | the dashboard clearly separates live runtime state, leading candidate state, paper-trade gate state, and terminal outcomes | use the new active-runtime and progression sections as the baseline for future operator UX work |
+| `FW-011` | Paper-trade entry gate | `done` | `FW-003`, `FW-009` | an explicit entry-gate artifact exists, the paper runner consumes it, and API/dashboard show the same gate decision and blocking reasons | use the gate artifact as the only supported readiness boundary for future paper-day automation |
+| `FW-012` | Research program portfolio board | `done` | `FW-005`, `FW-007`, `FW-009` | the app exposes active, retired, and queue-eligible research programs in one compact operator view | use the portfolio board as the branch-selection baseline instead of scattered roadmap prose |
 
 ## Ordering Notes
 
@@ -18,3 +22,4 @@
 3. `FW-005` is a standing research track and should keep its evidence current while the product/runtime work proceeds.
 4. `FW-006` should start from the retired-branch evidence in `FW-005` rather than reusing stale assumptions about the old `risk + sector` family.
 5. `FW-008` establishes the minimum acceptable security posture for the single-host operator runtime before any broader deployment or remote-access work is considered.
+6. `FW-009` through `FW-012` turn the promotion path into explicit read models; future paper-trading or operator work should extend those summaries instead of adding new dashboard-only logic.
