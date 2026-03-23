@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
@@ -896,6 +896,52 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(portfolio_alias["summary_type"], "research_program_portfolio")
         self.assertEqual(families["summary_type"], "research_family_comparison_summary")
         self.assertIn(current_proposal["approval_status"], {"approved", "under_review", "proposed", "queued", "active", "retired", "rejected"})
+    def test_runtime_overview_marks_governed_blocked_idle_state(self) -> None:
+        root = self._workspace_root("governed_blocked_idle")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with (
+                patch(
+                    "trotters_trader.api.runtime_status",
+                    return_value={
+                        "counts": {"queued": 0, "running": 0},
+                        "workers": [{"worker_id": "worker-01", "status": "idle", "heartbeat_at": "2999-03-23T08:59:59+00:00"}],
+                        "jobs": [],
+                        "campaigns": [],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "director_name": "sma-cross-director",
+                                "status": "exhausted",
+                                "updated_at": "2026-03-23T08:59:59+00:00",
+                            }
+                        ],
+                        "service_heartbeats": [
+                            {"service": "coordinator", "status": "ok", "recorded_at_utc": "2999-03-23T08:59:59+00:00", "detail": "Heartbeat is fresh."},
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.api.build_next_family_status",
+                    return_value={
+                        "status": "blocked_pending_approval",
+                        "recommended_action": "define_next_research_family",
+                        "message": "Current family proposal 'sma-cross' is retired and cannot re-enter the queue.",
+                        "blocking_reason": "The branch exhausted its defined path without producing a promotion-eligible candidate.",
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/api/v1/runtime/overview", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["health"]["status"], "blocked")
+        self.assertIn("Research runtime is intentionally blocked", payload["health"]["summary"])
+        queue_check = next(check for check in payload["health"]["checks"] if check["name"] == "queue governance")
+        self.assertIn("retired and cannot re-enter the queue", queue_check["detail"])
     def _invoke(
         self,
         app: ApiApp,
@@ -943,4 +989,3 @@ class ApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

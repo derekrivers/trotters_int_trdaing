@@ -473,7 +473,7 @@ def _render_overview(
     agent_dispatches = payload.get("agent_dispatches", []) if isinstance(payload.get("agent_dispatches"), list) else []
     agent_dispatch_summary = payload.get("agent_dispatch_summary", {}) if isinstance(payload.get("agent_dispatch_summary"), dict) else {}
     service_heartbeats = status.get("service_heartbeats", []) if isinstance(status.get("service_heartbeats"), list) else []
-    health = _runtime_health(status=status, campaigns=campaigns, directors=directors)
+    health = _runtime_health(status=status, campaigns=campaigns, directors=directors, next_family_status=next_family_status)
 
     summary_cards = "".join(
         _summary_card(label, str(counts.get(label, 0)))
@@ -554,7 +554,7 @@ def _render_overview(
     {_catalog_status_banner(catalog_status)}
     {_health_panel(health)}
     {_service_heartbeat_section(service_heartbeats)}
-    {_active_runtime_now_section(directors, campaigns, counts)}
+    {_active_runtime_now_section(directors, campaigns, counts, next_family_status=next_family_status)}
     {_active_branch_summary_section(active_branch_summary)}
     {_current_best_candidate_section(current_best_candidate)}
     {_candidate_progression_section(candidate_progression_summary)}
@@ -777,6 +777,8 @@ def _active_runtime_now_section(
     directors: list[dict[str, object]],
     campaigns: list[dict[str, object]],
     counts: dict[str, object],
+    *,
+    next_family_status: dict[str, object] | None = None,
 ) -> str:
     active_director_names = ", ".join(
         str(director.get("director_name") or director.get("director_id") or "unknown director")
@@ -788,11 +790,20 @@ def _active_runtime_now_section(
         for campaign in campaigns
         if isinstance(campaign, dict)
     ) or "None"
-    summary = (
-        "The runtime is currently executing live research work."
-        if directors or campaigns
-        else "The runtime is currently idle. Recent terminal outcomes are historical, not live work."
-    )
+    next_family = next_family_status if isinstance(next_family_status, dict) else {}
+    next_family_state = str(next_family.get("status", "")).lower()
+    blocked_by_governance = next_family_state in {"blocked_pending_approval", "blocked_pending_bootstrap"}
+    blocked_message = str(next_family.get("message", "")).strip()
+    if directors or campaigns:
+        summary = "The runtime is currently executing live research work."
+    elif blocked_by_governance:
+        summary = (
+            f"The runtime is currently blocked by queue governance. {blocked_message}"
+            if blocked_message
+            else "The runtime is currently blocked by queue governance until the next approved family is defined."
+        )
+    else:
+        summary = "The runtime is currently idle. Recent terminal outcomes are historical, not live work."
     return f"""
     <section class="panel">
       <h2>Active Runtime Now</h2>
@@ -1779,7 +1790,7 @@ def _health_severity(status: str) -> str:
     lowered = status.lower()
     if lowered in {"critical", "error", "stalled"}:
         return "error"
-    if lowered in {"warning", "degraded", "idle"}:
+    if lowered in {"warning", "degraded", "idle", "blocked"}:
         return "warning"
     return "success"
 
@@ -2443,6 +2454,7 @@ def _runtime_health(
     status: dict[str, object],
     campaigns: list[dict[str, object]],
     directors: list[dict[str, object]],
+    next_family_status: dict[str, object] | None = None,
 ) -> dict[str, object]:
     counts = status.get("counts", {}) if isinstance(status.get("counts"), dict) else {}
     all_directors = [director for director in status.get("directors", []) if isinstance(director, dict)] if isinstance(status.get("directors"), list) else []
@@ -2510,6 +2522,11 @@ def _runtime_health(
         for record in service_heartbeats
         if str(record.get("status", "")).lower() != "ok"
     ]
+    next_family = next_family_status if isinstance(next_family_status, dict) else {}
+    next_family_state = str(next_family.get("status", "")).lower()
+    governance_blocked = next_family_state in {"blocked_pending_approval", "blocked_pending_bootstrap"}
+    governance_message = str(next_family.get("message", "")).strip()
+    governance_reason = str(next_family.get("blocking_reason", "")).strip()
 
     checks: list[dict[str, str]] = []
     checks.append(
@@ -2592,6 +2609,18 @@ def _runtime_health(
             ),
         }
     )
+    if governance_blocked:
+        checks.append(
+            {
+                "name": "queue governance",
+                "status": "warning",
+                "detail": (
+                    f"{governance_message} {governance_reason}".strip()
+                    if governance_message or governance_reason
+                    else "The supervisor queue is intentionally blocked pending research-family governance."
+                ),
+            }
+        )
     if running > 0:
         checks.append(
             {
@@ -2627,6 +2656,13 @@ def _runtime_health(
         summary = (
             "Research runtime needs attention: no active directors remain after the latest director "
             f"{most_recent_director_status}."
+        )
+    elif governance_blocked and running == 0 and queued == 0 and not campaigns and not directors:
+        overall = "blocked"
+        summary = (
+            f"Research runtime is intentionally blocked: {governance_message}"
+            if governance_message
+            else "Research runtime is intentionally blocked pending research-family governance."
         )
     elif running == 0 and queued == 0 and not campaigns and not directors:
         overall = "idle"
@@ -2664,7 +2700,7 @@ def _status_pill(value: str) -> str:
     css = ""
     if lowered in {"failed", "campaign_failed", "stopped", "error", "missing"}:
         css = " danger"
-    elif lowered in {"queued", "warn", "stage_submitted", "warning", "stale"}:
+    elif lowered.startswith("blocked") or lowered in {"queued", "warn", "stage_submitted", "warning", "stale", "retired"}:
         css = " warn"
     return f"<span class='pill{css}'>{escape(value)}</span>"
 
@@ -2950,13 +2986,3 @@ def _query_value(query: dict[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     return values[0]
-
-
-
-
-
-
-
-
-
-

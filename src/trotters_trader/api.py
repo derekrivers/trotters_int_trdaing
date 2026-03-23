@@ -121,7 +121,7 @@ class ApiController:
             "next_family_status": next_family_status,
             "notifications": notifications,
             "most_recent_terminal": most_recent_terminal,
-            "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
+            "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors, next_family_status=next_family_status),
             "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
             "current_best_candidate": current_best_candidate,
             "candidate_progression_summary": promotion_path["candidate_progression_summary"],
@@ -871,6 +871,3 @@ def _write_audit_record(path: Path, payload: dict[str, object]) -> None:
 
 def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
-
-
-

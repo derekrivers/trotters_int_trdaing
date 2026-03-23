@@ -1434,6 +1434,64 @@ class DashboardTests(unittest.TestCase):
             or "bootstrap_approved_family" in body
         )
 
+    def test_overview_marks_governed_blocked_idle_state(self) -> None:
+        root = self._workspace_root("governed_blocked_idle")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 0, "running": 0},
+                        "workers": [
+                            {
+                                "worker_id": "worker-01",
+                                "status": "idle",
+                                "current_job_id": None,
+                                "heartbeat_at": "2999-03-23T08:59:59+00:00",
+                            }
+                        ],
+                        "jobs": [],
+                        "campaigns": [],
+                        "directors": [
+                            {
+                                "director_id": "director-1",
+                                "director_name": "sma-cross-director",
+                                "status": "exhausted",
+                                "updated_at": "2026-03-23T08:59:59+00:00",
+                            }
+                        ],
+                        "service_heartbeats": [
+                            {
+                                "service": "coordinator",
+                                "label": "Coordinator",
+                                "status": "ok",
+                                "recorded_at_utc": "2999-03-23T08:59:59+00:00",
+                                "pid": 101,
+                                "detail": "Heartbeat is fresh.",
+                            }
+                        ],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.build_next_family_status",
+                    return_value={
+                        "status": "blocked_pending_approval",
+                        "recommended_action": "define_next_research_family",
+                        "message": "Current family proposal 'sma-cross' is retired and cannot re-enter the queue.",
+                        "blocking_reason": "The branch exhausted its defined path without producing a promotion-eligible candidate.",
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Research runtime is intentionally blocked", body)
+        self.assertIn("queue governance", body)
+        self.assertIn("Current family proposal &#x27;sma-cross&#x27; is retired and cannot re-enter the queue.", body)
     def _invoke(
         self,
         app: DashboardApp,

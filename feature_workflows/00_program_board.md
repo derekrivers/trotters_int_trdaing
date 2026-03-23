@@ -23,6 +23,7 @@
 | `FW-019` | Runbook approval gate and queue re-entry | `done` | `FW-017`, `FW-018` | runbook entries are only runnable when backed by an approved family definition, and queue summaries explain approval-state blockers explicitly | use governed approval-state summaries instead of raw queue order when selecting supervisor follow-ups |
 | `FW-020` | Research-batch bootstrap for approved family | `done` | `FW-017`, `FW-019` | one approved family can be bootstrapped into a director plan, program artifact, and queue entry through a bounded path | use the bootstrap path for future approved families instead of bespoke manual wiring |
 | `FW-021` | Supervisor resume and blocked-state UX | `done` | `FW-018`, `FW-019`, `FW-020` | API, dashboard, and OpenClaw supervisor all expose one governed next-family state that explains active, blocked, or bootstrap-required queue conditions | use the shared next-family status contract whenever the queue is intentionally blocked or newly resumed |
+| `FW-022` | Governed idle health alignment | `done` | `FW-021` | shared runtime health, dashboard wording, and API overview all distinguish governed blocked-idle states from generic idle runtime | use the governed health contract whenever the queue is intentionally blocked without active work |
 
 ## Ordering Notes
 
@@ -37,3 +38,4 @@
 9. `FW-015` makes queue drift and no-candidate states explicit; future operator and supervisor work should extend the shared `runbook_queue_summary` and normalized `current_best_candidate` contracts instead of inventing new one-off status rules.
 10. `FW-016` makes the governed empty-queue state explicit; future continuation work must first approve a replacement research family instead of silently re-enabling retired or untracked plans.
 11. `FW-017` through `FW-021` complete the approval-to-resumption path; future family onboarding work should start from a proposal artifact, flow through approval-aware comparison and queue summaries, and use the bounded bootstrap path instead of direct runbook edits alone.
+12. `FW-022` keeps the main runtime-health surface aligned with the governed next-family state; future operator summaries should not present blocked queue states as generic idle runtime.

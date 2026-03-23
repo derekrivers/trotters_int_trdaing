@@ -401,3 +401,10 @@ New-family approval and controlled resumption checkpoint on March 23, 2026:
 - a bounded bootstrap path now materializes the director plan, research-program definition, and queue entry for one approved family at a time
 - the supervisor no longer presents a generic idle state when the queue is intentionally blocked; it now reports governed next-family states such as blocked pending approval, bootstrap required, or active approved family
 - the first approved replacement family was bootstrapped into the live stack, and the runtime resumed on `mean-reversion-director` / `mean-reversion-primary`
+
+Governed idle health alignment checkpoint on March 23, 2026:
+
+- the governed next-family state already blocked unsafe continuation, but the shared runtime-health summary still described that state as generic idle
+- API overview and dashboard health now report `blocked` when no director, campaign, or queued work remains and `next_family_status` is governance-blocked
+- the health panel now adds an explicit `queue governance` check so the operator can see why the runtime is intentionally stopped without having to infer it from a separate panel
+- the dashboard live-runtime section now says the stack is blocked by queue governance instead of simply idle when the current approved family has retired
