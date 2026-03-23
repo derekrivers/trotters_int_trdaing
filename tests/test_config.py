@@ -226,6 +226,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.data.source_corporate_actions_csv, Path("data/reference/eodhd_lse_starter_corporate_actions.csv"))
         self.assertEqual(config.data.download_exchange_code, "LSE")
         self.assertEqual(config.data.adjustment_policy, "splits_and_dividends_from_actions")
+        self.assertEqual(config.universe.allowed_currency, "GBX")
         self.assertEqual(config.research.profile_name, "momentum_total_return")
         self.assertFalse(config.features.use_precomputed)
 

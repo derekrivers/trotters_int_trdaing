@@ -17,7 +17,7 @@ adjustment_policy = "splits_and_dividends_from_actions"
 
 [universe]
 allowed_exchange_mic = ["XLON"]
-allowed_currency = "GBP"
+allowed_currency = "GBX"
 active_only = true
 min_history_days = 252
 min_average_volume = 1000000.0
