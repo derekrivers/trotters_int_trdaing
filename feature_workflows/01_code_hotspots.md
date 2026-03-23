@@ -8,11 +8,12 @@ There are almost no useful `TODO` or `FIXME` markers in the codebase, so the mai
 
 | Area | Evidence | Why It Matters | Allowed Cleanup Workflow |
 | --- | --- | --- | --- |
-| `src/trotters_trader/research_runtime.py` | about `3629` lines, about `103` defs | runtime state, campaign orchestration, director orchestration, notifications, and agent dispatch all live together | `FW-003`, `FW-005` |
+| `src/trotters_trader/research_runtime.py` | about `3629` lines, about `103` defs | runtime state, campaign orchestration, director orchestration, notifications, and agent dispatch all live together | `FW-003`, `FW-005`, `FW-006` |
 | `src/trotters_trader/dashboard.py` | about `2030` lines, about `71` defs | routing, HTML rendering, formatting, and operator view-model shaping are tightly coupled | `FW-002` |
-| `src/trotters_trader/reports.py` | about `1482` lines | report writing, recommendation logic, paper-trade decisions, and scorecards are mixed together | `FW-002`, `FW-003`, `FW-005` |
-| `src/trotters_trader/experiments.py` | about `1874` lines | experiment definitions and tranche/reporting behavior are concentrated in one module | `FW-005` |
+| `src/trotters_trader/reports.py` | about `1482` lines | report writing, recommendation logic, paper-trade decisions, and scorecards are mixed together | `FW-002`, `FW-003`, `FW-005`, `FW-006` |
+| `src/trotters_trader/experiments.py` | about `1874` lines | experiment definitions and tranche/reporting behavior are concentrated in one module | `FW-005`, `FW-006` |
 | `extensions/openclaw/trotters-runtime/index.js` | about `58` functions | tool definitions, summary normalization, review-pack building, and supervisor decision shaping are in one file | `FW-004` |
+| `configs/openclaw/trotters-runbook.json` plus `configs/directors/*.json` | supervisor continuation depends on queue order and explicit approved plans | autonomous progression stops when the runbook has no next item or a stale branch remains in the queue | `FW-006` |
 | `README.md` plus roadmap/tasklist docs | stale references already appeared after doc consolidation | top-level guidance can drift from the implemented state and mislead later work | `FW-001` |
 
 ## Smell Rules
