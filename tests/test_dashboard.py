@@ -10,13 +10,38 @@ import unittest
 from unittest.mock import MagicMock, patch
 import uuid
 
-from trotters_trader.dashboard import DashboardApp, DashboardController, _ThreadingWSGIServer, serve_dashboard
+from trotters_trader.dashboard import DashboardApp, DashboardController, _ThreadingWSGIServer, _display_timestamp, serve_dashboard
 from trotters_trader.research_runtime import runtime_paths
 
 
 class DashboardTests(unittest.TestCase):
     AUTH_USERNAME = "operator"
     AUTH_PASSWORD = "change-me-local-only"
+
+    def test_display_timestamp_trims_subsecond_precision(self) -> None:
+        self.assertEqual(
+            _display_timestamp("2026-03-23T21:54:15.212999+00:00"),
+            "2026-03-23T21:54:15+00:00",
+        )
+
+    def test_overview_uses_compact_typography_scale(self) -> None:
+        root = self._workspace_root("compact_typography")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch("trotters_trader.dashboard.runtime_status", return_value={"counts": {}, "workers": [], "jobs": [], "campaigns": [], "directors": []}),
+                patch("trotters_trader.dashboard.campaign_status", return_value={"campaign": {}}),
+                patch("trotters_trader.dashboard.director_status", return_value={"director": {}}),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("font-size: 1.35rem;", body)
+        self.assertIn("font-size: 1.7rem;", body)
+        self.assertNotIn("font-size: 1.8rem;", body)
 
     def test_overview_renders_catalog_pending_banner_when_catalog_missing(self) -> None:
         root = self._workspace_root("catalog_pending")

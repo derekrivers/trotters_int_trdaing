@@ -924,7 +924,7 @@ def _paper_rehearsal_section(summary: dict[str, object]) -> str:
     day_rows = "".join(_paper_day_row(day) for day in recent_days if isinstance(day, dict)) or "<tr><td colspan='6'>No paper-trading days recorded yet.</td></tr>"
     action_rows = "".join(_paper_action_row(action) for action in recent_actions if isinstance(action, dict)) or "<tr><td colspan='5'>No operator actions recorded yet.</td></tr>"
     latest_action_text = (
-        f"{latest_action.get('action', 'unknown')} at {latest_action.get('recorded_at_utc', '-')}"
+        f"{latest_action.get('action', 'unknown')} at {_display_timestamp(latest_action.get('recorded_at_utc', '-'))}"
         if latest_action
         else "none"
     )
@@ -1540,7 +1540,7 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
     a {{ color: var(--accent); }}
     code, pre {{
       font-family: "Cascadia Mono", Consolas, monospace;
-      font-size: 0.9rem;
+      font-size: 0.84rem;
     }}
     .hero, .summary-grid, .split-grid {{ margin-bottom: 1.25rem; }}
     .hero {{
@@ -1549,13 +1549,13 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
       gap: 1rem;
       align-items: end;
     }}
-    .hero h1 {{ margin: 0 0 0.35rem 0; font-size: 2rem; }}
-    .hero p {{ margin: 0.15rem 0; color: var(--muted); }}
+    .hero h1 {{ margin: 0 0 0.25rem 0; font-size: 1.7rem; line-height: 1.1; }}
+    .hero p {{ margin: 0.1rem 0; color: var(--muted); font-size: 0.95rem; }}
     .hero-links {{ display: flex; gap: 0.75rem; align-items: center; }}
     .summary-grid {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 0.85rem;
+      gap: 0.75rem;
     }}
     .split-grid {{
       display: grid;
@@ -1568,23 +1568,24 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
       border-radius: 18px;
       box-shadow: 0 10px 30px rgba(29, 42, 36, 0.06);
     }}
-    .card {{ padding: 1rem; }}
+    .card {{ padding: 0.85rem 0.9rem; }}
     .card h2, .panel h2 {{
-      margin: 0 0 0.75rem 0;
-      font-size: 1rem;
+      margin: 0 0 0.55rem 0;
+      font-size: 0.9rem;
       letter-spacing: 0.04em;
       text-transform: uppercase;
       color: var(--muted);
     }}
     .metric {{
-      font-size: 1.8rem;
+      font-size: 1.35rem;
+      line-height: 1.2;
       font-weight: bold;
     }}
-    .panel {{ padding: 1rem; overflow-x: auto; }}
+    .panel {{ padding: 0.9rem; overflow-x: auto; }}
     table {{
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
     }}
     th, td {{
       text-align: left;
@@ -1594,7 +1595,7 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
     }}
     th {{
       color: var(--muted);
-      font-size: 0.82rem;
+      font-size: 0.76rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }}
@@ -1604,7 +1605,7 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
       border-radius: 999px;
       background: var(--accent-soft);
       color: var(--accent);
-      font-size: 0.82rem;
+      font-size: 0.76rem;
       white-space: nowrap;
     }}
     .pill.info {{ background: var(--accent-soft); color: var(--accent); }}
@@ -1632,11 +1633,12 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
     }}
     .flash {{
       margin-bottom: 1rem;
-      padding: 0.9rem 1rem;
+      padding: 0.75rem 0.9rem;
       border-radius: 14px;
       background: #dceee8;
       border: 1px solid #9ecbbb;
       color: var(--accent);
+      font-size: 0.92rem;
     }}
     .flash.info {{ background: #dceee8; border-color: #9ecbbb; color: var(--accent); }}
     .flash.success {{ background: #dceee8; border-color: #9ecbbb; color: #1e6a4c; }}
@@ -1664,7 +1666,7 @@ def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
     }}
     .subtle {{
       color: var(--muted);
-      font-size: 0.82rem;
+      font-size: 0.76rem;
       white-space: nowrap;
     }}
   </style>
@@ -1966,7 +1968,7 @@ def _campaign_event_row(event: object) -> str:
         payload_text = json.dumps(payload, indent=2, default=str)
     return (
         "<tr>"
-        f"<td>{escape(str(event.get('recorded_at_utc', '')))}</td>"
+        f"<td>{escape(_display_timestamp(event.get('recorded_at_utc', '')))}</td>"
         f"<td>{_status_pill(str(event.get('event_type', 'event')))}</td>"
         f"<td>{escape(str(event.get('message', '')))}</td>"
         f"<td><pre>{escape(payload_text)}</pre></td>"
@@ -2292,7 +2294,7 @@ def _operator_supporting_summary_row(label: str, summary: object) -> str:
         f"<td>{escape(str(details.get('classification', 'unknown')))}</td>"
         f"<td>{escape(str(details.get('status', 'unknown')))}</td>"
         f"<td>{escape(str(details.get('recommended_action', 'unknown')))}</td>"
-        f"<td>{escape(str(details.get('recorded_at_utc', '') or '-'))}</td>"
+        f"<td>{escape(_display_timestamp(details.get('recorded_at_utc', '') or '-'))}</td>"
         "</tr>"
     )
 
@@ -2300,7 +2302,7 @@ def _operator_supporting_summary_row(label: str, summary: object) -> str:
 def _paper_day_row(day: dict[str, object]) -> str:
     return (
         "<tr>"
-        f"<td>{escape(str(day.get('recorded_at_utc', '') or '-'))}</td>"
+        f"<td>{escape(_display_timestamp(day.get('recorded_at_utc', '') or '-'))}</td>"
         f"<td>{escape(str(day.get('status', 'unknown')))}</td>"
         f"<td>{escape(str(day.get('profile_name', '') or '-'))}</td>"
         f"<td>{escape(str(day.get('decision_date', '') or '-'))}</td>"
@@ -2313,7 +2315,7 @@ def _paper_day_row(day: dict[str, object]) -> str:
 def _paper_action_row(action: dict[str, object]) -> str:
     return (
         "<tr>"
-        f"<td>{escape(str(action.get('recorded_at_utc', '') or '-'))}</td>"
+        f"<td>{escape(_display_timestamp(action.get('recorded_at_utc', '') or '-'))}</td>"
         f"<td>{escape(str(action.get('action', 'unknown')))}</td>"
         f"<td>{escape(str(action.get('actor', 'unknown')))}</td>"
         f"<td>{escape(str(action.get('day_id', '') or '-'))}</td>"
@@ -2479,13 +2481,30 @@ def _status_pill(value: str) -> str:
 
 
 def _timestamp_with_age(value: object) -> str:
-    text = str(value or "").strip()
+    text = _display_timestamp(value)
     if not text:
         return "-"
     age = _format_age_label(value)
     if age is None:
         return escape(text)
     return f"{escape(text)} <span class='subtle'>({escape(age)})</span>"
+
+
+def _display_timestamp(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    candidate = text[:-1] + "+00:00" if text.endswith("Z") else text
+    if "T" not in candidate and " " not in candidate:
+        return text
+    try:
+        timestamp = datetime.fromisoformat(candidate)
+    except ValueError:
+        return text
+    formatted = timestamp.isoformat(timespec="seconds")
+    if text.endswith("Z") and formatted.endswith("+00:00"):
+        return formatted.removesuffix("+00:00") + "Z"
+    return formatted
 
 
 def _format_age_label(value: object) -> str | None:
