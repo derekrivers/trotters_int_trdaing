@@ -8,6 +8,7 @@
 | `FW-004` | OpenClaw trust hardening | `done` | `FW-001` | repeated incidents are cooldown-limited, overnight drills are broader, plugin trust config is explicit, and summary quality is tighter | use the hardened supervisor decision contract and trusted plugin bootstrap as the baseline for future OpenClaw work |
 | `FW-005` | Risk-sector promotion program | `done` | `FW-001` | strongest `risk + sector` branch is either promoted under the current policy or explicitly retired with evidence | use the retired branch artifact as the baseline for selecting the next research family instead of re-opening the same path |
 | `FW-006` | Next research family and supervisor continuation | `done` | `FW-005` | a new research family is defined, encoded as an approved director plan/runbook item, and the OpenClaw supervisor can auto-advance into it after idle exhaustion | use the beta-defensive branch and `current_plan_id` continuation path as the baseline for the next research-family workflow |
+| `FW-007` | Queue expansion and family pipeline | `done` | `FW-006` | the OpenClaw runbook has a third approved family, queue growth rules are documented, and weaker families are kept out unless justified | use the three-item queue as the baseline and add future families through workflow-first evidence review |
 
 ## Ordering Notes
 

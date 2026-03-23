@@ -376,3 +376,12 @@ Beta-defensive continuation checkpoint on March 23, 2026:
 - a new research-program artifact was written to `runtime/catalog/beta_defensive_continuation_program/research_program.json` with status `active` and `recommended_action = run_next_step`
 - the live Compose-backed runtime was resumed on `beta-defensive-director` / `beta-defensive-primary`, restoring active work after the earlier idle exhausted state
 
+
+Queue expansion checkpoint on March 23, 2026:
+
+- the OpenClaw runbook was expanded from `2` to `3` approved items by adding `refine_seed_continuation` after `beta_defensive_continuation`
+- this refine branch is explicitly a lower-priority fallback, not a new highest-conviction direction
+- `momentum_broad_candidate_refine_n4_ms002_rf63` was chosen because it is the remaining repo-defined broad-family seed that is still operationally credible enough to run
+- `mean_reversion_broad_candidate_n8_ms005_rf21` remains outside the queue because the roadmap already records it as materially worse than the broad momentum control
+- the queue-growth rule is now: workflow-first evidence review, then research-program definition, then director plan, then runbook entry
+
