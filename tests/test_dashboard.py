@@ -466,6 +466,71 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("candidate-run", body)
         self.assertIn("Supporting Specialist Views", body)
 
+    def test_overview_renders_active_research_branch_section(self) -> None:
+        root = self._workspace_root("overview_active_branch")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with (
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 8, "running": 3, "completed": 12},
+                        "workers": [],
+                        "jobs": [],
+                        "campaigns": [
+                            {
+                                "campaign_id": "campaign-1",
+                                "campaign_name": "beta-defensive-primary",
+                                "status": "running",
+                                "phase": "stability_pivot",
+                                "updated_at": "2026-03-23T10:00:00+00:00",
+                            }
+                        ],
+                        "directors": [{"director_id": "director-1", "status": "running"}],
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.campaign_status",
+                    return_value={
+                        "campaign": {
+                            "campaign_id": "campaign-1",
+                            "campaign_name": "beta-defensive-primary",
+                            "status": "running",
+                            "phase": "stability_pivot",
+                            "updated_at": "2026-03-23T10:00:00+00:00",
+                            "jobs": [
+                                {"job_id": "job-1", "status": "running"},
+                                {"job_id": "job-2", "status": "queued"},
+                            ],
+                            "events": [{"event_type": "campaign_progress", "recorded_at_utc": "2026-03-23T10:00:00+00:00"}],
+                        }
+                    },
+                ),
+                patch(
+                    "trotters_trader.dashboard.director_status",
+                    return_value={
+                        "director": {
+                            "director_id": "director-1",
+                            "director_name": "beta-defensive-director",
+                            "status": "running",
+                            "current_campaign_id": "campaign-1",
+                            "successful_campaign_id": None,
+                            "spec": {"plan_name": "beta_defensive_continuation"},
+                            "state": {"plan_name": "beta_defensive_continuation"},
+                        }
+                    },
+                ),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Active Research Branch", body)
+        self.assertIn("beta-defensive-director", body)
+        self.assertIn("beta_defensive_continuation", body)
+
     def test_overview_warns_when_system_is_quiet_with_stale_signals(self) -> None:
         root = self._workspace_root("overview_health_warn")
         try:

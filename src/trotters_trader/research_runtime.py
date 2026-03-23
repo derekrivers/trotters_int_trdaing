@@ -16,6 +16,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 import uuid
 
+from trotters_trader.active_branch import launch_claim_is_stale
 from trotters_trader.agent_dispatches import append_dispatch_record, has_recent_successful_dispatch
 from trotters_trader.catalog import write_catalog_snapshot
 from trotters_trader.canonical import materialize_canonical_data
@@ -1611,6 +1612,7 @@ def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, ob
     director = None
     launch_entry = None
     adopt_campaign_id = None
+    launch_claim = None
     with _connect(paths) as connection:
         director = _get_director(connection, director_id)
         if director.status == "paused":
@@ -1626,6 +1628,49 @@ def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, ob
                 return _director_step_payload(director, "waiting_for_campaign")
             outcome = _process_director_campaign_outcome(connection, director, campaign, queue)
             return _director_step_payload(_get_director(connection, director_id), outcome)
+        launch_claim = state.get("launch_in_progress") if isinstance(state.get("launch_in_progress"), dict) else None
+        if launch_claim:
+            adopt_campaign = _find_active_campaign_for_director(
+                connection,
+                director_id,
+                str(launch_claim.get("config_path") or ""),
+            )
+            if adopt_campaign is not None:
+                queued_entry = _find_director_queue_entry(queue, launch_claim.get("queue_index"))
+                if queued_entry is not None:
+                    queued_entry["campaign_id"] = adopt_campaign.campaign_id
+                    queued_entry["status"] = "running"
+                state["active_campaign_id"] = adopt_campaign.campaign_id
+                state["launch_in_progress"] = None
+                _update_director_state(
+                    connection,
+                    director.director_id,
+                    state,
+                    current_campaign_id=adopt_campaign.campaign_id,
+                )
+                _record_director_event(
+                    connection,
+                    director.director_id,
+                    "campaign_adopted",
+                    f"Director adopted campaign {adopt_campaign.campaign_id} after launch claim",
+                    {"campaign_id": adopt_campaign.campaign_id, "config_path": adopt_campaign.config_path},
+                )
+                return _director_step_payload(_get_director(connection, director_id), "campaign_adopted")
+            if not launch_claim_is_stale(launch_claim.get("claimed_at")):
+                return _director_step_payload(_get_director(connection, director_id), "campaign_launch_in_progress")
+            queued_entry = _find_director_queue_entry(queue, launch_claim.get("queue_index"))
+            if queued_entry is not None and str(queued_entry.get("status", "")).lower() == "launching":
+                queued_entry["status"] = "pending"
+                queued_entry["campaign_id"] = None
+            state["launch_in_progress"] = None
+            _update_director_state(connection, director_id, state, current_campaign_id=None)
+            _record_director_event(
+                connection,
+                director_id,
+                "campaign_launch_reset",
+                "Reset stale campaign launch claim",
+                {"queue_index": launch_claim.get("queue_index"), "config_path": launch_claim.get("config_path")},
+            )
         launch_entry = _next_director_queue_entry(queue)
         if launch_entry is None:
             _finish_director(
@@ -1660,6 +1705,20 @@ def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, ob
                     {"campaign_id": adopt_campaign_id, "config_path": launch_entry["config_path"]},
                 )
                 return _director_step_payload(_get_director(connection, director_id), "campaign_adopted")
+        launch_entry["status"] = "launching"
+        state["launch_in_progress"] = {
+            "queue_index": launch_entry["queue_index"],
+            "config_path": launch_entry["config_path"],
+            "claimed_at": _utcnow(),
+        }
+        _update_director_state(connection, director.director_id, state, current_campaign_id=None)
+        _record_director_event(
+            connection,
+            director.director_id,
+            "campaign_launch_claimed",
+            f"Director claimed pending campaign {launch_entry['campaign_name']}",
+            {"queue_index": launch_entry["queue_index"], "config_path": launch_entry["config_path"]},
+        )
     assert director is not None
     assert launch_entry is not None
     started = start_campaign(
@@ -1687,6 +1746,7 @@ def step_director(paths: ResearchRuntimePaths, director_id: str) -> dict[str, ob
             queued_entry["campaign_id"] = started["campaign_id"]
             queued_entry["status"] = "running"
         state["active_campaign_id"] = started["campaign_id"]
+        state["launch_in_progress"] = None
         _update_director_state(
             connection,
             director_id,
@@ -2096,12 +2156,15 @@ def _find_adoptable_campaign(connection: sqlite3.Connection, config_path: str) -
 
 
 def _director_step_payload(director: ResearchDirector, outcome: str) -> dict[str, object]:
+    state = director.state
     return {
         "director_id": director.director_id,
         "director_name": director.director_name,
         "status": director.status,
         "current_campaign_id": director.current_campaign_id,
         "successful_campaign_id": director.successful_campaign_id,
+        "plan_name": state.get("plan_name") if isinstance(state, dict) else None,
+        "launch_in_progress": state.get("launch_in_progress") if isinstance(state, dict) else None,
         "outcome": outcome,
     }
 

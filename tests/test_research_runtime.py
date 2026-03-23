@@ -698,6 +698,134 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertEqual(kwargs["stage_candidate_limit"], 10)
         self.assertEqual(kwargs["shortlist_size"], 2)
 
+    def test_step_director_returns_launch_in_progress_without_starting_duplicate_campaign(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with _db_connection(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO directors (
+                    director_id, director_name, status, spec_json, state_json, created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "director-launch",
+                    "director-launch",
+                    "running",
+                    json.dumps(
+                        {
+                            "plan": [{"config_path": "configs/backtest.toml"}],
+                            "adopt_active_campaigns": False,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "campaign_queue": [
+                                {
+                                    "queue_index": 0,
+                                    "config_path": "configs/backtest.toml",
+                                    "campaign_name": "director-launch-backtest",
+                                    "status": "launching",
+                                    "campaign_id": None,
+                                    "completed_at": None,
+                                    "outcome": None,
+                                }
+                            ],
+                            "active_campaign_id": None,
+                            "successful_campaign_id": None,
+                            "launch_in_progress": {
+                                "queue_index": 0,
+                                "config_path": "configs/backtest.toml",
+                                "claimed_at": "2999-03-23T10:00:00+00:00",
+                            },
+                            "final_result": None,
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        with patch("trotters_trader.research_runtime.start_campaign") as start_campaign_mock:
+            payload = step_director(paths, "director-launch")
+
+        self.assertEqual(payload["outcome"], "campaign_launch_in_progress")
+        start_campaign_mock.assert_not_called()
+
+    def test_step_director_recovers_launch_claim_by_adopting_matching_campaign(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        with _db_connection(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO directors (
+                    director_id, director_name, status, spec_json, state_json, created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "director-claim",
+                    "director-claim",
+                    "running",
+                    json.dumps({"plan": [{"config_path": "configs/backtest.toml"}], "adopt_active_campaigns": False}),
+                    json.dumps(
+                        {
+                            "campaign_queue": [
+                                {
+                                    "queue_index": 0,
+                                    "config_path": "configs/backtest.toml",
+                                    "campaign_name": "director-claim-backtest",
+                                    "status": "launching",
+                                    "campaign_id": None,
+                                    "completed_at": None,
+                                    "outcome": None,
+                                }
+                            ],
+                            "active_campaign_id": None,
+                            "successful_campaign_id": None,
+                            "launch_in_progress": {
+                                "queue_index": 0,
+                                "config_path": "configs/backtest.toml",
+                                "claimed_at": "2999-03-23T10:00:00+00:00",
+                            },
+                            "final_result": None,
+                        }
+                    ),
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                    "2026-03-21T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO campaigns (
+                    campaign_id, director_id, campaign_name, config_path, status, phase, spec_json, state_json,
+                    created_at, updated_at, started_at
+                ) VALUES (?, ?, ?, ?, 'running', 'focused_operability', ?, ?, ?, ?, ?)
+                """,
+                (
+                    "campaign-existing",
+                    "director-claim",
+                    "director-claim-backtest",
+                    "configs/backtest.toml",
+                    json.dumps({"config_path": "configs/backtest.toml"}),
+                    json.dumps({"final_decision": None}),
+                    "2026-03-22T18:00:00+00:00",
+                    "2026-03-22T18:00:01+00:00",
+                    "2026-03-22T18:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        payload = step_director(paths, "director-claim")
+
+        self.assertEqual(payload["outcome"], "campaign_adopted")
+        status = director_status(paths, "director-claim")
+        self.assertEqual(status["director"]["current_campaign_id"], "campaign-existing")
+        self.assertIsNone(status["director"]["state"].get("launch_in_progress"))
+        self.assertEqual(status["director"]["state"]["campaign_queue"][0]["status"], "running")
+
     def test_step_director_adopts_matching_active_campaign(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         initialize_runtime(paths)

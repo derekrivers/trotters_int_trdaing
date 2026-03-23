@@ -12,6 +12,7 @@ from wsgiref.simple_server import make_server
 
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries
+from trotters_trader.active_branch import build_active_branch_summary
 from trotters_trader.http_security import is_basic_authorized, new_csrf_token, parse_cookies
 from trotters_trader.paper_rehearsal import paper_rehearsal_status
 from trotters_trader.promotion_path import materialize_promotion_path, resolve_current_best_candidate
@@ -74,10 +75,15 @@ class DashboardController:
             current_best_candidate=current_best_candidate,
             agent_summaries=agent_summaries,
         )
+        active_branch_summary = build_active_branch_summary(
+            active_directors=active_directors,
+            active_campaigns=active_campaigns,
+        )
         return {
             "status": status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
+            "active_branch_summary": active_branch_summary,
             "notifications": _load_notifications(self._paths, limit=25),
             "paper_rehearsal": paper_rehearsal_status(self._paths.catalog_output_dir, limit=5),
             "current_best_candidate": current_best_candidate,
@@ -397,6 +403,11 @@ def _render_overview(
         if isinstance(payload.get("current_best_candidate"), dict)
         else {}
     )
+    active_branch_summary = (
+        payload.get("active_branch_summary", {})
+        if isinstance(payload.get("active_branch_summary"), dict)
+        else {}
+    )
     candidate_progression_summary = (
         payload.get("candidate_progression_summary", {})
         if isinstance(payload.get("candidate_progression_summary"), dict)
@@ -498,6 +509,7 @@ def _render_overview(
     {_health_panel(health)}
     {_service_heartbeat_section(service_heartbeats)}
     {_active_runtime_now_section(directors, campaigns, counts)}
+    {_active_branch_summary_section(active_branch_summary)}
     {_current_best_candidate_section(current_best_candidate)}
     {_candidate_progression_section(candidate_progression_summary)}
     {_paper_trade_entry_gate_section(paper_trade_entry_gate)}
@@ -594,6 +606,44 @@ def _render_overview(
     </section>
     """
     return _render_layout("Research Runtime Dashboard", body, refresh_seconds=refresh_seconds)
+
+
+def _active_branch_summary_section(summary: dict[str, object]) -> str:
+    if not summary:
+        return ""
+    director = summary.get("director") if isinstance(summary.get("director"), dict) else {}
+    campaign = summary.get("campaign") if isinstance(summary.get("campaign"), dict) else {}
+    stage = summary.get("stage") if isinstance(summary.get("stage"), dict) else {}
+    job_counts = summary.get("job_counts") if isinstance(summary.get("job_counts"), dict) else {}
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    warning_items = "".join(
+        f"<li>{escape(str(item.get('message', 'unknown warning')))}</li>"
+        for item in warnings
+        if isinstance(item, dict)
+    ) or "<li>No active-branch warnings recorded.</li>"
+    return f"""
+    <section class="panel">
+      <h2>Active Research Branch</h2>
+      <p class="subtle">Single-screen answer for which branch is currently executing and what should happen next while no promoted candidate exists yet.</p>
+      <section class="summary-grid">
+        {_summary_card("director", str(director.get("director_name", "none") or "none"))}
+        {_summary_card("plan", str(director.get("plan_name", "unknown") or "unknown"))}
+        {_summary_card("campaign", str(campaign.get("campaign_name", "none") or "none"))}
+        {_summary_card("phase", str(campaign.get("phase", "unknown") or "unknown"))}
+        {_summary_card("next action", str(summary.get("recommended_action", "wait_for_next_branch")))}
+      </section>
+      <p>{escape(str(summary.get("message", "No active branch summary available.")))}</p>
+      <section class="summary-grid">
+        {_summary_card("stage queued", str(job_counts.get("queued", 0)))}
+        {_summary_card("stage running", str(job_counts.get("running", 0)))}
+        {_summary_card("stage completed", str(job_counts.get("completed", 0)))}
+        {_summary_card("stage failed", str(job_counts.get("failed", 0)))}
+      </section>
+      <p><strong>Latest report:</strong> {escape(str(stage.get("latest_report_path", "-") or "-"))}</p>
+      <p><strong>Last stage event:</strong> {escape(str(stage.get("last_event", "none") or "none"))}</p>
+      {f"<ul>{warning_items}</ul>" if warnings else ""}
+    </section>
+    """
 
 
 def _current_best_candidate_section(summary: dict[str, object]) -> str:

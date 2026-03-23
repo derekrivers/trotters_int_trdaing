@@ -12,6 +12,7 @@ import uuid
 from wsgiref.simple_server import make_server
 
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
+from trotters_trader.active_branch import build_active_branch_summary
 from trotters_trader.agent_summaries import load_latest_summaries, load_summary_records
 from trotters_trader.dashboard import _runtime_health
 from trotters_trader.http_security import actor_label, is_bearer_authorized, request_actor
@@ -85,10 +86,15 @@ class ApiController:
             current_best_candidate=current_best_candidate,
             agent_summaries=agent_summaries,
         )
+        active_branch_summary = build_active_branch_summary(
+            active_directors=active_directors,
+            active_campaigns=active_campaigns,
+        )
         return {
             "status": compact_status,
             "active_directors": active_directors,
             "active_campaigns": active_campaigns,
+            "active_branch_summary": active_branch_summary,
             "notifications": notifications,
             "most_recent_terminal": most_recent_terminal,
             "health": _runtime_health(status=status, campaigns=active_campaigns, directors=active_directors),
@@ -254,6 +260,11 @@ class ApiController:
     def candidate_progression_summary(self) -> dict[str, object]:
         return materialize_promotion_path(catalog_output_dir=self._paths.catalog_output_dir)["candidate_progression_summary"]
 
+    def active_branch_summary(self) -> dict[str, object]:
+        overview = self.overview()
+        payload = overview.get("active_branch_summary")
+        return payload if isinstance(payload, dict) else {}
+
     def paper_trade_entry_gate(self) -> dict[str, object]:
         return materialize_promotion_path(catalog_output_dir=self._paths.catalog_output_dir)["paper_trade_entry_gate"]
 
@@ -406,6 +417,8 @@ class ApiApp:
             return self._json_response(self._controller.paper_rehearsal_status(query))
         if method == "GET" and path == "/api/v1/promotion-path/candidate-progression":
             return self._json_response(self._controller.candidate_progression_summary())
+        if method == "GET" and path == "/api/v1/runtime/active-branch":
+            return self._json_response(self._controller.active_branch_summary())
         if method == "GET" and path == "/api/v1/promotion-path/paper-trade-entry-gate":
             return self._json_response(self._controller.paper_trade_entry_gate())
         if method == "GET" and path == "/api/v1/promotion-path/research-program-portfolio":

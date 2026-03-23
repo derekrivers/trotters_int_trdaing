@@ -77,6 +77,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["notifications"][0]["campaign_id"], "campaign-1")
         self.assertEqual(payload["most_recent_terminal"]["director"], None)
         self.assertIn("paper_rehearsal", payload)
+        self.assertIn("active_branch_summary", payload)
         self.assertIn("candidate_progression_summary", payload)
         self.assertIn("paper_trade_entry_gate", payload)
         self.assertIn("research_program_portfolio", payload)
@@ -804,6 +805,12 @@ class ApiTests(unittest.TestCase):
                 "/api/v1/promotion-path/candidate-progression",
                 headers=self._auth_headers(),
             )
+            active_branch_status, _, active_branch_body = self._invoke(
+                app,
+                "GET",
+                "/api/v1/runtime/active-branch",
+                headers=self._auth_headers(),
+            )
             gate_status, _, gate_body = self._invoke(
                 app,
                 "GET",
@@ -820,12 +827,15 @@ class ApiTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         progression = json.loads(progression_body)
+        active_branch = json.loads(active_branch_body)
         gate = json.loads(gate_body)
         portfolio = json.loads(portfolio_body)
         self.assertEqual(progression_status, "200 OK")
+        self.assertEqual(active_branch_status, "200 OK")
         self.assertEqual(gate_status, "200 OK")
         self.assertEqual(portfolio_status, "200 OK")
         self.assertEqual(progression["summary_type"], "candidate_progression_summary")
+        self.assertIn(active_branch["status"], {"idle", "active"})
         self.assertEqual(gate["summary_type"], "paper_trade_entry_gate")
         self.assertEqual(portfolio["summary_type"], "research_program_portfolio")
     def _invoke(
