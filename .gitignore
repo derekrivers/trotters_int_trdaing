@@ -11,5 +11,6 @@ data/canonical/
 data/staging/
 data/features/
 data/coverage/
+data/reference/
 data/raw/*
 !data/raw/.gitkeep
