@@ -14,6 +14,7 @@ from wsgiref.simple_server import make_server
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries, load_summary_records
 from trotters_trader.dashboard import _runtime_health
+from trotters_trader.http_security import actor_label, is_bearer_authorized, request_actor
 from trotters_trader.paper_rehearsal import paper_rehearsal_status, record_paper_trade_action
 from trotters_trader.reports import build_campaign_operator_summary
 from trotters_trader.research_runtime import (
@@ -272,13 +273,13 @@ class ApiApp:
         query = parse_qs(str(environ.get("QUERY_STRING", "")), keep_blank_values=True)
         body = _read_body(environ)
         request_id = _request_id(environ)
-        actor = _request_actor(environ)
+        actor = request_actor(environ)
         remote_addr = str(environ.get("REMOTE_ADDR", "") or "").strip() or None
         protected = _is_protected_path(path)
         mutation = _is_mutation_request(method)
         audit_payload = _audit_payload(body)
 
-        if protected and not _is_authorized(environ, self._auth_token):
+        if protected and not is_bearer_authorized(environ, self._auth_token):
             response = _with_headers(
                 _json_error_response(
                     "401 Unauthorized",
@@ -292,7 +293,7 @@ class ApiApp:
                 {
                     "recorded_at_utc": _utcnow(),
                     "request_id": request_id,
-                    "actor": actor,
+                    "actor": actor_label(actor),
                     "method": method,
                     "path": path,
                     "query_string": query_string,
@@ -300,6 +301,30 @@ class ApiApp:
                     "mutation": mutation,
                     "authenticated": False,
                     "outcome": "auth_failed",
+                    "remote_addr": remote_addr,
+                    "request_payload": audit_payload,
+                },
+            )
+            start_response(response.status, response.headers)
+            return [response.body]
+        if protected and mutation and not actor:
+            response = _with_headers(
+                _json_error_response("400 Bad Request", "Mutation requests require X-Trotters-Actor"),
+                [("X-Request-Id", request_id)],
+            )
+            _write_audit_record(
+                self._audit_path,
+                {
+                    "recorded_at_utc": _utcnow(),
+                    "request_id": request_id,
+                    "actor": actor_label(actor),
+                    "method": method,
+                    "path": path,
+                    "query_string": query_string,
+                    "status": response.status,
+                    "mutation": mutation,
+                    "authenticated": True,
+                    "outcome": "actor_missing",
                     "remote_addr": remote_addr,
                     "request_payload": audit_payload,
                 },
@@ -318,7 +343,7 @@ class ApiApp:
                 {
                     "recorded_at_utc": _utcnow(),
                     "request_id": request_id,
-                    "actor": actor,
+                    "actor": actor_label(actor),
                     "method": method,
                     "path": path,
                     "query_string": query_string,
@@ -694,22 +719,9 @@ def _is_mutation_request(method: str) -> bool:
     return method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def _is_authorized(environ: dict[str, object], auth_token: str) -> bool:
-    header = str(environ.get("HTTP_AUTHORIZATION", "") or "").strip()
-    prefix = "Bearer "
-    if not header.startswith(prefix):
-        return False
-    return header.removeprefix(prefix).strip() == auth_token
-
-
 def _request_id(environ: dict[str, object]) -> str:
     provided = str(environ.get("HTTP_X_REQUEST_ID", "") or "").strip()
     return provided or uuid.uuid4().hex
-
-
-def _request_actor(environ: dict[str, object]) -> str:
-    actor = str(environ.get("HTTP_X_TROTTERS_ACTOR", "") or environ.get("HTTP_X_ACTOR", "") or "").strip()
-    return actor or "unknown"
 
 
 def _audit_payload(body: bytes) -> object:

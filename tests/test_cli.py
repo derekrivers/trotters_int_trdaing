@@ -173,6 +173,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.ops_port, 8892)
         self.assertEqual(args.runbook_file, "configs/openclaw/trotters-runbook.json")
 
+    def test_parser_accepts_service_heartbeat_check_command(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "research-service-heartbeat-check",
+                "--runtime-root",
+                "runtime/research_runtime",
+                "--service",
+                "coordinator",
+                "--max-age-seconds",
+                "30",
+            ]
+        )
+
+        self.assertEqual(args.command, "research-service-heartbeat-check")
+        self.assertEqual(args.service, "coordinator")
+        self.assertEqual(args.max_age_seconds, 30)
+
     def test_parser_accepts_campaign_notification_options(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(

@@ -3,6 +3,7 @@ x-runtime-service: &runtime-service
     context: .
     dockerfile: Dockerfile
   working_dir: /app
+  restart: unless-stopped
   environment:
     TROTTERS_OPS_BRIDGE_BASE: http://ops-bridge:8891
     TROTTERS_OPS_BRIDGE_TOKEN: ${TROTTERS_OPS_BRIDGE_TOKEN}
@@ -67,7 +68,13 @@ services:
       - --api-port
       - "8890"
     ports:
-      - "8890:8890"
+      - "${TROTTERS_API_BIND_HOST:-127.0.0.1}:8890:8890"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8890/readyz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       - coordinator
   ops-bridge:
@@ -95,10 +102,19 @@ services:
       - ./runtime/catalog:/runtime/catalog
       - research_runtime:/runtime/research_runtime
       - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8891/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       - coordinator
   dashboard:
     <<: *runtime-service
+    environment:
+      TROTTERS_DASHBOARD_USERNAME: ${TROTTERS_DASHBOARD_USERNAME:-operator}
+      TROTTERS_DASHBOARD_PASSWORD: ${TROTTERS_DASHBOARD_PASSWORD:-change-me-local-only}
     command:
       - research-dashboard
       - --runtime-root
@@ -112,7 +128,13 @@ services:
       - --dashboard-refresh-seconds
       - "10"
     ports:
-      - "8888:8888"
+      - "${TROTTERS_DASHBOARD_BIND_HOST:-127.0.0.1}:8888:8888"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8888/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       - coordinator
   coordinator:
@@ -127,6 +149,12 @@ services:
       - "2"
       - --lease-timeout-seconds
       - "900"
+    healthcheck:
+      test: ["CMD", "python", "-m", "trotters_trader.cli", "research-service-heartbeat-check", "--runtime-root", "/runtime/research_runtime", "--service", "coordinator", "--max-age-seconds", "30"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
   campaign-manager:
     <<: *runtime-service
     command:
@@ -137,6 +165,12 @@ services:
       - /runtime/catalog
       - --poll-seconds
       - "15"
+    healthcheck:
+      test: ["CMD", "python", "-m", "trotters_trader.cli", "research-service-heartbeat-check", "--runtime-root", "/runtime/research_runtime", "--service", "campaign-manager", "--max-age-seconds", "90"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       - coordinator
   research-director:
@@ -149,6 +183,12 @@ services:
       - /runtime/catalog
       - --poll-seconds
       - "30"
+    healthcheck:
+      test: ["CMD", "python", "-m", "trotters_trader.cli", "research-service-heartbeat-check", "--runtime-root", "/runtime/research_runtime", "--service", "research-director", "--max-age-seconds", "150"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     depends_on:
       - coordinator
       - campaign-manager

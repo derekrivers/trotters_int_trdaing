@@ -294,6 +294,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(audit_payload["status"], "200 OK")
         self.assertTrue(audit_payload["mutation"])
 
+    def test_mutation_route_requires_actor_header(self) -> None:
+        root = self._workspace_root("actor_required")
+        audit_payload: dict[str, object] | None = None
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(
+                app,
+                "POST",
+                "/api/v1/directors/director-1/pause",
+                body=json.dumps({"reason": "api_pause"}).encode("utf-8"),
+                content_type="application/json",
+                headers={"Authorization": f"Bearer {self.AUTH_TOKEN}"},
+            )
+            audit_lines = (paths.runtime_root / "exports" / "api_audit.jsonl").read_text(encoding="utf-8").splitlines()
+            audit_payload = json.loads(audit_lines[-1])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["error"], "Mutation requests require X-Trotters-Actor")
+        self.assertIsNotNone(audit_payload)
+        assert audit_payload is not None
+        self.assertEqual(audit_payload["outcome"], "actor_missing")
+        self.assertEqual(audit_payload["actor"], "unknown")
+
     def test_start_campaign_route_uses_runtime_service(self) -> None:
         root = self._workspace_root("campaign_start")
         try:
@@ -463,6 +490,38 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, "401 Unauthorized")
         self.assertEqual(dict(headers)["WWW-Authenticate"], "Bearer")
         self.assertEqual(payload["error"], "Unauthorized")
+
+    def test_runtime_overview_includes_service_heartbeat_status(self) -> None:
+        root = self._workspace_root("service_heartbeats")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = ApiApp(ApiController(paths), auth_token=self.AUTH_TOKEN)
+            with (
+                patch(
+                    "trotters_trader.api.runtime_status",
+                    return_value={
+                        "counts": {"queued": 1, "running": 1},
+                        "workers": [{"worker_id": "worker-01", "status": "running", "heartbeat_at": "2026-03-23T08:59:55+00:00"}],
+                        "jobs": [{"job_id": "job-1", "status": "running", "updated_at": "2026-03-23T08:59:58+00:00"}],
+                        "campaigns": [{"campaign_id": "campaign-1", "status": "running", "updated_at": "2026-03-23T08:59:59+00:00"}],
+                        "directors": [{"director_id": "director-1", "status": "running", "updated_at": "2026-03-23T08:59:59+00:00"}],
+                        "service_heartbeats": [
+                            {"service": "coordinator", "status": "ok", "recorded_at_utc": "2026-03-23T08:59:59+00:00", "detail": "Heartbeat is fresh."},
+                            {"service": "campaign-manager", "status": "stale", "recorded_at_utc": "2026-03-23T08:56:00+00:00", "detail": "Heartbeat is stale."},
+                        ],
+                    },
+                ),
+                patch("trotters_trader.api.director_status", return_value={"director": {"director_id": "director-1", "director_name": "director-1", "status": "running"}}),
+                patch("trotters_trader.api.campaign_status", return_value={"campaign": {"campaign_id": "campaign-1", "campaign_name": "campaign-1", "status": "running"}}),
+            ):
+                status, _, body = self._invoke(app, "GET", "/api/v1/runtime/overview", headers=self._auth_headers())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["health"]["status"], "warning")
+        self.assertEqual(payload["status"]["service_heartbeats"][1]["service"], "campaign-manager")
 
     def test_agent_summaries_route_returns_recorded_summaries(self) -> None:
         root = self._workspace_root("agent_summaries")

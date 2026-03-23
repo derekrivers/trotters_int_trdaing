@@ -78,6 +78,7 @@ from trotters_trader.research_runtime import (
     summarize_job_result,
     worker_loop,
 )
+from trotters_trader.service_heartbeats import check_service_heartbeat, write_service_heartbeat
 from trotters_trader.staging import stage_source_data
 
 LEGACY_COMMANDS = [
@@ -139,6 +140,7 @@ RUNTIME_COMMANDS = [
     "research-dashboard",
     "research-api",
     "research-ops-bridge",
+    "research-service-heartbeat-check",
 ]
 ALL_COMMANDS = LEGACY_COMMANDS + RUNTIME_COMMANDS
 RUNTIME_MUTATION_COMMANDS = {
@@ -631,10 +633,34 @@ def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
             port=args.ops_port,
             docker_socket_path=args.docker_socket_path,
         )
+    if args.command == "research-service-heartbeat-check":
+        if not args.service:
+            raise ValueError("research-service-heartbeat-check requires --service")
+        return check_service_heartbeat(
+            paths.runtime_root,
+            args.service,
+            max_age_seconds=args.max_age_seconds,
+        )
     if args.command == "research-coordinator":
         if args.once:
+            write_service_heartbeat(
+                paths.runtime_root,
+                "coordinator",
+                metadata={
+                    "poll_seconds": args.poll_seconds,
+                    "lease_timeout_seconds": args.lease_timeout_seconds,
+                },
+            )
             return coordinator_cycle(paths, lease_timeout_seconds=args.lease_timeout_seconds)
         while True:
+            write_service_heartbeat(
+                paths.runtime_root,
+                "coordinator",
+                metadata={
+                    "poll_seconds": args.poll_seconds,
+                    "lease_timeout_seconds": args.lease_timeout_seconds,
+                },
+            )
             coordinator_cycle(paths, lease_timeout_seconds=args.lease_timeout_seconds)
             time.sleep(max(args.poll_seconds, 0.1))
     if args.command == "research-worker":
@@ -873,6 +899,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ops-port", type=int, default=8891)
     parser.add_argument("--docker-socket-path", default="/var/run/docker.sock")
     parser.add_argument("--runbook-file", default="configs/openclaw/trotters-runbook.json")
+    parser.add_argument("--service")
+    parser.add_argument("--max-age-seconds", type=int)
     parser.add_argument("--once", action="store_true")
     return parser
 

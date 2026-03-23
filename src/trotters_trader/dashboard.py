@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 import json
+import os
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, quote, urlencode
@@ -11,6 +12,7 @@ from wsgiref.simple_server import make_server
 
 from trotters_trader.agent_dispatches import load_dispatch_records, load_dispatch_summary
 from trotters_trader.agent_summaries import load_latest_summaries
+from trotters_trader.http_security import is_basic_authorized, new_csrf_token, parse_cookies
 from trotters_trader.paper_rehearsal import paper_rehearsal_status
 from trotters_trader.research_runtime import (
     ResearchRuntimePaths,
@@ -100,18 +102,60 @@ class DashboardController:
 
 
 class DashboardApp:
-    def __init__(self, controller: DashboardController, *, refresh_seconds: int = 10) -> None:
+    def __init__(
+        self,
+        controller: DashboardController,
+        *,
+        refresh_seconds: int = 10,
+        auth_username: str = "operator",
+        auth_password: str = "change-me-local-only",
+    ) -> None:
         self._controller = controller
         self._refresh_seconds = refresh_seconds
+        self._auth_username = auth_username.strip()
+        self._auth_password = auth_password.strip()
+        if not self._auth_username or not self._auth_password:
+            raise ValueError("Dashboard auth credentials are required")
 
     def __call__(self, environ: dict[str, object], start_response: Callable[[str, list[tuple[str, str]]], None]):
         method = str(environ.get("REQUEST_METHOD", "GET")).upper()
         path = str(environ.get("PATH_INFO", "/"))
         query = parse_qs(str(environ.get("QUERY_STRING", "")), keep_blank_values=True)
         body = _read_body(environ)
+        cookies = parse_cookies(environ)
+        csrf_cookie = cookies.get("trotters_csrf")
+
+        if not (method == "GET" and path == "/healthz"):
+            if not is_basic_authorized(environ, self._auth_username, self._auth_password):
+                response = DashboardResponse(
+                    "401 Unauthorized",
+                    [
+                        ("Content-Type", "text/plain; charset=utf-8"),
+                        ("WWW-Authenticate", 'Basic realm="Trotters Dashboard"'),
+                    ],
+                    b"Unauthorized",
+                )
+                start_response(response.status, response.headers)
+                return [response.body]
+            if method == "POST":
+                form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+                submitted = _query_value(form, "csrf_token")
+                if not csrf_cookie or not submitted or submitted != csrf_cookie:
+                    response = self._html_response(
+                        "403 Forbidden",
+                        _render_layout(
+                            "Dashboard Error",
+                            "<section class='panel'><h1>Forbidden</h1><p>Missing or invalid CSRF token.</p></section>",
+                            refresh_seconds=0,
+                        ),
+                    )
+                    start_response(response.status, response.headers)
+                    return [response.body]
+            if method == "GET" and not csrf_cookie:
+                csrf_cookie = new_csrf_token()
 
         try:
-            response = self.handle_request(method, path, query, body)
+            response = self.handle_request(method, path, query, body, csrf_token=csrf_cookie)
         except ValueError as exc:
             response = self._html_response(
                 "400 Bad Request",
@@ -120,6 +164,11 @@ class DashboardApp:
                     f"<section class='panel'><h1>Bad Request</h1><p>{escape(str(exc))}</p></section>",
                     refresh_seconds=0,
                 ),
+            )
+        if method == "GET" and path != "/healthz" and csrf_cookie:
+            response = _with_headers(
+                response,
+                [("Set-Cookie", _csrf_cookie_header(csrf_cookie))],
             )
         start_response(response.status, response.headers)
         return [response.body]
@@ -130,6 +179,8 @@ class DashboardApp:
         path: str,
         query: dict[str, list[str]],
         body: bytes,
+        *,
+        csrf_token: str | None,
     ) -> DashboardResponse:
         if method == "GET" and path == "/healthz":
             return DashboardResponse("200 OK", [("Content-Type", "text/plain; charset=utf-8")], b"ok")
@@ -137,7 +188,12 @@ class DashboardApp:
             return self._html_response("200 OK", _render_guide(refresh_seconds=0))
         if method == "GET" and path == "/":
             payload = self._controller.overview()
-            html = _render_overview(payload, refresh_seconds=self._refresh_seconds, flash=_query_value(query, "flash"))
+            html = _render_overview(
+                payload,
+                refresh_seconds=self._refresh_seconds,
+                flash=_query_value(query, "flash"),
+                csrf_token=csrf_token,
+            )
             return self._html_response("200 OK", html)
         if method == "GET" and path.startswith("/directors/"):
             director_id = path.removeprefix("/directors/").strip("/")
@@ -148,6 +204,7 @@ class DashboardApp:
                 payload,
                 refresh_seconds=self._refresh_seconds,
                 flash=_query_value(query, "flash"),
+                csrf_token=csrf_token,
             )
             return self._html_response("200 OK", html)
         if method == "POST" and path.startswith("/directors/") and path.endswith("/pause"):
@@ -213,6 +270,7 @@ class DashboardApp:
                 payload,
                 refresh_seconds=self._refresh_seconds,
                 flash=_query_value(query, "flash"),
+                csrf_token=csrf_token,
             )
             return self._html_response("200 OK", html)
         if method == "POST" and path.startswith("/campaigns/") and path.endswith("/stop"):
@@ -259,6 +317,10 @@ class DashboardApp:
         )
 
 
+def _with_headers(response: DashboardResponse, extra_headers: list[tuple[str, str]]) -> DashboardResponse:
+    return DashboardResponse(response.status, [*response.headers, *extra_headers], response.body)
+
+
 def serve_dashboard(
     paths: ResearchRuntimePaths,
     *,
@@ -266,7 +328,12 @@ def serve_dashboard(
     port: int = 8888,
     refresh_seconds: int = 10,
 ) -> dict[str, object]:
-    app = DashboardApp(DashboardController(paths), refresh_seconds=refresh_seconds)
+    app = DashboardApp(
+        DashboardController(paths),
+        refresh_seconds=refresh_seconds,
+        auth_username=os.environ.get("TROTTERS_DASHBOARD_USERNAME", "operator"),
+        auth_password=os.environ.get("TROTTERS_DASHBOARD_PASSWORD", "change-me-local-only"),
+    )
     with make_server(host, port, app) as server:
         print(f"Dashboard listening on http://{host}:{port}", flush=True)
         server.serve_forever()
@@ -339,7 +406,13 @@ def _read_body(environ: dict[str, object]) -> bytes:
     return body_stream.read(length)
 
 
-def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
+def _render_overview(
+    payload: dict[str, object],
+    *,
+    refresh_seconds: int,
+    flash: str | None,
+    csrf_token: str | None,
+) -> str:
     status = payload.get("status", {}) if isinstance(payload.get("status"), dict) else {}
     counts = status.get("counts", {}) if isinstance(status.get("counts"), dict) else {}
     workers = status.get("workers", []) if isinstance(status.get("workers"), list) else []
@@ -358,6 +431,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     agent_summaries = payload.get("agent_summaries", {}) if isinstance(payload.get("agent_summaries"), dict) else {}
     agent_dispatches = payload.get("agent_dispatches", []) if isinstance(payload.get("agent_dispatches"), list) else []
     agent_dispatch_summary = payload.get("agent_dispatch_summary", {}) if isinstance(payload.get("agent_dispatch_summary"), dict) else {}
+    service_heartbeats = status.get("service_heartbeats", []) if isinstance(status.get("service_heartbeats"), list) else []
     health = _runtime_health(status=status, campaigns=campaigns, directors=directors)
 
     summary_cards = "".join(
@@ -437,6 +511,7 @@ def _render_overview(payload: dict[str, object], *, refresh_seconds: int, flash:
     </section>
     {_notification_banner(notifications, campaigns=campaigns, directors=directors)}
     {_health_panel(health)}
+    {_service_heartbeat_section(service_heartbeats)}
     {_paper_rehearsal_section(paper_rehearsal)}
     {_current_best_candidate_section(current_best_candidate)}
     <section class="summary-grid">{summary_cards}</section>
@@ -660,7 +735,13 @@ def _paper_rehearsal_section(summary: dict[str, object]) -> str:
     """
 
 
-def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
+def _render_campaign_detail(
+    payload: dict[str, object],
+    *,
+    refresh_seconds: int,
+    flash: str | None,
+    csrf_token: str | None,
+) -> str:
     campaign = payload.get("campaign", {}) if isinstance(payload.get("campaign"), dict) else {}
     state = campaign.get("state", {}) if isinstance(campaign.get("state"), dict) else {}
     events = payload.get("events", []) if isinstance(payload.get("events"), list) else []
@@ -710,7 +791,7 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
         <p><strong>Config:</strong> <code>{escape(str(campaign.get("config_path", "")))}</code></p>
         <p><strong>Latest report:</strong> <code>{report_path or 'None'}</code></p>
         <p><strong>Last error:</strong> <code>{escape(str(campaign.get("last_error") or "")) or 'None'}</code></p>
-        {_stop_form(str(campaign.get("campaign_id", ""))) if can_stop else "<p>This campaign is not active.</p>"}
+        {_stop_form(str(campaign.get("campaign_id", "")), csrf_token=csrf_token) if can_stop else "<p>This campaign is not active.</p>"}
       </section>
       <section class="panel">
         <h2>Final Decision</h2>
@@ -737,7 +818,13 @@ def _render_campaign_detail(payload: dict[str, object], *, refresh_seconds: int,
     return _render_layout(str(campaign.get("campaign_name", "Campaign")), body, refresh_seconds=refresh_seconds)
 
 
-def _render_director_detail(payload: dict[str, object], *, refresh_seconds: int, flash: str | None) -> str:
+def _render_director_detail(
+    payload: dict[str, object],
+    *,
+    refresh_seconds: int,
+    flash: str | None,
+    csrf_token: str | None,
+) -> str:
     director = payload.get("director", {}) if isinstance(payload.get("director"), dict) else {}
     state = director.get("state", {}) if isinstance(director.get("state"), dict) else {}
     spec = director.get("spec", {}) if isinstance(director.get("spec"), dict) else {}
@@ -755,7 +842,7 @@ def _render_director_detail(payload: dict[str, object], *, refresh_seconds: int,
     campaign_rows = "".join(_director_campaign_row(campaign) for campaign in campaigns) or (
         "<tr><td colspan='6'>No campaigns recorded for this director.</td></tr>"
     )
-    controls = _director_controls(director, queue)
+    controls = _director_controls(director, queue, csrf_token=csrf_token)
 
     body = f"""
     {_flash_banner(flash)}
@@ -1349,12 +1436,40 @@ def _health_panel(health: dict[str, object]) -> str:
     """
 
 
+def _service_heartbeat_section(records: list[dict[str, object]]) -> str:
+    rows = "".join(_service_heartbeat_row(record) for record in records if isinstance(record, dict))
+    if not rows:
+        rows = "<tr><td colspan='5'>No service heartbeat records available.</td></tr>"
+    return f"""
+    <section class="panel">
+      <h2>Service Heartbeats</h2>
+      <p class="subtle">Health signal from the coordinator, campaign manager, and research director control loops.</p>
+      <table>
+        <thead><tr><th>Service</th><th>Status</th><th>Recorded</th><th>PID</th><th>Detail</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
+
+
 def _health_check_row(check: dict[str, object]) -> str:
     return (
         "<tr>"
         f"<td>{escape(str(check.get('name', 'check')))}</td>"
         f"<td>{_status_pill(str(check.get('status', 'unknown')))}</td>"
         f"<td>{escape(str(check.get('detail', '')))}</td>"
+        "</tr>"
+    )
+
+
+def _service_heartbeat_row(record: dict[str, object]) -> str:
+    return (
+        "<tr>"
+        f"<td>{escape(str(record.get('label') or record.get('service') or 'unknown'))}</td>"
+        f"<td>{_status_pill(str(record.get('status', 'unknown')))}</td>"
+        f"<td>{_timestamp_with_age(record.get('recorded_at_utc'))}</td>"
+        f"<td>{escape(str(record.get('pid') or '-'))}</td>"
+        f"<td>{escape(str(record.get('detail', '')))}</td>"
         "</tr>"
     )
 
@@ -1996,6 +2111,11 @@ def _runtime_health(
     all_directors = [director for director in status.get("directors", []) if isinstance(director, dict)] if isinstance(status.get("directors"), list) else []
     workers = [worker for worker in status.get("workers", []) if isinstance(worker, dict)] if isinstance(status.get("workers"), list) else []
     jobs = [job for job in status.get("jobs", []) if isinstance(job, dict)] if isinstance(status.get("jobs"), list) else []
+    service_heartbeats = [
+        record
+        for record in status.get("service_heartbeats", [])
+        if isinstance(record, dict)
+    ] if isinstance(status.get("service_heartbeats"), list) else []
     queued = int(counts.get("queued", 0) or 0)
     running = int(counts.get("running", 0) or 0)
     active_director_count = len(directors)
@@ -2048,8 +2168,29 @@ def _runtime_health(
         ),
         default=None,
     )
+    degraded_services = [
+        record
+        for record in service_heartbeats
+        if str(record.get("status", "")).lower() != "ok"
+    ]
 
     checks: list[dict[str, str]] = []
+    checks.append(
+        {
+            "name": "service heartbeats",
+            "status": "ok" if not degraded_services else "error",
+            "detail": (
+                "Coordinator, campaign manager, and research director heartbeats are fresh."
+                if not degraded_services
+                else "Degraded services: "
+                + ", ".join(
+                    f"{record.get('service')} ({record.get('status')})"
+                    for record in degraded_services
+                )
+                + "."
+            ),
+        }
+    )
     checks.append(
         {
             "name": "worker pool",
@@ -2129,6 +2270,9 @@ def _runtime_health(
 
     overall = "healthy"
     summary = "Research runtime is healthy and actively progressing."
+    if degraded_services:
+        overall = "warning"
+        summary = "Research runtime is degraded: one or more orchestration service heartbeats are stale."
     if active_worker_count == 0:
         overall = "critical"
         summary = "Research runtime is unhealthy: no workers are active."
@@ -2181,9 +2325,9 @@ def _percent(value: object) -> str:
 def _status_pill(value: str) -> str:
     lowered = value.lower()
     css = ""
-    if lowered in {"failed", "campaign_failed", "stopped"}:
+    if lowered in {"failed", "campaign_failed", "stopped", "error", "missing"}:
         css = " danger"
-    elif lowered in {"queued", "warn", "stage_submitted"}:
+    elif lowered in {"queued", "warn", "stage_submitted", "warning", "stale"}:
         css = " warn"
     return f"<span class='pill{css}'>{escape(value)}</span>"
 
@@ -2219,6 +2363,15 @@ def _format_age_seconds(delta_seconds: int | None) -> str:
     return _format_age_label_from_seconds(delta_seconds) or "at an unknown time"
 
 
+def _csrf_hidden_input(csrf_token: str | None) -> str:
+    value = escape(str(csrf_token or ""))
+    return f'<input type="hidden" name="csrf_token" value="{value}">'
+
+
+def _csrf_cookie_header(csrf_token: str) -> str:
+    return f"trotters_csrf={csrf_token}; Path=/; SameSite=Strict; HttpOnly"
+
+
 def _age_seconds(value: object) -> int | None:
     text = str(value or "").strip()
     if not text:
@@ -2236,26 +2389,53 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _stop_form(campaign_id: str) -> str:
+def _stop_form(campaign_id: str, *, csrf_token: str | None) -> str:
     return f"""
     <form class="inline" action="/campaigns/{quote(campaign_id)}/stop" method="post">
+      {_csrf_hidden_input(csrf_token)}
       <input type="text" name="reason" value="dashboard_stop" aria-label="Stop reason">
       <button class="button danger" type="submit">Stop Campaign</button>
     </form>
     """
 
 
-def _director_controls(director: dict[str, object], queue: list[dict[str, object]]) -> str:
+def _director_controls(director: dict[str, object], queue: list[dict[str, object]], *, csrf_token: str | None) -> str:
     director_id = str(director.get("director_id", ""))
     status = str(director.get("status", "unknown"))
     has_pending = _next_pending_director_entry(queue) is not None
     parts: list[str] = []
     if status in {"running", "queued"}:
-        parts.append(_director_control_form(director_id, "pause", "operator_pause", "Pause Director", button_class="danger"))
+        parts.append(
+            _director_control_form(
+                director_id,
+                "pause",
+                "operator_pause",
+                "Pause Director",
+                button_class="danger",
+                csrf_token=csrf_token,
+            )
+        )
     if status == "paused":
-        parts.append(_director_control_form(director_id, "resume", "operator_resume", "Resume Director"))
+        parts.append(
+            _director_control_form(
+                director_id,
+                "resume",
+                "operator_resume",
+                "Resume Director",
+                csrf_token=csrf_token,
+            )
+        )
     if status in {"running", "queued", "paused"} and has_pending:
-        parts.append(_director_control_form(director_id, "skip-next", "operator_skip", "Skip Next Campaign", button_class="secondary"))
+        parts.append(
+            _director_control_form(
+                director_id,
+                "skip-next",
+                "operator_skip",
+                "Skip Next Campaign",
+                button_class="secondary",
+                csrf_token=csrf_token,
+            )
+        )
     if not parts:
         return "<p class='subtle'>No director controls are available in the current state.</p>"
     return "".join(parts)
@@ -2268,12 +2448,14 @@ def _director_control_form(
     label: str,
     *,
     button_class: str = "",
+    csrf_token: str | None,
 ) -> str:
     class_name = "button"
     if button_class:
         class_name += f" {button_class}"
     return f"""
     <form class="inline" action="/directors/{quote(director_id)}/{action}" method="post">
+      {_csrf_hidden_input(csrf_token)}
       <input type="text" name="reason" value="{escape(default_reason)}" aria-label="{escape(label)} reason">
       <button class="{class_name}" type="submit">{escape(label)}</button>
     </form>

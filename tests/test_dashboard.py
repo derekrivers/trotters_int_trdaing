@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
+import base64
 import json
 import shutil
 import unittest
@@ -14,6 +15,9 @@ from trotters_trader.research_runtime import runtime_paths
 
 
 class DashboardTests(unittest.TestCase):
+    AUTH_USERNAME = "operator"
+    AUTH_PASSWORD = "change-me-local-only"
+
     def test_overview_page_renders_campaigns_and_notifications(self) -> None:
         root = self._workspace_root("overview")
         try:
@@ -762,8 +766,9 @@ class DashboardTests(unittest.TestCase):
                     app,
                     "POST",
                     "/directors/director-1/pause",
-                    body=b"reason=operator_pause",
+                    body=b"reason=operator_pause&csrf_token=test-csrf",
                     content_type="application/x-www-form-urlencoded",
+                    headers={"Cookie": "trotters_csrf=test-csrf"},
                 )
         finally:
             shutil.rmtree(root, ignore_errors=True)
@@ -1099,8 +1104,9 @@ class DashboardTests(unittest.TestCase):
                     app,
                     "POST",
                     "/campaigns/campaign-1/stop",
-                    body=b"reason=dashboard_stop",
+                    body=b"reason=dashboard_stop&csrf_token=test-csrf",
                     content_type="application/x-www-form-urlencoded",
+                    headers={"Cookie": "trotters_csrf=test-csrf"},
                 )
         finally:
             shutil.rmtree(root, ignore_errors=True)
@@ -1210,6 +1216,114 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Paper Rehearsal", body)
         self.assertIn("No promoted frozen candidate is available for paper-trading rehearsal.", body)
         self.assertIn("Operator Decisions", body)
+
+    def test_healthz_is_public_without_dashboard_auth(self) -> None:
+        root = self._workspace_root("healthz")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            status, headers, body = self._invoke(app, "GET", "/healthz", authenticated=False)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(dict(headers)["Content-Type"], "text/plain; charset=utf-8")
+        self.assertEqual(body, "ok")
+
+    def test_dashboard_requires_basic_auth_for_overview(self) -> None:
+        root = self._workspace_root("auth_required")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            status, headers, body = self._invoke(app, "GET", "/", authenticated=False)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "401 Unauthorized")
+        self.assertEqual(dict(headers)["WWW-Authenticate"], 'Basic realm="Trotters Dashboard"')
+        self.assertEqual(body, "Unauthorized")
+
+    def test_authenticated_get_sets_csrf_cookie(self) -> None:
+        root = self._workspace_root("csrf_cookie")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            with patch("trotters_trader.dashboard.runtime_status", return_value={"counts": {}, "workers": [], "jobs": [], "campaigns": [], "directors": []}):
+                status, headers, _ = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Set-Cookie", dict(headers))
+        self.assertIn("trotters_csrf=", dict(headers)["Set-Cookie"])
+
+    def test_post_without_csrf_token_is_forbidden(self) -> None:
+        root = self._workspace_root("csrf_required")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            status, _, body = self._invoke(
+                app,
+                "POST",
+                "/campaigns/campaign-1/stop",
+                body=b"reason=dashboard_stop",
+                content_type="application/x-www-form-urlencoded",
+                headers={"Cookie": "trotters_csrf=test-csrf"},
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "403 Forbidden")
+        self.assertIn("Missing or invalid CSRF token", body)
+
+    def test_overview_renders_service_heartbeat_panel(self) -> None:
+        root = self._workspace_root("service_heartbeats")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            now = datetime(2026, 3, 23, 9, 0, tzinfo=UTC)
+            with (
+                patch("trotters_trader.dashboard._utc_now", return_value=now),
+                patch(
+                    "trotters_trader.dashboard.runtime_status",
+                    return_value={
+                        "counts": {"queued": 1, "running": 1},
+                        "workers": [{"worker_id": "worker-01", "status": "running", "heartbeat_at": "2026-03-23T08:59:45+00:00"}],
+                        "jobs": [{"job_id": "job-1", "status": "running", "updated_at": "2026-03-23T08:59:50+00:00"}],
+                        "campaigns": [{"campaign_id": "campaign-1", "status": "running", "updated_at": "2026-03-23T08:59:55+00:00"}],
+                        "directors": [{"director_id": "director-1", "status": "running", "updated_at": "2026-03-23T08:59:55+00:00"}],
+                        "service_heartbeats": [
+                            {
+                                "service": "coordinator",
+                                "label": "Coordinator",
+                                "status": "ok",
+                                "recorded_at_utc": "2026-03-23T08:59:55+00:00",
+                                "pid": 101,
+                                "detail": "Heartbeat is fresh.",
+                            },
+                            {
+                                "service": "campaign-manager",
+                                "label": "Campaign Manager",
+                                "status": "stale",
+                                "recorded_at_utc": "2026-03-23T08:56:00+00:00",
+                                "pid": 202,
+                                "detail": "Heartbeat is 180s old; expected <= 90s.",
+                            },
+                        ],
+                    },
+                ),
+                patch("trotters_trader.dashboard.campaign_status", return_value={"campaign": {"campaign_id": "campaign-1", "campaign_name": "campaign-1", "status": "running"}}),
+                patch("trotters_trader.dashboard.director_status", return_value={"director": {"director_id": "director-1", "director_name": "director-1", "status": "running"}}),
+            ):
+                status, _, body = self._invoke(app, "GET", "/")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Service Heartbeats", body)
+        self.assertIn("Campaign Manager", body)
+        self.assertIn("Research runtime is degraded", body)
+
     def _invoke(
         self,
         app: DashboardApp,
@@ -1218,8 +1332,11 @@ class DashboardTests(unittest.TestCase):
         *,
         body: bytes = b"",
         content_type: str = "text/plain",
+        headers: dict[str, str] | None = None,
+        authenticated: bool = True,
     ) -> tuple[str, list[tuple[str, str]], str]:
         captured: dict[str, object] = {}
+        route, _, query_string = path.partition("?")
 
         def start_response(status: str, headers: list[tuple[str, str]]) -> None:
             captured["status"] = status
@@ -1227,12 +1344,20 @@ class DashboardTests(unittest.TestCase):
 
         environ = {
             "REQUEST_METHOD": method,
-            "PATH_INFO": path,
-            "QUERY_STRING": "",
+            "PATH_INFO": route,
+            "QUERY_STRING": query_string,
             "CONTENT_LENGTH": str(len(body)),
             "CONTENT_TYPE": content_type,
             "wsgi.input": BytesIO(body),
         }
+        request_headers = {}
+        if authenticated:
+            request_headers.update(self._auth_headers())
+        if headers:
+            request_headers.update(headers)
+        for header_name, header_value in request_headers.items():
+            environ_key = f"HTTP_{header_name.upper().replace('-', '_')}"
+            environ[environ_key] = header_value
         chunks = app(environ, start_response)
         response_body = b"".join(chunks).decode("utf-8")
         return str(captured["status"]), list(captured["headers"]), response_body
@@ -1241,6 +1366,10 @@ class DashboardTests(unittest.TestCase):
         root = Path("tests/.tmp_runtime") / f"dashboard_{label}_{uuid.uuid4().hex[:8]}"
         root.mkdir(parents=True, exist_ok=True)
         return root
+
+    def _auth_headers(self) -> dict[str, str]:
+        encoded = base64.b64encode(f"{self.AUTH_USERNAME}:{self.AUTH_PASSWORD}".encode("utf-8")).decode("ascii")
+        return {"Authorization": f"Basic {encoded}"}
 
 
 if __name__ == "__main__":

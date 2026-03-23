@@ -37,6 +37,7 @@ from trotters_trader.experiments import (
 )
 from trotters_trader.features import materialize_feature_set
 from trotters_trader.reports import write_operability_program_report, write_promotion_artifacts, write_tranche_report
+from trotters_trader.service_heartbeats import load_service_heartbeats, write_service_heartbeat
 
 SUPPORTED_RESEARCH_COMMANDS = {
     "backtest",
@@ -897,7 +898,9 @@ def fail_job(
 def runtime_status(paths: ResearchRuntimePaths) -> dict[str, object]:
     initialize_runtime(paths)
     with _connect(paths) as connection:
-        return _build_status_snapshot(connection)
+        snapshot = _build_status_snapshot(connection)
+    snapshot["service_heartbeats"] = load_service_heartbeats(paths.runtime_root)
+    return snapshot
 
 
 def start_campaign(
@@ -1199,6 +1202,11 @@ def campaign_manager_loop(
     initialize_runtime(paths)
     stepped = 0
     while True:
+        write_service_heartbeat(
+            paths.runtime_root,
+            "campaign-manager",
+            metadata={"poll_seconds": poll_seconds},
+        )
         with _connect(paths) as connection:
             campaign_ids = [
                 row["campaign_id"]
@@ -1705,6 +1713,11 @@ def director_manager_loop(
     initialize_runtime(paths)
     stepped = 0
     while True:
+        write_service_heartbeat(
+            paths.runtime_root,
+            "research-director",
+            metadata={"poll_seconds": poll_seconds},
+        )
         with _connect(paths) as connection:
             director_ids = [
                 row["director_id"]
@@ -3680,6 +3693,9 @@ def _write_runtime_status_exports(paths: ResearchRuntimePaths) -> None:
     directors = status.get("directors", [])
     if isinstance(directors, list):
         _write_csv(status_dir / "directors.csv", directors)
+    service_heartbeats = status.get("service_heartbeats", [])
+    if isinstance(service_heartbeats, list):
+        _write_csv(status_dir / "service_heartbeats.csv", service_heartbeats)
 
 
 def _write_profile_history_snapshot(paths: ResearchRuntimePaths) -> None:

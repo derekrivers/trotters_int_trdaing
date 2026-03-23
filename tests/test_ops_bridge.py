@@ -285,6 +285,32 @@ class OpsBridgeTests(unittest.TestCase):
         self.assertEqual(dict(headers)["WWW-Authenticate"], "Bearer")
         self.assertEqual(payload["error"], "Unauthorized")
 
+    def test_mutation_route_requires_actor_header(self) -> None:
+        root = self._workspace_root("actor_required")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            runbook_path = self._write_runbook(root)
+            controller = OpsBridgeController(paths, runbook_path=runbook_path, docker_client=_FakeDockerClient())
+            app = OpsBridgeApp(controller, auth_token=self.AUTH_TOKEN)
+            status, _, body = self._invoke(
+                app,
+                "POST",
+                "/api/v1/services/worker/restart",
+                body=json.dumps({"reason": "runtime_supervisor"}).encode("utf-8"),
+                content_type="application/json",
+                headers={"Authorization": f"Bearer {self.AUTH_TOKEN}"},
+            )
+            audit_lines = controller.audit_path.read_text(encoding="utf-8").splitlines()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        payload = json.loads(body)
+        audit_payload = json.loads(audit_lines[-1])
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["error"], "Mutation requests require X-Trotters-Actor")
+        self.assertEqual(audit_payload["outcome"], "actor_missing")
+        self.assertEqual(audit_payload["actor"], "unknown")
+
     def _write_runbook(self, root: Path) -> Path:
         runbook_path = root / "trotters-runbook.json"
         runbook_path.write_text(

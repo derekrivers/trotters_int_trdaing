@@ -14,6 +14,7 @@ import uuid
 from wsgiref.simple_server import make_server
 
 from trotters_trader.agent_dispatches import append_dispatch_record
+from trotters_trader.http_security import actor_label, is_bearer_authorized, request_actor
 from trotters_trader.research_runtime import ResearchRuntimePaths
 from trotters_trader.supervisor_runbook import SupervisorRunbook, load_supervisor_runbook
 
@@ -390,13 +391,13 @@ class OpsBridgeApp:
         query_string = str(environ.get("QUERY_STRING", ""))
         body = _read_body(environ)
         request_id = _request_id(environ)
-        actor = _request_actor(environ)
+        actor = request_actor(environ)
         remote_addr = str(environ.get("REMOTE_ADDR", "") or "").strip() or None
         protected = path.startswith("/api/v1")
         mutation = method in {"POST", "PUT", "PATCH", "DELETE"}
         audit_payload = _audit_payload(body)
 
-        if protected and not _is_authorized(environ, self._auth_token):
+        if protected and not is_bearer_authorized(environ, self._auth_token):
             response = _with_headers(
                 _json_error_response(
                     "401 Unauthorized",
@@ -410,7 +411,7 @@ class OpsBridgeApp:
                 {
                     "recorded_at_utc": _utcnow(),
                     "request_id": request_id,
-                    "actor": actor,
+                    "actor": actor_label(actor),
                     "method": method,
                     "path": path,
                     "query_string": query_string,
@@ -418,6 +419,30 @@ class OpsBridgeApp:
                     "mutation": mutation,
                     "authenticated": False,
                     "outcome": "auth_failed",
+                    "remote_addr": remote_addr,
+                    "request_payload": audit_payload,
+                },
+            )
+            start_response(response.status, response.headers)
+            return [response.body]
+        if protected and mutation and not actor:
+            response = _with_headers(
+                _json_error_response("400 Bad Request", "Mutation requests require X-Trotters-Actor"),
+                [("X-Request-Id", request_id)],
+            )
+            _write_audit_record(
+                self._controller.audit_path,
+                {
+                    "recorded_at_utc": _utcnow(),
+                    "request_id": request_id,
+                    "actor": actor_label(actor),
+                    "method": method,
+                    "path": path,
+                    "query_string": query_string,
+                    "status": response.status,
+                    "mutation": mutation,
+                    "authenticated": True,
+                    "outcome": "actor_missing",
                     "remote_addr": remote_addr,
                     "request_payload": audit_payload,
                 },
@@ -437,7 +462,7 @@ class OpsBridgeApp:
                 {
                     "recorded_at_utc": _utcnow(),
                     "request_id": request_id,
-                    "actor": actor,
+                    "actor": actor_label(actor),
                     "method": method,
                     "path": path,
                     "query_string": query_string,
@@ -662,22 +687,9 @@ def _required_text(value: object, label: str) -> str:
     return text
 
 
-def _is_authorized(environ: dict[str, object], auth_token: str) -> bool:
-    header = str(environ.get("HTTP_AUTHORIZATION", "") or "").strip()
-    prefix = "Bearer "
-    if not header.startswith(prefix):
-        return False
-    return header.removeprefix(prefix).strip() == auth_token
-
-
 def _request_id(environ: dict[str, object]) -> str:
     provided = str(environ.get("HTTP_X_REQUEST_ID", "") or "").strip()
     return provided or uuid.uuid4().hex
-
-
-def _request_actor(environ: dict[str, object]) -> str:
-    actor = str(environ.get("HTTP_X_TROTTERS_ACTOR", "") or environ.get("HTTP_X_ACTOR", "") or "").strip()
-    return actor or "unknown"
 
 
 def _audit_payload(body: bytes) -> object:
