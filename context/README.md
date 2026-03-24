@@ -12,6 +12,7 @@ Active planning now lives under `feature_workflows/`.
 - Use `11_architecture_principles.md`, `12_backtesting_system_architecture.md`, and `13_domain_model.md` for software design context.
 - Use `16_paper_trading_status.md` for the current paper-trading boundary.
 - Use `20_openclaw_lessons_learned.md`, `21_openclaw_agent_guide.md`, and `18_openclaw_status_and_backlog.md` for OpenClaw context.
+- Use `22_tech_stack_and_runtime_brief.md` for a current-state stack, container, and runtime handoff summary.
 - Use `../feature_workflows/README.md` and `../feature_workflows/00_program_board.md` for active feature and job planning.
 
 ## File Index
@@ -32,6 +33,7 @@ Active planning now lives under `feature_workflows/`.
 - `18_openclaw_status_and_backlog.md`
 - `20_openclaw_lessons_learned.md`
 - `21_openclaw_agent_guide.md`
+- `22_tech_stack_and_runtime_brief.md`
 
 ## Moved Out Of Context
 

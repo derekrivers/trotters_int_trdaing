@@ -19,9 +19,11 @@ from trotters_trader.research_runtime import (
     director_manager_loop,
     director_status,
     get_job,
+    heartbeat_worker,
     initialize_runtime,
     pause_director,
     resume_director,
+    SQLITE_WRITE_RETRY_SECONDS,
     skip_director_next,
     start_director,
     runtime_paths,
@@ -101,6 +103,49 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
 
         self.assertIn("jobs", tables)
         self.assertIn("campaigns", tables)
+
+    def test_heartbeat_worker_retries_transient_database_lock(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        begin_attempts = 0
+        executed: list[tuple[str, tuple[object, ...]]] = []
+
+        class _FakeConnection:
+            def execute(self, sql: str, parameters: tuple[object, ...] = ()):
+                nonlocal begin_attempts
+                normalized = " ".join(sql.split())
+                if normalized == "BEGIN IMMEDIATE":
+                    begin_attempts += 1
+                    if begin_attempts == 1:
+                        raise sqlite3.OperationalError("database is locked")
+                else:
+                    executed.append((normalized, parameters))
+                return self
+
+            def commit(self) -> None:
+                return None
+
+            def rollback(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        @contextmanager
+        def _fake_connect(_: Path):
+            yield _FakeConnection()
+
+        with (
+            patch("trotters_trader.research_runtime.initialize_runtime"),
+            patch("trotters_trader.research_runtime._connect", _fake_connect),
+            patch("trotters_trader.research_runtime.time.sleep") as sleep_mock,
+        ):
+            heartbeat_worker(paths, "worker-1", current_job_id="job-1", status="running")
+
+        self.assertEqual(begin_attempts, 2)
+        self.assertEqual(len(executed), 2)
+        self.assertEqual(executed[0][1][:3], ("worker-1", "running", "job-1"))
+        self.assertEqual(executed[1][1], ("worker-1", executed[0][1][3]))
+        sleep_mock.assert_called_once_with(SQLITE_WRITE_RETRY_SECONDS)
 
     def test_submit_preserves_explicit_posix_worker_paths(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")

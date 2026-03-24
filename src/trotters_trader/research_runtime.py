@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from typing import Callable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -80,6 +81,8 @@ SQLITE_BUSY_TIMEOUT_MS = 30000
 SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 SQLITE_INIT_MAX_ATTEMPTS = 5
 SQLITE_INIT_RETRY_SECONDS = 0.25
+SQLITE_WRITE_MAX_ATTEMPTS = 5
+SQLITE_WRITE_RETRY_SECONDS = 0.1
 CAMPAIGN_RUNTIME_RETRY_LIMIT = 2
 RETRYABLE_RUNTIME_ERROR_MARKERS = (
     "disk i/o error",
@@ -95,6 +98,8 @@ AGENT_TRIGGER_EVENT_MAP = {
     "strategy_promoted": ("candidate-review", "paper-trade-readiness"),
 }
 AGENT_DISPATCH_COOLDOWN_SECONDS = 1800
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -325,7 +330,7 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
                 _ensure_column(connection, "campaigns", "director_id", "TEXT")
             return
         except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower() or attempt == SQLITE_INIT_MAX_ATTEMPTS - 1:
+            if not _is_sqlite_locked_error(exc) or attempt == SQLITE_INIT_MAX_ATTEMPTS - 1:
                 raise
             last_error = exc
             time.sleep(SQLITE_INIT_RETRY_SECONDS * (attempt + 1))
@@ -428,7 +433,8 @@ def coordinator_cycle(paths: ResearchRuntimePaths, lease_timeout_seconds: int = 
 def heartbeat_worker(paths: ResearchRuntimePaths, worker_id: str, current_job_id: str | None, status: str) -> None:
     initialize_runtime(paths)
     now = _utcnow()
-    with _connect(paths) as connection:
+
+    def _write(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
             INSERT INTO workers (worker_id, status, current_job_id, updated_at)
@@ -449,12 +455,15 @@ def heartbeat_worker(paths: ResearchRuntimePaths, worker_id: str, current_job_id
             (worker_id, now),
         )
 
+    _run_write_transaction(paths, _write)
+
 
 def renew_job_lease(paths: ResearchRuntimePaths, job_id: str, worker_id: str, lease_timeout_seconds: int) -> None:
     initialize_runtime(paths)
     now = _utcnow()
     lease_expires_at = _isoformat(_parse_timestamp(now) + timedelta(seconds=max(lease_timeout_seconds, 1)))
-    with _connect(paths) as connection:
+
+    def _write(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
             UPDATE jobs
@@ -464,12 +473,15 @@ def renew_job_lease(paths: ResearchRuntimePaths, job_id: str, worker_id: str, le
             (lease_expires_at, now, job_id, worker_id),
         )
 
+    _run_write_transaction(paths, _write)
+
 
 def lease_next_job(paths: ResearchRuntimePaths, worker_id: str, lease_timeout_seconds: int) -> ResearchJob | None:
     initialize_runtime(paths)
     now = _utcnow()
     lease_expires_at = _isoformat(_parse_timestamp(now) + timedelta(seconds=max(lease_timeout_seconds, 1)))
-    with _connect(paths) as connection:
+
+    def _write(connection: sqlite3.Connection) -> ResearchJob | None:
         for _ in range(5):
             row = connection.execute(
                 "SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority ASC, created_at ASC LIMIT 1"
@@ -498,6 +510,8 @@ def lease_next_job(paths: ResearchRuntimePaths, worker_id: str, lease_timeout_se
             leased = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (row["job_id"],)).fetchone()
             return _row_to_job(leased)
         return None
+
+    return _run_write_transaction(paths, _write)
 
 
 def get_job(paths: ResearchRuntimePaths, job_id: str) -> ResearchJob:
@@ -825,7 +839,8 @@ def complete_job(
 ) -> None:
     initialize_runtime(paths)
     now = _utcnow()
-    with _connect(paths) as connection:
+
+    def _write(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
             UPDATE jobs
@@ -862,6 +877,8 @@ def complete_job(
                 ),
             )
 
+    _run_write_transaction(paths, _write)
+
 
 def fail_job(
     paths: ResearchRuntimePaths,
@@ -874,7 +891,8 @@ def fail_job(
 ) -> None:
     initialize_runtime(paths)
     now = _utcnow()
-    with _connect(paths) as connection:
+
+    def _write(connection: sqlite3.Connection) -> None:
         row = connection.execute("SELECT attempt_count, max_attempts FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         if row is None:
             return
@@ -894,6 +912,8 @@ def fail_job(
             "UPDATE workers SET status = 'idle', current_job_id = NULL, updated_at = ? WHERE worker_id = ?",
             (now, worker_id),
         )
+
+    _run_write_transaction(paths, _write)
 
 
 def runtime_status(paths: ResearchRuntimePaths) -> dict[str, object]:
@@ -4024,8 +4044,32 @@ def _connect(paths: ResearchRuntimePaths):
         connection.execute("PRAGMA foreign_keys = ON")
         yield connection
         connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
+
+
+def _run_write_transaction(paths: ResearchRuntimePaths, operation: Callable[[sqlite3.Connection], _T]) -> _T:
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(SQLITE_WRITE_MAX_ATTEMPTS):
+        try:
+            with _connect(paths) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                return operation(connection)
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_locked_error(exc) or attempt == SQLITE_WRITE_MAX_ATTEMPTS - 1:
+                raise
+            last_error = exc
+            time.sleep(SQLITE_WRITE_RETRY_SECONDS * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("SQLite write transaction retry loop exited without a result")
+
+
+def _is_sqlite_locked_error(exc: sqlite3.OperationalError) -> bool:
+    return "locked" in str(exc).lower()
 
 
 def _optional_text(value: object) -> str | None:

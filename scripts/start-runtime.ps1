@@ -1,5 +1,5 @@
 param(
-    [int]$WorkerCount = 4,
+    [int]$WorkerCount = 1,
     [switch]$NoBuild,
     [switch]$Foreground,
     [switch]$RemoveOrphans
