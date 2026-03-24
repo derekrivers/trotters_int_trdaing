@@ -13,29 +13,36 @@ from unittest.mock import patch
 from trotters_trader.canonical import materialize_canonical_data
 from trotters_trader.research_runtime import (
     _emit_campaign_notification,
+    _write_runtime_status_exports_if_due,
     campaign_manager_loop,
     campaign_status,
+    complete_job,
     coordinator_cycle,
     director_manager_loop,
     director_status,
+    execute_leased_job,
+    export_runtime_catalog,
     get_job,
     heartbeat_worker,
     initialize_runtime,
+    JOB_LEASE_RENEWAL_INTERVAL_SECONDS,
     pause_director,
+    ResearchJob,
+    renew_job_lease,
     resume_director,
+    RUNNING_WORKER_HEARTBEAT_INTERVAL_SECONDS,
     SQLITE_WRITE_RETRY_SECONDS,
     skip_director_next,
-    start_director,
-    runtime_paths,
-    runtime_status,
-    renew_job_lease,
-    step_director,
     start_campaign,
-    stop_director,
-    stop_campaign,
+    start_director,
     step_campaign,
+    step_director,
+    stop_campaign,
+    stop_director,
     submit_jobs,
     worker_loop,
+    runtime_paths,
+    runtime_status,
 )
 from trotters_trader.supervisor_runbook import RunbookWorkItem
 from tests.support import IsolatedWorkspaceTestCase
@@ -109,6 +116,13 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         begin_attempts = 0
         executed: list[tuple[str, tuple[object, ...]]] = []
 
+        class _FakeCursor:
+            def __init__(self, row: object = None) -> None:
+                self._row = row
+
+            def fetchone(self):
+                return self._row
+
         class _FakeConnection:
             def execute(self, sql: str, parameters: tuple[object, ...] = ()):
                 nonlocal begin_attempts
@@ -117,9 +131,11 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
                     begin_attempts += 1
                     if begin_attempts == 1:
                         raise sqlite3.OperationalError("database is locked")
-                else:
-                    executed.append((normalized, parameters))
-                return self
+                    return _FakeCursor()
+                executed.append((normalized, parameters))
+                if normalized == "SELECT status, current_job_id FROM workers WHERE worker_id = ?":
+                    return _FakeCursor(None)
+                return _FakeCursor()
 
             def commit(self) -> None:
                 return None
@@ -142,10 +158,77 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
             heartbeat_worker(paths, "worker-1", current_job_id="job-1", status="running")
 
         self.assertEqual(begin_attempts, 2)
-        self.assertEqual(len(executed), 2)
-        self.assertEqual(executed[0][1][:3], ("worker-1", "running", "job-1"))
-        self.assertEqual(executed[1][1], ("worker-1", executed[0][1][3]))
+        self.assertEqual(executed[0], ("SELECT status, current_job_id FROM workers WHERE worker_id = ?", ("worker-1",)))
+        self.assertEqual(executed[1][0], "INSERT INTO workers (worker_id, status, current_job_id, heartbeat_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+        self.assertEqual(executed[1][1][:3], ("worker-1", "running", "job-1"))
         sleep_mock.assert_called_once_with(SQLITE_WRITE_RETRY_SECONDS)
+
+    def test_worker_loop_throttles_idle_heartbeats(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+
+        with (
+            patch("trotters_trader.research_runtime.initialize_runtime"),
+            patch("trotters_trader.research_runtime.lease_next_job", side_effect=[None, None, None, RuntimeError("stop")]),
+            patch("trotters_trader.research_runtime.heartbeat_worker") as heartbeat_mock,
+            patch("trotters_trader.research_runtime.time.monotonic", side_effect=[0.0, 5.0, 10.0, 31.0]),
+            patch("trotters_trader.research_runtime.time.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                worker_loop(paths, "worker-1", poll_seconds=0.1, lease_timeout_seconds=300, once=False)
+
+        self.assertEqual(heartbeat_mock.call_count, 2)
+        self.assertTrue(all(call.kwargs["status"] == "idle" for call in heartbeat_mock.call_args_list))
+        self.assertTrue(heartbeat_mock.call_args_list[0].kwargs["force_state_update"])
+        self.assertFalse(heartbeat_mock.call_args_list[1].kwargs["force_state_update"])
+
+    def test_execute_leased_job_heartbeats_and_renews_leases_on_separate_cadences(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        job = ResearchJob(
+            job_id="job-1",
+            campaign_id=None,
+            command="backtest",
+            config_path="configs/backtest.toml",
+            spec_json=json.dumps({"job_id": "job-1"}),
+            priority=1,
+            status="running",
+            attempt_count=1,
+            max_attempts=3,
+            output_root="job_outputs/job-1",
+            input_dataset_ref=None,
+            feature_set_ref=None,
+            control_profile=None,
+            quality_gate="all",
+            evaluation_profile=None,
+        )
+
+        class _FakeProcess:
+            def __init__(self, stdout, stderr) -> None:
+                self._poll_values = iter([None, None, None, None, 0])
+                stdout.write(json.dumps({"artifacts": []}))
+                stdout.flush()
+                stderr.write("")
+                stderr.flush()
+
+            def poll(self):
+                return next(self._poll_values)
+
+        with (
+            patch("trotters_trader.research_runtime.subprocess.Popen", side_effect=lambda *args, **kwargs: _FakeProcess(kwargs["stdout"], kwargs["stderr"])),
+            patch("trotters_trader.research_runtime.heartbeat_worker") as heartbeat_mock,
+            patch("trotters_trader.research_runtime.renew_job_lease") as renew_mock,
+            patch("trotters_trader.research_runtime.complete_job") as complete_mock,
+            patch("trotters_trader.research_runtime.fail_job") as fail_mock,
+            patch("trotters_trader.research_runtime.time.monotonic", side_effect=[0.0, 10.0, RUNNING_WORKER_HEARTBEAT_INTERVAL_SECONDS + 1.0, RUNNING_WORKER_HEARTBEAT_INTERVAL_SECONDS * 2 + 2.0, JOB_LEASE_RENEWAL_INTERVAL_SECONDS + 1.0, JOB_LEASE_RENEWAL_INTERVAL_SECONDS + 2.0]),
+            patch("trotters_trader.research_runtime.time.sleep"),
+        ):
+            success = execute_leased_job(paths, "worker-1", job, lease_timeout_seconds=300)
+
+        self.assertTrue(success)
+        self.assertEqual(heartbeat_mock.call_count, 3)
+        self.assertTrue(all(call.kwargs["status"] == "running" for call in heartbeat_mock.call_args_list))
+        renew_mock.assert_called_once_with(paths, "job-1", "worker-1", 300)
+        complete_mock.assert_called_once()
+        fail_mock.assert_not_called()
 
     def test_submit_preserves_explicit_posix_worker_paths(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
@@ -289,6 +372,124 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
             results_json = self.temp_root / f"job_output_{index}" / "sample_sma_backtest" / "results.json"
             self.assertTrue(results_json.exists())
 
+
+    def test_ten_workers_complete_independent_jobs_without_escaped_lock_failures(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        submit_jobs(
+            paths,
+            {
+                "jobs": [
+                    {
+                        "job_id": f"job-{index:02d}",
+                        "command": "backtest",
+                        "config_path": "configs/backtest.toml",
+                        "priority": index,
+                    }
+                    for index in range(1, 11)
+                ]
+            },
+        )
+        simulated_logs = self.temp_root / "simulated_worker_logs"
+        simulated_logs.mkdir(parents=True, exist_ok=True)
+
+        def _fake_execute(paths_arg, worker_id: str, job: ResearchJob, *, lease_timeout_seconds: int) -> bool:
+            stdout_path = simulated_logs / f"{job.job_id}.stdout.json"
+            stderr_path = simulated_logs / f"{job.job_id}.stderr.log"
+            stdout_path.write_text(json.dumps({"artifacts": []}), encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            complete_job(paths_arg, job.job_id, worker_id, 0, {"artifacts": []}, stdout_path, stderr_path)
+            return True
+
+        with patch("trotters_trader.research_runtime.execute_leased_job", side_effect=_fake_execute):
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [
+                    executor.submit(worker_loop, paths, f"worker-{index:02d}", 0.01, 300, True)
+                    for index in range(1, 11)
+                ]
+                results = [future.result() for future in futures]
+
+        self.assertEqual(sum(result["completed_jobs"] for result in results), 10)
+        snapshot = coordinator_cycle(paths, lease_timeout_seconds=300)
+        self.assertEqual(snapshot["counts"].get("completed"), 10)
+        self.assertEqual(len(snapshot["workers"]), 10)
+
+    def test_export_runtime_catalog_skips_rebuild_when_artifacts_are_unchanged(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        initialize_runtime(paths)
+        now = "2026-03-24T12:00:00+00:00"
+        payload = {
+            "profile": {"profile_name": "alpha", "profile_version": "1", "strategy_family": "momentum", "research_tranche": "baseline"},
+            "result_summary": {"evaluation_status": "pass"},
+        }
+        with _db_connection(paths.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, campaign_id, command, config_path, spec_json, priority, status, attempt_count, max_attempts,
+                    created_at, updated_at, finished_at, output_root, quality_gate, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-1",
+                    None,
+                    "backtest",
+                    "configs/backtest.toml",
+                    json.dumps({"job_id": "job-1"}),
+                    1,
+                    "completed",
+                    1,
+                    3,
+                    now,
+                    now,
+                    now,
+                    "job_outputs/job-1",
+                    "all",
+                    json.dumps(payload),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO artifacts (
+                    job_id, recorded_at_utc, artifact_key, artifact_type, artifact_name, primary_path, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-1",
+                    now,
+                    "results",
+                    "json",
+                    "results.json",
+                    "runtime/catalog/job-1/results.json",
+                    json.dumps({"path": "runtime/catalog/job-1/results.json"}),
+                ),
+            )
+
+        first_outputs = export_runtime_catalog(paths)
+        self.assertTrue(Path(first_outputs["catalog_jsonl"]).exists())
+
+        with (
+            patch("trotters_trader.research_runtime.write_catalog_snapshot", side_effect=AssertionError("catalog rebuild should be skipped")),
+            patch("trotters_trader.research_runtime._write_profile_history_snapshot", side_effect=AssertionError("profile history rebuild should be skipped")),
+        ):
+            second_outputs = export_runtime_catalog(paths)
+
+        self.assertEqual(second_outputs, first_outputs)
+
+    def test_runtime_status_exports_are_throttled(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        snapshot = runtime_status(paths)
+
+        _write_runtime_status_exports_if_due(paths, status_snapshot=snapshot)
+
+        runtime_status_path = paths.runtime_root / "exports" / "runtime_status.json"
+        original_contents = runtime_status_path.read_text(encoding="utf-8")
+        changed_snapshot = dict(snapshot)
+        changed_snapshot["counts"] = {"queued": 99}
+
+        _write_runtime_status_exports_if_due(paths, status_snapshot=changed_snapshot)
+
+        self.assertEqual(runtime_status_path.read_text(encoding="utf-8"), original_contents)
+
     def test_coordinator_prunes_stale_idle_workers(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         submit_jobs(
@@ -302,14 +503,8 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         with _db_connection(paths.database_path) as connection:
             connection.execute(
                 """
-                INSERT INTO workers (worker_id, status, current_job_id, updated_at)
-                VALUES ('worker-stale', 'idle', NULL, '2000-01-01T00:00:00+00:00')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO worker_heartbeats (worker_id, heartbeat_at)
-                VALUES ('worker-stale', '2000-01-01T00:00:00+00:00')
+                INSERT INTO workers (worker_id, status, current_job_id, heartbeat_at, updated_at)
+                VALUES ('worker-stale', 'idle', NULL, '2000-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00')
                 """
             )
 
@@ -338,14 +533,8 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
             )
             connection.execute(
                 """
-                INSERT INTO workers (worker_id, status, current_job_id, updated_at)
-                VALUES ('worker-stale', 'running', 'job-1', '2000-01-01T00:00:00+00:00')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO worker_heartbeats (worker_id, heartbeat_at)
-                VALUES ('worker-stale', '2000-01-01T00:00:00+00:00')
+                INSERT INTO workers (worker_id, status, current_job_id, heartbeat_at, updated_at)
+                VALUES ('worker-stale', 'running', 'job-1', '2000-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00')
                 """
             )
 

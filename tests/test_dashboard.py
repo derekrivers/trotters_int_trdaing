@@ -193,19 +193,20 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("broad-operability", body)
         self.assertIn("Strategy promoted and frozen for review", body)
         self.assertIn("worker-01", body)
-        self.assertIn("2026-03-21T16:00:30+00:00", body)
-        self.assertIn("2026-03-21T16:01:00+00:00", body)
         self.assertIn("ago", body)
         self.assertIn("broad-operability-plan", body)
         self.assertIn("Strategy promoted:", body)
         self.assertIn("success", body)
         self.assertIn("Active Runtime Now", body)
-        self.assertIn("Outcome Summary", body)
-        self.assertIn("What Changed Since Last Check", body)
-        self.assertIn("Recent Terminal Campaign Outcomes", body)
-        self.assertIn("Recent Terminal Director Outcomes", body)
-        self.assertIn("completed-operability", body)
-        self.assertIn("archived-director", body)
+        self.assertIn("Active Directors", body)
+        self.assertIn("Active Campaigns", body)
+        self.assertIn("Diagnostics", body)
+        self.assertIn("Recent Notifications", body)
+        self.assertNotIn("Outcome Summary", body)
+        self.assertNotIn("What Changed Since Last Check", body)
+        self.assertNotIn("Recent Terminal Campaign Outcomes", body)
+        self.assertNotIn("Recent Terminal Director Outcomes", body)
+        self.assertNotIn("Recent Jobs", body)
 
     def test_overview_ignores_stale_stopped_banner_when_replacement_campaign_is_running(self) -> None:
         root = self._workspace_root("overview_stale_stop")
@@ -517,7 +518,6 @@ class DashboardTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         self.assertEqual(status, "200 OK")
-        self.assertIn("Candidate Progression", body)
         self.assertIn("Current Best Candidate", body)
         self.assertIn("candidate available", body)
         self.assertIn("Why This Is The Current Lead", body)
@@ -525,6 +525,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Immediate next action", body)
         self.assertIn("candidate-run", body)
         self.assertIn("Supporting Specialist Views", body)
+        self.assertNotIn("Candidate Progression", body)
 
     def test_overview_renders_active_research_branch_section(self) -> None:
         root = self._workspace_root("overview_active_branch")
@@ -1245,7 +1246,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(dict(headers)["Location"], "/campaigns/campaign-1?flash=Campaign+stop+requested")
         stop_mock.assert_called_once()
 
-    def test_overview_renders_agent_summaries_panel(self) -> None:
+    def test_overview_keeps_agent_telemetry_off_the_main_page(self) -> None:
         root = self._workspace_root("agent_summaries")
         try:
             paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
@@ -1286,12 +1287,14 @@ class DashboardTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         self.assertEqual(status, "200 OK")
-        self.assertIn("Decision Snapshots", body)
-        self.assertIn("Agent Summaries", body)
-        self.assertIn("Agent Dispatches", body)
-        self.assertIn("runtime-supervisor", body)
-        self.assertIn("research-triage", body)
-        self.assertIn("service_health", body)
+        self.assertIn("Diagnostics", body)
+        self.assertIn("/api/overview.json", body)
+        self.assertNotIn("Decision Snapshots", body)
+        self.assertNotIn("Agent Summaries", body)
+        self.assertNotIn("Agent Dispatches", body)
+        self.assertNotIn("runtime-supervisor", body)
+        self.assertNotIn("research-triage", body)
+        self.assertNotIn("service_health", body)
 
     def test_overview_renders_paper_rehearsal_panel(self) -> None:
         root = self._workspace_root("paper_rehearsal")
@@ -1344,9 +1347,8 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(status, "200 OK")
         self.assertIn("Paper-Trade Entry Gate", body)
-        self.assertIn("Paper Rehearsal", body)
-        self.assertIn("No promoted frozen candidate is available for paper-trading rehearsal.", body)
-        self.assertIn("Operator Decisions", body)
+        self.assertNotIn("Paper Rehearsal", body)
+        self.assertIn("Diagnostics", body)
 
     def test_healthz_is_public_without_dashboard_auth(self) -> None:
         root = self._workspace_root("healthz")
@@ -1467,12 +1469,10 @@ class DashboardTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         self.assertEqual(status, "200 OK")
-        self.assertIn("Research Program Portfolio", body)
-        self.assertIn("Research Family Comparison", body)
         self.assertIn("Next Family Status", body)
-        self.assertIn("Broad Mean-Reversion Reentry", body)
-        self.assertIn("Beta-Defensive Continuation Program", body)
         self.assertIn("Supervisor Work Queue", body)
+        self.assertNotIn("Research Program Portfolio", body)
+        self.assertNotIn("Research Family Comparison", body)
         self.assertTrue(
             "define_next_research_family" in body
             or "start_approved_family" in body
@@ -1619,8 +1619,6 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("backlog status", body)
         self.assertIn("6 approved standby families remain beyond the current queue head.", body)
         self.assertIn("mean_reversion_broad_fastcycle", body)
-        self.assertIn("Showing first 5 of 6 approved standby families.", body)
-        self.assertIn("Showing first 8 of 10 recorded families.", body)
 
     def test_serve_dashboard_uses_threaded_wsgi_server(self) -> None:
         root = self._workspace_root("serve_dashboard")

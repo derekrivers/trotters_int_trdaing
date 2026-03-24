@@ -87,6 +87,7 @@ class DashboardController:
             active_directors=active_directors,
             active_campaigns=active_campaigns,
             include_catalog_status=True,
+            notification_limit=10,
             fetch_campaign_detail=lambda campaign_id: campaign_status(self._paths, campaign_id).get("campaign", {}),
             resolve_current_best_candidate_fn=resolve_current_best_candidate,
             materialize_promotion_path_fn=materialize_promotion_path,
@@ -394,9 +395,6 @@ def _render_overview(
     status = payload.get("status", {}) if isinstance(payload.get("status"), dict) else {}
     counts = status.get("counts", {}) if isinstance(status.get("counts"), dict) else {}
     workers = status.get("workers", []) if isinstance(status.get("workers"), list) else []
-    jobs = status.get("jobs", []) if isinstance(status.get("jobs"), list) else []
-    all_directors = status.get("directors", []) if isinstance(status.get("directors"), list) else []
-    all_campaigns = status.get("campaigns", []) if isinstance(status.get("campaigns"), list) else []
     directors = payload.get("active_directors", []) if isinstance(payload.get("active_directors"), list) else []
     campaigns = payload.get("active_campaigns", []) if isinstance(payload.get("active_campaigns"), list) else []
     notifications = payload.get("notifications", []) if isinstance(payload.get("notifications"), list) else []
@@ -411,19 +409,9 @@ def _render_overview(
         if isinstance(payload.get("active_branch_summary"), dict)
         else {}
     )
-    candidate_progression_summary = (
-        payload.get("candidate_progression_summary", {})
-        if isinstance(payload.get("candidate_progression_summary"), dict)
-        else {}
-    )
     paper_trade_entry_gate = (
         payload.get("paper_trade_entry_gate", {})
         if isinstance(payload.get("paper_trade_entry_gate"), dict)
-        else {}
-    )
-    research_family_comparison_summary = (
-        payload.get("research_family_comparison_summary", {})
-        if isinstance(payload.get("research_family_comparison_summary"), dict)
         else {}
     )
     next_family_status = (
@@ -431,40 +419,14 @@ def _render_overview(
         if isinstance(payload.get("next_family_status"), dict)
         else {}
     )
-    research_program_portfolio = (
-        payload.get("research_program_portfolio", {})
-        if isinstance(payload.get("research_program_portfolio"), dict)
-        else {}
-    )
     runbook_queue_summary = (
         payload.get("runbook_queue_summary", {})
         if isinstance(payload.get("runbook_queue_summary"), dict)
         else {}
     )
-    paper_rehearsal = payload.get("paper_rehearsal", {}) if isinstance(payload.get("paper_rehearsal"), dict) else {}
-    agent_summaries = payload.get("agent_summaries", {}) if isinstance(payload.get("agent_summaries"), dict) else {}
-    agent_dispatches = payload.get("agent_dispatches", []) if isinstance(payload.get("agent_dispatches"), list) else []
-    agent_dispatch_summary = payload.get("agent_dispatch_summary", {}) if isinstance(payload.get("agent_dispatch_summary"), dict) else {}
     service_heartbeats = status.get("service_heartbeats", []) if isinstance(status.get("service_heartbeats"), list) else []
     health = _runtime_health(status=status, campaigns=campaigns, directors=directors, next_family_status=next_family_status)
 
-    summary_cards = "".join(
-        _summary_card(label, str(counts.get(label, 0)))
-        for label in ("queued", "running", "completed", "failed", "cancelled")
-    )
-    outcome_cards = "".join(
-        _summary_card(label, str(value))
-        for label, value in [
-            ("campaign completed", _status_count(all_campaigns, "completed")),
-            ("campaign exhausted", _status_count(all_campaigns, "exhausted")),
-            ("campaign failed", _status_count(all_campaigns, "failed")),
-            ("campaign stopped", _status_count(all_campaigns, "stopped")),
-            ("director completed", _status_count(all_directors, "completed")),
-            ("director exhausted", _status_count(all_directors, "exhausted")),
-            ("director failed", _status_count(all_directors, "failed")),
-            ("director stopped", _status_count(all_directors, "stopped")),
-        ]
-    )
     director_rows = "".join(_director_row(director) for director in directors) or (
         "<tr><td colspan='7'>No active directors</td></tr>"
     )
@@ -474,41 +436,8 @@ def _render_overview(
     worker_rows = "".join(_worker_row(worker) for worker in workers) or (
         "<tr><td colspan='4'>No workers recorded</td></tr>"
     )
-    job_rows = "".join(_job_row(job) for job in jobs[:20]) or "<tr><td colspan='7'>No jobs recorded</td></tr>"
     notification_rows = "".join(_notification_row(record) for record in notifications) or (
         "<tr><td colspan='6'>No notifications yet</td></tr>"
-    )
-    recent_campaign_rows = "".join(_campaign_outcome_row(campaign) for campaign in _recent_outcomes(all_campaigns)) or (
-        "<tr><td colspan='6'>No recent campaign outcomes</td></tr>"
-    )
-    recent_director_rows = "".join(_director_outcome_row(director) for director in _recent_outcomes(all_directors)) or (
-        "<tr><td colspan='6'>No recent director outcomes</td></tr>"
-    )
-    recent_change_rows = "".join(
-        _recent_change_row(change)
-        for change in _recent_changes(all_campaigns, all_directors, notifications)
-    ) or "<tr><td colspan='3'>No recent changes recorded</td></tr>"
-    agent_summary_rows = "".join(_agent_summary_row(summary) for summary in agent_summaries.values() if isinstance(summary, dict)) or "<tr><td colspan='6'>No agent summaries yet</td></tr>"
-    decision_snapshot_cards = "".join(
-        _decision_snapshot_card(label, agent_summaries.get(summary_type))
-        for label, summary_type in [
-            ("Supervisor Incident", "supervisor_incident_summary"),
-            ("Campaign Triage", "campaign_triage_summary"),
-            ("Candidate Readiness", "candidate_readiness_summary"),
-            ("Paper-Trade Readiness", "paper_trade_readiness_summary"),
-            ("Failure Postmortem", "failure_postmortem_summary"),
-        ]
-    )
-    dispatch_rows = "".join(_agent_dispatch_row(record) for record in agent_dispatches if isinstance(record, dict)) or "<tr><td colspan='7'>No agent dispatches recorded yet</td></tr>"
-    dispatch_totals = agent_dispatch_summary.get("totals", {}) if isinstance(agent_dispatch_summary.get("totals"), dict) else {}
-    dispatch_summary_cards = "".join(
-        _summary_card(label, str(value))
-        for label, value in [
-            ("agent runs", dispatch_totals.get("runs", 0)),
-            ("dispatch successes", dispatch_totals.get("successes", 0)),
-            ("dispatch failures", dispatch_totals.get("failures", 0)),
-            ("dispatch tokens", dispatch_totals.get("total_tokens", 0)),
-        ]
     )
 
     body = f"""
@@ -530,41 +459,9 @@ def _render_overview(
     {_active_runtime_now_section(directors, campaigns, counts, next_family_status=next_family_status)}
     {_active_branch_summary_section(active_branch_summary)}
     {_current_best_candidate_section(current_best_candidate)}
-    {_candidate_progression_section(candidate_progression_summary)}
     {_paper_trade_entry_gate_section(paper_trade_entry_gate)}
     {_next_family_status_section(next_family_status)}
-    {_research_family_comparison_section(research_family_comparison_summary)}
-    {_paper_rehearsal_section(paper_rehearsal)}
-    {_research_program_portfolio_section(research_program_portfolio)}
     {_runbook_queue_summary_section(runbook_queue_summary)}
-    <section class="summary-grid">{summary_cards}</section>
-    <section class="panel">
-      <h2>Decision Snapshots</h2>
-      <p class="subtle">Latest operator-facing conclusion from each summary type.</p>
-      <section class="summary-grid">{decision_snapshot_cards}</section>
-    </section>
-    <section class="panel">
-      <h2>Agent Summaries</h2>
-      <p class="subtle">Latest low-cost outputs from the supervisor and specialist review agents.</p>
-      <table>
-        <thead><tr><th>Agent</th><th>Summary</th><th>Classification</th><th>Status</th><th>Action</th><th>Recorded</th></tr></thead>
-        <tbody>{agent_summary_rows}</tbody>
-      </table>
-    </section>
-    <section class="panel">
-      <h2>Agent Dispatches</h2>
-      <p class="subtle">Recent specialist-agent runs and their cost envelope.</p>
-      <section class="summary-grid">{dispatch_summary_cards}</section>
-      <table>
-        <thead><tr><th>Agent</th><th>Event</th><th>Outcome</th><th>Model</th><th>Tokens</th><th>Duration</th><th>Recorded</th></tr></thead>
-        <tbody>{dispatch_rows}</tbody>
-      </table>
-    </section>
-    <section class="panel">
-      <h2>Outcome Summary</h2>
-      <p class="subtle">Recent terminal outcomes across campaigns and directors.</p>
-      <section class="summary-grid">{outcome_cards}</section>
-    </section>
     <section class="panel">
       <h2>Active Directors</h2>
       <table>
@@ -578,6 +475,11 @@ def _render_overview(
         <thead><tr><th>Name</th><th>Status</th><th>Phase</th><th>Updated</th><th>Report</th><th>Action</th></tr></thead>
         <tbody>{campaign_rows}</tbody>
       </table>
+    </section>
+    <section class="panel">
+      <h2>Diagnostics</h2>
+      <p class="subtle">Low-level job churn, agent telemetry, and terminal histories stay available on the JSON surface and detail routes so the overview can stay focused on the current operator decision.</p>
+      <p><strong>Use the JSON view:</strong> <a href="/api/overview.json">/api/overview.json</a></p>
     </section>
     <section class="split-grid">
       <section class="panel">
@@ -594,37 +496,6 @@ def _render_overview(
           <tbody>{notification_rows}</tbody>
         </table>
       </section>
-    </section>
-    <section class="panel">
-      <h2>What Changed Since Last Check</h2>
-      <p class="subtle">This feed highlights the most recent notifications and terminal state changes.</p>
-      <table>
-        <thead><tr><th>Time</th><th>Source</th><th>Change</th></tr></thead>
-        <tbody>{recent_change_rows}</tbody>
-      </table>
-    </section>
-    <section class="split-grid">
-      <section class="panel">
-        <h2>Recent Terminal Campaign Outcomes</h2>
-        <table>
-          <thead><tr><th>Campaign</th><th>Status</th><th>Phase</th><th>Updated</th><th>Report</th><th>Action</th></tr></thead>
-          <tbody>{recent_campaign_rows}</tbody>
-        </table>
-      </section>
-      <section class="panel">
-        <h2>Recent Terminal Director Outcomes</h2>
-        <table>
-          <thead><tr><th>Director</th><th>Status</th><th>Plan</th><th>Updated</th><th>Successful Campaign</th><th>Action</th></tr></thead>
-          <tbody>{recent_director_rows}</tbody>
-        </table>
-      </section>
-    </section>
-    <section class="panel">
-      <h2>Recent Jobs</h2>
-      <table>
-        <thead><tr><th>Job</th><th>Campaign</th><th>Command</th><th>Status</th><th>Worker</th><th>Created</th><th>Updated</th></tr></thead>
-        <tbody>{job_rows}</tbody>
-      </table>
     </section>
     """
     return _render_layout("Research Runtime Dashboard", body, refresh_seconds=refresh_seconds)
@@ -1489,11 +1360,10 @@ def _render_guide(*, refresh_seconds: int) -> str:
       <section class="panel">
         <h2>How To Read The Dashboard</h2>
         <p><strong>Current Best Candidate</strong> is the fastest operator answer for what the system currently thinks is the lead branch, why it leads, what is still weak, and what should happen next.</p>
+        <p><strong>Active Runtime Now</strong> is the quickest queue-health summary: workers, queued jobs, and whether the runtime is actively advancing or governed-idle.</p>
         <p><strong>Active Directors</strong> are the highest-level search programs. A director can launch the next campaign automatically.</p>
         <p><strong>Active Campaigns</strong> are the current strategy families being tested.</p>
-        <p><strong>Workers</strong> tell you whether the machine is actively processing jobs.</p>
-        <p><strong>Recent Notifications</strong> show major events such as failures, stops, and successful promotions.</p>
-        <p><strong>Recent Jobs</strong> show the lower-level queue activity behind the higher-level orchestration.</p>
+        <p><strong>Diagnostics</strong> keeps live workers and recent notifications on the page while heavier job churn and agent telemetry stay on the JSON and detail routes.</p>
       </section>
       <section class="panel">
         <h2>Important Terms</h2>

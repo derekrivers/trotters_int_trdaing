@@ -98,6 +98,10 @@ AGENT_TRIGGER_EVENT_MAP = {
     "strategy_promoted": ("candidate-review", "paper-trade-readiness"),
 }
 AGENT_DISPATCH_COOLDOWN_SECONDS = 1800
+IDLE_WORKER_HEARTBEAT_INTERVAL_SECONDS = 30.0
+RUNNING_WORKER_HEARTBEAT_INTERVAL_SECONDS = 15.0
+JOB_LEASE_RENEWAL_INTERVAL_SECONDS = 60.0
+RUNTIME_STATUS_EXPORT_MIN_INTERVAL_SECONDS = 15.0
 
 _T = TypeVar("_T")
 
@@ -262,6 +266,7 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
                         worker_id TEXT PRIMARY KEY,
                         status TEXT NOT NULL,
                         current_job_id TEXT,
+                        heartbeat_at TEXT,
                         updated_at TEXT NOT NULL
                     );
                     CREATE TABLE IF NOT EXISTS worker_heartbeats (
@@ -328,6 +333,9 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
                 )
                 _ensure_column(connection, "jobs", "campaign_id", "TEXT")
                 _ensure_column(connection, "campaigns", "director_id", "TEXT")
+                _ensure_column(connection, "workers", "heartbeat_at", "TEXT")
+                connection.execute("UPDATE workers SET heartbeat_at = COALESCE(heartbeat_at, updated_at)")
+                _ensure_runtime_indexes(connection)
             return
         except sqlite3.OperationalError as exc:
             if not _is_sqlite_locked_error(exc) or attempt == SQLITE_INIT_MAX_ATTEMPTS - 1:
@@ -426,33 +434,54 @@ def coordinator_cycle(paths: ResearchRuntimePaths, lease_timeout_seconds: int = 
         failed += recovered["failed"]
         _prune_stale_workers(connection, worker_cutoff)
         snapshot = _build_status_snapshot(connection)
-    exports = export_runtime_catalog(paths)
+    exports = export_runtime_catalog(paths, status_snapshot=snapshot)
     return {**snapshot, "requeued_jobs": requeued, "failed_expired_jobs": failed, "catalog_exports": exports}
 
 
-def heartbeat_worker(paths: ResearchRuntimePaths, worker_id: str, current_job_id: str | None, status: str) -> None:
+def heartbeat_worker(
+    paths: ResearchRuntimePaths,
+    worker_id: str,
+    current_job_id: str | None,
+    status: str,
+    *,
+    force_state_update: bool = False,
+) -> None:
     initialize_runtime(paths)
     now = _utcnow()
 
     def _write(connection: sqlite3.Connection) -> None:
-        connection.execute(
-            """
-            INSERT INTO workers (worker_id, status, current_job_id, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(worker_id) DO UPDATE SET
-                status = excluded.status,
-                current_job_id = excluded.current_job_id,
-                updated_at = excluded.updated_at
-            """,
-            (worker_id, status, current_job_id, now),
+        existing = connection.execute(
+            "SELECT status, current_job_id FROM workers WHERE worker_id = ?",
+            (worker_id,),
+        ).fetchone()
+        state_changed = (
+            force_state_update
+            or existing is None
+            or str(existing["status"]) != status
+            or existing["current_job_id"] != current_job_id
         )
+        if existing is None:
+            connection.execute(
+                """
+                INSERT INTO workers (worker_id, status, current_job_id, heartbeat_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (worker_id, status, current_job_id, now, now),
+            )
+            return
+        if state_changed:
+            connection.execute(
+                """
+                UPDATE workers
+                SET status = ?, current_job_id = ?, heartbeat_at = ?, updated_at = ?
+                WHERE worker_id = ?
+                """,
+                (status, current_job_id, now, now, worker_id),
+            )
+            return
         connection.execute(
-            """
-            INSERT INTO worker_heartbeats (worker_id, heartbeat_at)
-            VALUES (?, ?)
-            ON CONFLICT(worker_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at
-            """,
-            (worker_id, now),
+            "UPDATE workers SET heartbeat_at = ? WHERE worker_id = ?",
+            (now, worker_id),
         )
 
     _run_write_transaction(paths, _write)
@@ -484,7 +513,13 @@ def lease_next_job(paths: ResearchRuntimePaths, worker_id: str, lease_timeout_se
     def _write(connection: sqlite3.Connection) -> ResearchJob | None:
         for _ in range(5):
             row = connection.execute(
-                "SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority ASC, created_at ASC LIMIT 1"
+                """
+                SELECT job_id, attempt_count
+                FROM jobs INDEXED BY idx_jobs_status_priority_created_at
+                WHERE status = 'queued'
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+                """
             ).fetchone()
             if row is None:
                 return None
@@ -752,20 +787,32 @@ def worker_loop(
     initialize_runtime(paths)
     completed_jobs = 0
     failed_jobs = 0
+    last_idle_heartbeat = None
     while True:
-        heartbeat_worker(paths, worker_id, current_job_id=None, status="idle")
+        now = time.monotonic()
+        if last_idle_heartbeat is None or now - last_idle_heartbeat >= IDLE_WORKER_HEARTBEAT_INTERVAL_SECONDS:
+            heartbeat_worker(
+                paths,
+                worker_id,
+                current_job_id=None,
+                status="idle",
+                force_state_update=last_idle_heartbeat is None,
+            )
+            last_idle_heartbeat = now
         job = lease_next_job(paths, worker_id, lease_timeout_seconds)
         if job is None:
             if once:
                 break
             time.sleep(max(poll_seconds, 0.1))
             continue
-        heartbeat_worker(paths, worker_id, current_job_id=job.job_id, status="running")
+        heartbeat_worker(paths, worker_id, current_job_id=job.job_id, status="running", force_state_update=True)
+        last_idle_heartbeat = None
         if execute_leased_job(paths, worker_id, job, lease_timeout_seconds=lease_timeout_seconds):
             completed_jobs += 1
         else:
             failed_jobs += 1
-        heartbeat_worker(paths, worker_id, current_job_id=None, status="idle")
+        heartbeat_worker(paths, worker_id, current_job_id=None, status="idle", force_state_update=True)
+        last_idle_heartbeat = time.monotonic()
         if once:
             break
     return {"worker_id": worker_id, "completed_jobs": completed_jobs, "failed_jobs": failed_jobs}
@@ -798,7 +845,6 @@ def execute_leased_job(
         "--job-id",
         job.job_id,
     ]
-    heartbeat_interval = max(5.0, min(30.0, 15.0))
     with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open("w", encoding="utf-8") as stderr_handle:
         process = subprocess.Popen(
             command,
@@ -808,16 +854,19 @@ def execute_leased_job(
             env=env,
         )
         last_heartbeat = time.monotonic()
+        last_lease_renewal = last_heartbeat
         while True:
             returncode = process.poll()
             now = time.monotonic()
             if returncode is not None:
                 completed_returncode = returncode
                 break
-            if now - last_heartbeat >= heartbeat_interval:
+            if now - last_heartbeat >= RUNNING_WORKER_HEARTBEAT_INTERVAL_SECONDS:
                 heartbeat_worker(paths, worker_id, current_job_id=job.job_id, status="running")
-                renew_job_lease(paths, job.job_id, worker_id, lease_timeout_seconds)
                 last_heartbeat = now
+            if now - last_lease_renewal >= JOB_LEASE_RENEWAL_INTERVAL_SECONDS:
+                renew_job_lease(paths, job.job_id, worker_id, lease_timeout_seconds)
+                last_lease_renewal = now
             time.sleep(1.0)
     if completed_returncode == 0:
         payload = json.loads(stdout_path.read_text(encoding="utf-8"))
@@ -853,8 +902,8 @@ def complete_job(
         )
         _finish_attempt(connection, job_id, worker_id, "completed", now, exit_code, stdout_path, stderr_path, None)
         connection.execute(
-            "UPDATE workers SET status = 'idle', current_job_id = NULL, updated_at = ? WHERE worker_id = ?",
-            (now, worker_id),
+            "UPDATE workers SET status = 'idle', current_job_id = NULL, heartbeat_at = ?, updated_at = ? WHERE worker_id = ?",
+            (now, now, worker_id),
         )
         connection.execute("DELETE FROM artifacts WHERE job_id = ?", (job_id,))
         for artifact in payload.get("artifacts", []):
@@ -909,8 +958,8 @@ def fail_job(
         )
         _finish_attempt(connection, job_id, worker_id, "failed", now, exit_code, stdout_path, stderr_path, error_message[:4000])
         connection.execute(
-            "UPDATE workers SET status = 'idle', current_job_id = NULL, updated_at = ? WHERE worker_id = ?",
-            (now, worker_id),
+            "UPDATE workers SET status = 'idle', current_job_id = NULL, heartbeat_at = ?, updated_at = ? WHERE worker_id = ?",
+            (now, now, worker_id),
         )
 
     _run_write_transaction(paths, _write)
@@ -2322,53 +2371,75 @@ def _handle_director_runtime_error(paths: ResearchRuntimePaths, director_id: str
         )
 
 
-def export_runtime_catalog(paths: ResearchRuntimePaths) -> dict[str, str]:
+def export_runtime_catalog(
+    paths: ResearchRuntimePaths,
+    *,
+    status_snapshot: dict[str, object] | None = None,
+) -> dict[str, str]:
     initialize_runtime(paths)
+    export_state_path = _catalog_export_state_path(paths)
+    outputs = _catalog_export_outputs(paths)
+    should_rebuild_catalog = False
+    max_artifact_id = 0
+    rows: list[sqlite3.Row] = []
     with _connect(paths) as connection:
-        rows = connection.execute(
-            """
-            SELECT
-                artifacts.recorded_at_utc,
-                artifacts.artifact_key,
-                artifacts.artifact_type,
-                artifacts.artifact_name,
-                artifacts.primary_path,
-                jobs.job_id,
-                jobs.command,
-                jobs.config_path,
-                jobs.control_profile,
-                jobs.result_json
-            FROM artifacts
-            INNER JOIN jobs ON jobs.job_id = artifacts.job_id
-            ORDER BY artifacts.recorded_at_utc ASC, artifacts.artifact_id ASC
-            """
-        ).fetchall()
-    entries: list[dict[str, object]] = []
-    for row in rows:
-        payload = _load_result_payload(row["result_json"])
-        profile = payload.get("profile", {}) if isinstance(payload, dict) else {}
-        summary = payload.get("result_summary", {}) if isinstance(payload, dict) else {}
-        entries.append(
-            {
-                "recorded_at_utc": row["recorded_at_utc"],
-                "artifact_type": row["artifact_type"],
-                "artifact_name": row["artifact_name"],
-                "profile_name": str(profile.get("profile_name", "")),
-                "profile_version": str(profile.get("profile_version", "")),
-                "strategy_family": str(profile.get("strategy_family", "unknown")),
-                "sweep_type": str(row["command"]),
-                "research_tranche": str(profile.get("research_tranche", "")),
-                "control_profile": str(profile.get("control_profile", row["control_profile"] or "")),
-                "evaluation_status": str(summary.get("evaluation_status", "unknown")),
-                "primary_path": row["primary_path"],
-                "config_path": row["config_path"],
-                "job_id": row["job_id"],
-                "artifact_key": row["artifact_key"],
-            }
+        row = connection.execute("SELECT COALESCE(MAX(artifact_id), 0) AS max_artifact_id FROM artifacts").fetchone()
+        max_artifact_id = int(row["max_artifact_id"] or 0) if row is not None else 0
+        should_rebuild_catalog = (
+            not export_state_path.exists()
+            or not Path(outputs["catalog_jsonl"]).exists()
+            or _load_catalog_export_watermark(export_state_path) != max_artifact_id
         )
-    outputs = write_catalog_snapshot(paths.catalog_output_dir, entries)
-    _write_runtime_status_exports(paths)
-    _write_profile_history_snapshot(paths)
+        if should_rebuild_catalog:
+            rows = connection.execute(
+                """
+                SELECT
+                    artifacts.recorded_at_utc,
+                    artifacts.artifact_key,
+                    artifacts.artifact_type,
+                    artifacts.artifact_name,
+                    artifacts.primary_path,
+                    jobs.job_id,
+                    jobs.command,
+                    jobs.config_path,
+                    jobs.control_profile,
+                    jobs.result_json
+                FROM artifacts
+                INNER JOIN jobs ON jobs.job_id = artifacts.job_id
+                ORDER BY artifacts.recorded_at_utc ASC, artifacts.artifact_id ASC
+                """
+            ).fetchall()
+    if should_rebuild_catalog:
+        entries: list[dict[str, object]] = []
+        for row in rows:
+            payload = _load_result_payload(row["result_json"])
+            profile = payload.get("profile", {}) if isinstance(payload, dict) else {}
+            summary = payload.get("result_summary", {}) if isinstance(payload, dict) else {}
+            entries.append(
+                {
+                    "recorded_at_utc": row["recorded_at_utc"],
+                    "artifact_type": row["artifact_type"],
+                    "artifact_name": row["artifact_name"],
+                    "profile_name": str(profile.get("profile_name", "")),
+                    "profile_version": str(profile.get("profile_version", "")),
+                    "strategy_family": str(profile.get("strategy_family", "unknown")),
+                    "sweep_type": str(row["command"]),
+                    "research_tranche": str(profile.get("research_tranche", "")),
+                    "control_profile": str(profile.get("control_profile", row["control_profile"] or "")),
+                    "evaluation_status": str(summary.get("evaluation_status", "unknown")),
+                    "primary_path": row["primary_path"],
+                    "config_path": row["config_path"],
+                    "job_id": row["job_id"],
+                    "artifact_key": row["artifact_key"],
+                }
+            )
+        outputs = write_catalog_snapshot(paths.catalog_output_dir, entries)
+        _write_profile_history_snapshot(paths)
+        export_state_path.write_text(
+            json.dumps({"max_artifact_id": max_artifact_id, "exported_at_utc": _utcnow()}, indent=2),
+            encoding="utf-8",
+        )
+    _write_runtime_status_exports_if_due(paths, status_snapshot=status_snapshot)
     return outputs
 
 
@@ -3798,8 +3869,7 @@ def _prune_stale_workers(connection: sqlite3.Connection, cutoff: str) -> None:
         """
         SELECT workers.worker_id
         FROM workers
-        LEFT JOIN worker_heartbeats ON worker_heartbeats.worker_id = workers.worker_id
-        WHERE COALESCE(worker_heartbeats.heartbeat_at, workers.updated_at) < ?
+        WHERE COALESCE(workers.heartbeat_at, workers.updated_at) < ?
           AND (
               workers.current_job_id IS NULL
               OR NOT EXISTS (
@@ -3824,12 +3894,11 @@ def _recover_stale_running_jobs(connection: sqlite3.Connection, cutoff: str) -> 
         SELECT jobs.job_id, jobs.attempt_count, jobs.max_attempts, jobs.leased_by
         FROM jobs
         LEFT JOIN workers ON workers.worker_id = jobs.leased_by
-        LEFT JOIN worker_heartbeats ON worker_heartbeats.worker_id = jobs.leased_by
         WHERE jobs.status = 'running'
           AND (
               jobs.leased_by IS NULL
               OR workers.worker_id IS NULL
-              OR COALESCE(worker_heartbeats.heartbeat_at, workers.updated_at, jobs.updated_at) < ?
+              OR COALESCE(workers.heartbeat_at, workers.updated_at, jobs.updated_at) < ?
           )
         """,
         (cutoff,),
@@ -3852,8 +3921,8 @@ def _recover_stale_running_jobs(connection: sqlite3.Connection, cutoff: str) -> 
         )
         if row["leased_by"]:
             connection.execute(
-                "UPDATE workers SET status = 'idle', current_job_id = NULL, updated_at = ? WHERE worker_id = ?",
-                (now, row["leased_by"]),
+                "UPDATE workers SET status = 'idle', current_job_id = NULL, heartbeat_at = ?, updated_at = ? WHERE worker_id = ?",
+                (now, now, row["leased_by"]),
             )
         if next_status == "queued":
             requeued += 1
@@ -3862,11 +3931,29 @@ def _recover_stale_running_jobs(connection: sqlite3.Connection, cutoff: str) -> 
     return {"requeued": requeued, "failed": failed}
 
 
-def _write_runtime_status_exports(paths: ResearchRuntimePaths) -> None:
+def _write_runtime_status_exports_if_due(
+    paths: ResearchRuntimePaths,
+    *,
+    status_snapshot: dict[str, object] | None = None,
+) -> None:
     status_dir = paths.runtime_root / "exports"
     status_dir.mkdir(parents=True, exist_ok=True)
-    status = runtime_status(paths)
-    (status_dir / "runtime_status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+    runtime_status_path = status_dir / "runtime_status.json"
+    if runtime_status_path.exists():
+        age_seconds = time.time() - runtime_status_path.stat().st_mtime
+        if age_seconds < RUNTIME_STATUS_EXPORT_MIN_INTERVAL_SECONDS:
+            return
+    status = dict(status_snapshot) if isinstance(status_snapshot, dict) else runtime_status(paths)
+    if "service_heartbeats" not in status:
+        status["service_heartbeats"] = load_service_heartbeats(paths.runtime_root)
+    serialized_status = json.dumps(status, indent=2)
+    if runtime_status_path.exists():
+        try:
+            if runtime_status_path.read_text(encoding="utf-8") == serialized_status:
+                return
+        except FileNotFoundError:
+            pass
+    runtime_status_path.write_text(serialized_status, encoding="utf-8")
     jobs = status.get("jobs", [])
     if isinstance(jobs, list):
         _write_csv(status_dir / "jobs.csv", jobs)
@@ -3920,9 +4007,8 @@ def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
         dict(row)
         for row in connection.execute(
             """
-            SELECT workers.worker_id, workers.status, workers.current_job_id, workers.updated_at, worker_heartbeats.heartbeat_at
+            SELECT workers.worker_id, workers.status, workers.current_job_id, workers.updated_at, workers.heartbeat_at
             FROM workers
-            LEFT JOIN worker_heartbeats ON worker_heartbeats.worker_id = workers.worker_id
             ORDER BY workers.worker_id ASC
             """
         ).fetchall()
@@ -4105,6 +4191,56 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _catalog_export_outputs(paths: ResearchRuntimePaths) -> dict[str, str]:
+    catalog_dir = paths.catalog_output_dir / "research_catalog"
+    return {
+        "catalog_jsonl": str(catalog_dir / "catalog.jsonl"),
+        "catalog_json": str(catalog_dir / "experiment_catalog.json"),
+        "catalog_csv": str(catalog_dir / "experiment_catalog.csv"),
+        "latest_profiles_json": str(catalog_dir / "latest_profile_artifacts.json"),
+    }
+
+
+def _catalog_export_state_path(paths: ResearchRuntimePaths) -> Path:
+    return paths.catalog_output_dir / "research_catalog" / ".export_state.json"
+
+
+def _load_catalog_export_watermark(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return int(payload.get("max_artifact_id"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_runtime_indexes(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status_priority_created_at ON jobs(status, priority, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status_leased_by ON jobs(status, leased_by)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_campaign_status_created_at ON jobs(campaign_id, status, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_job_attempts_job_attempt_number ON job_attempts(job_id, attempt_number)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_artifacts_job_recorded_artifact_id ON artifacts(job_id, recorded_at_utc, artifact_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workers_status_heartbeat_at ON workers(status, heartbeat_at)"
+    )
 
 
 def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
