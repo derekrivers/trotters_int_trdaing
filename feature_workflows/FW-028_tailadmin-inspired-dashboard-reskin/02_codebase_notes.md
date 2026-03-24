@@ -3,8 +3,11 @@
 ## Touched Areas
 
 - `src/trotters_trader/dashboard.py`
-- dashboard asset serving and layout wiring
-- Docker/startup/docs if a minimal asset build must become part of the local runtime path
+- `src/trotters_trader/dashboard_assets.py`
+- `src/trotters_trader/assets/dashboard.src.css`
+- `src/trotters_trader/assets/dashboard.css`
+- `tests/test_dashboard.py`
+- `pyproject.toml`
 
 ## Invariants
 
@@ -14,14 +17,17 @@
 ## Known Smells
 
 - dashboard rendering and styling are still concentrated in one Python module
-- there is no main-app frontend asset pipeline yet, so introducing one needs strict scope control
+- there is no broader main-app frontend stack, so the asset build must stay narrowly scoped and Python-native
 
 ## Regression Zones
 
 - dashboard startup and runtime stack boot if assets become required for the page to render
 - operator pages that mix dense data tables, alerts, forms, and status pills
+- asset-route auth behavior and cacheability
 
 ## Inspect First
 
 1. `src/trotters_trader/dashboard.py`
-2. `feature_workflows/FW-027_dashboard-typography-and-timestamp-compaction/`
+2. `src/trotters_trader/dashboard_assets.py`
+3. `src/trotters_trader/assets/dashboard.src.css`
+4. `feature_workflows/FW-027_dashboard-typography-and-timestamp-compaction/`

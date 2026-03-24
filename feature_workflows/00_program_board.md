@@ -29,7 +29,7 @@
 | `FW-025` | Total-return governed family integration | `done` | `FW-024` | the managed total-return config is represented as an approved family, program, director plan, and enabled standby queue item | use the governed total-return family when you want the supervisor queue to evaluate data-contract improvements explicitly instead of keeping them off to one side |
 | `FW-026` | Shared runtime overview read-model extraction | `done` | `FW-013`, `FW-022`, `FW-023` | dashboard and API overview assembly depend on one shared runtime-overview module for health, notifications, terminal summaries, and governed queue read models | use the shared runtime-overview module as the only place to extend cross-surface operator summary logic before adding new dashboard/API overview fields |
 | `FW-027` | Dashboard typography and timestamp compaction | `done` | `FW-026` | dashboard overview and detail pages use tighter, more balanced typography and operator-facing timestamps render at second precision instead of microseconds | use the dashboard timestamp formatter and compact typography scale as the baseline for future presentation-only UI cleanup |
-| `FW-028` | TailAdmin-inspired dashboard reskin | `ready` | `FW-026`, `FW-027` | the existing server-rendered dashboard uses a TailAdmin-style visual system via a minimal asset pipeline while preserving current behavior and operator workflows | use this workflow only for presentation and asset-pipeline work; keep runtime/read-model changes out unless strictly needed for rendering support |
+| `FW-028` | TailAdmin-inspired dashboard reskin | `done` | `FW-026`, `FW-027` | the existing server-rendered dashboard uses a TailAdmin-style visual system via a minimal asset pipeline while preserving current behavior and operator workflows | use the compiled dashboard asset and server-rendered TailAdmin shell as the baseline for future dashboard presentation work instead of reintroducing inline CSS |
 
 ## Ordering Notes
 
@@ -51,6 +51,7 @@
 16. `FW-026` extracts shared overview assembly out of the dashboard and API entrypoints; future operator-summary changes should land in the shared runtime-overview module first, then stay presentation-specific only at the route/render layer.
 17. `FW-027` is a dashboard presentation pass; future UI polish on overview/detail pages should prefer CSS and formatting-helper cleanup over read-model or runtime-logic edits.
 18. `FW-028` remains presentation-first even if it adds a small asset pipeline; it should not become a hidden frontend rewrite or a reason to move dashboard truth out of the current Python-rendered application.
+
 
 
 

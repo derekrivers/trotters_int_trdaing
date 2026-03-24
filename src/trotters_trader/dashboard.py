@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 from html import escape
 import json
 import os
@@ -40,6 +41,10 @@ from trotters_trader.runtime_overview import (
 
 class _ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
     daemon_threads = True
+
+
+_DASHBOARD_ASSET_DIR = Path(__file__).resolve().with_name("assets")
+_DASHBOARD_STYLESHEET_PATH = _DASHBOARD_ASSET_DIR / "dashboard.css"
 
 
 @dataclass(frozen=True)
@@ -196,6 +201,8 @@ class DashboardApp:
     ) -> DashboardResponse:
         if method == "GET" and path == "/healthz":
             return DashboardResponse("200 OK", [("Content-Type", "text/plain; charset=utf-8")], b"ok")
+        if method == "GET" and path == "/assets/dashboard.css":
+            return self._asset_response(_DASHBOARD_STYLESHEET_PATH, "text/css; charset=utf-8")
         if method == "GET" and path == "/guide":
             return self._html_response("200 OK", _render_guide(refresh_seconds=0))
         if method == "GET" and path == "/":
@@ -326,6 +333,19 @@ class DashboardApp:
             "200 OK",
             [("Content-Type", "application/json; charset=utf-8")],
             json.dumps(payload, indent=2, default=str).encode("utf-8"),
+        )
+
+    def _asset_response(self, path: Path, content_type: str) -> DashboardResponse:
+        if not path.exists():
+            return DashboardResponse(
+                "404 Not Found",
+                [("Content-Type", "text/plain; charset=utf-8")],
+                b"Asset not found",
+            )
+        return DashboardResponse(
+            "200 OK",
+            [("Content-Type", content_type), ("Cache-Control", "public, max-age=300")],
+            path.read_bytes(),
         )
 
 
@@ -1508,173 +1528,30 @@ def _render_guide(*, refresh_seconds: int) -> str:
 
 def _render_layout(title: str, body: str, *, refresh_seconds: int) -> str:
     refresh_meta = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds > 0 else ""
+    stylesheet_href = _dashboard_asset_href()
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   {refresh_meta}
   <title>{escape(title)}</title>
-  <style>
-    :root {{
-      --bg: #f4f1e8;
-      --panel: #fffaf0;
-      --ink: #1d2a24;
-      --muted: #5a6b61;
-      --line: #d7d0c0;
-      --accent: #145a4a;
-      --accent-soft: #dceee8;
-      --warn: #8b5a00;
-      --danger: #8f2d2d;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: Georgia, "Times New Roman", serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top right, #efe6cf 0, transparent 28rem),
-        linear-gradient(180deg, #f7f4eb 0%, var(--bg) 100%);
-    }}
-    main {{ max-width: 1400px; margin: 0 auto; padding: 1.5rem; }}
-    a {{ color: var(--accent); }}
-    code, pre {{
-      font-family: "Cascadia Mono", Consolas, monospace;
-      font-size: 0.84rem;
-    }}
-    .hero, .summary-grid, .split-grid {{ margin-bottom: 1.25rem; }}
-    .hero {{
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: end;
-    }}
-    .hero h1 {{ margin: 0 0 0.25rem 0; font-size: 1.7rem; line-height: 1.1; }}
-    .hero p {{ margin: 0.1rem 0; color: var(--muted); font-size: 0.95rem; }}
-    .hero-links {{ display: flex; gap: 0.75rem; align-items: center; }}
-    .summary-grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 0.75rem;
-    }}
-    .split-grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-      gap: 1rem;
-    }}
-    .card, .panel {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      box-shadow: 0 10px 30px rgba(29, 42, 36, 0.06);
-    }}
-    .card {{ padding: 0.85rem 0.9rem; }}
-    .card h2, .panel h2 {{
-      margin: 0 0 0.55rem 0;
-      font-size: 0.9rem;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }}
-    .metric {{
-      font-size: 1.35rem;
-      line-height: 1.2;
-      font-weight: bold;
-    }}
-    .panel {{ padding: 0.9rem; overflow-x: auto; }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
-    }}
-    th, td {{
-      text-align: left;
-      vertical-align: top;
-      padding: 0.6rem 0.5rem;
-      border-bottom: 1px solid var(--line);
-    }}
-    th {{
-      color: var(--muted);
-      font-size: 0.76rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }}
-    .pill {{
-      display: inline-block;
-      padding: 0.15rem 0.45rem;
-      border-radius: 999px;
-      background: var(--accent-soft);
-      color: var(--accent);
-      font-size: 0.76rem;
-      white-space: nowrap;
-    }}
-    .pill.info {{ background: var(--accent-soft); color: var(--accent); }}
-    .pill.success {{ background: #dceee8; color: #1e6a4c; }}
-    .pill.warn {{ background: #f3e5bf; color: var(--warn); }}
-    .pill.danger {{ background: #f1d7d7; color: var(--danger); }}
-    .button {{
-      display: inline-block;
-      padding: 0.55rem 0.9rem;
-      border-radius: 999px;
-      background: var(--accent);
-      color: white;
-      text-decoration: none;
-      border: 0;
-      cursor: pointer;
-      font: inherit;
-    }}
-    .button.secondary {{
-      background: transparent;
-      color: var(--accent);
-      border: 1px solid var(--accent);
-    }}
-    .button.danger {{
-      background: var(--danger);
-    }}
-    .flash {{
-      margin-bottom: 1rem;
-      padding: 0.75rem 0.9rem;
-      border-radius: 14px;
-      background: #dceee8;
-      border: 1px solid #9ecbbb;
-      color: var(--accent);
-      font-size: 0.92rem;
-    }}
-    .flash.info {{ background: #dceee8; border-color: #9ecbbb; color: var(--accent); }}
-    .flash.success {{ background: #dceee8; border-color: #9ecbbb; color: #1e6a4c; }}
-    .flash.warn {{ background: #fff2d4; border-color: #e0c483; color: var(--warn); }}
-    .flash.danger {{ background: #f6dede; border-color: #d49b9b; color: var(--danger); }}
-    form.inline {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.65rem;
-      align-items: center;
-      margin-top: 0.8rem;
-    }}
-    input[type="text"] {{
-      flex: 1 1 260px;
-      padding: 0.55rem 0.7rem;
-      border-radius: 10px;
-      border: 1px solid var(--line);
-      background: white;
-      font: inherit;
-    }}
-    pre {{
-      margin: 0;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }}
-    .subtle {{
-      color: var(--muted);
-      font-size: 0.76rem;
-      white-space: nowrap;
-    }}
-  </style>
+  <link rel="stylesheet" href="{escape(stylesheet_href)}">
 </head>
-<body>
-  <main>{body}</main>
+<body class="dashboard-app">
+  <div class="dashboard-orb dashboard-orb-one"></div>
+  <div class="dashboard-orb dashboard-orb-two"></div>
+  <main class="dashboard-main">{body}</main>
 </body>
 </html>"""
+
+
+def _dashboard_asset_href() -> str:
+    if not _DASHBOARD_STYLESHEET_PATH.exists():
+        return "/assets/dashboard.css"
+    version = hashlib.sha256(_DASHBOARD_STYLESHEET_PATH.read_bytes()).hexdigest()[:12]
+    return f"/assets/dashboard.css?v={version}"
 
 
 def _agent_summary_row(summary: dict[str, object]) -> str:

@@ -24,8 +24,8 @@ class DashboardTests(unittest.TestCase):
             "2026-03-23T21:54:15+00:00",
         )
 
-    def test_overview_uses_compact_typography_scale(self) -> None:
-        root = self._workspace_root("compact_typography")
+    def test_overview_links_compiled_dashboard_stylesheet(self) -> None:
+        root = self._workspace_root("compiled_stylesheet")
         try:
             paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
             app = DashboardApp(DashboardController(paths), refresh_seconds=0)
@@ -39,9 +39,24 @@ class DashboardTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
         self.assertEqual(status, "200 OK")
-        self.assertIn("font-size: 1.35rem;", body)
-        self.assertIn("font-size: 1.7rem;", body)
-        self.assertNotIn("font-size: 1.8rem;", body)
+        self.assertIn('<link rel="stylesheet" href="/assets/dashboard.css?v=', body)
+        self.assertIn('class="dashboard-app"', body)
+        self.assertNotIn("<style>", body)
+
+    def test_dashboard_serves_compiled_stylesheet_asset(self) -> None:
+        root = self._workspace_root("stylesheet_asset")
+        try:
+            paths = runtime_paths(root / "runtime", catalog_output_dir=root / "catalog")
+            app = DashboardApp(DashboardController(paths), refresh_seconds=0)
+            status, headers, body = self._invoke(app, "GET", "/assets/dashboard.css")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(dict(headers)["Content-Type"], "text/css; charset=utf-8")
+        self.assertIn("font-size:1.35rem", body)
+        self.assertIn("font-size:1.7rem", body)
+        self.assertIn(".hero{display:flex", body)
 
     def test_overview_renders_catalog_pending_banner_when_catalog_missing(self) -> None:
         root = self._workspace_root("catalog_pending")

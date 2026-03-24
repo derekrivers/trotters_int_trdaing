@@ -1,14 +1,14 @@
 # Plan
 
-## Implementation Steps
+## Implemented Steps
 
-1. add a minimal main-app asset build for Tailwind/TailAdmin-inspired dashboard styling
-2. wire the compiled dashboard CSS into the existing server-rendered layout without changing route behavior
-3. migrate the core dashboard shell, cards, tables, alerts, and layout rhythm toward TailAdmin HTML patterns and verify desktop/mobile rendering
+1. added a Python-native dashboard asset build module that compiles `dashboard.src.css` into the served package asset
+2. wired the compiled CSS into the existing server-rendered layout and added a single authenticated asset route for `/assets/dashboard.css`
+3. migrated the dashboard shell, cards, tables, alerts, forms, and layout rhythm toward a TailAdmin-inspired visual system without changing operator routes or actions
 
 ## Interface Changes
 
-- the dashboard gains a minimal asset pipeline for compiled styling
+- the dashboard now depends on a compiled package CSS asset instead of an inline `<style>` block
 - dashboard pages keep the same routes and operator actions while adopting a new visual system
 
 ## Acceptance Criteria
@@ -18,5 +18,6 @@
 
 ## Rollout And Check Order
 
-1. validate asset build and dashboard tests locally
-2. restart the live dashboard and verify `/healthz` plus authenticated `/`
+1. rebuild the dashboard asset with `python -m trotters_trader.dashboard_assets`
+2. run `python -m unittest tests.test_dashboard`
+3. start the dashboard locally and verify `/healthz`, authenticated `/`, and authenticated `/assets/dashboard.css`
