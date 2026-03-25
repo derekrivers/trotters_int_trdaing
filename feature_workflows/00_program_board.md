@@ -31,7 +31,7 @@
 | `FW-027` | Dashboard typography and timestamp compaction | `done` | `FW-026` | dashboard overview and detail pages use tighter, more balanced typography and operator-facing timestamps render at second precision instead of microseconds | use the dashboard timestamp formatter and compact typography scale as the baseline for future presentation-only UI cleanup |
 | `FW-028` | TailAdmin-inspired dashboard reskin | `done` | `FW-026`, `FW-027` | the existing server-rendered dashboard uses a TailAdmin-style visual system via a minimal asset pipeline while preserving current behavior and operator workflows | use the compiled dashboard asset and server-rendered TailAdmin shell as the baseline for future dashboard presentation work instead of reintroducing inline CSS |
 | `FW-029` | Runtime scale readiness and dashboard signal cleanup | `done` | `FW-008`, `FW-026`, `FW-028` | runtime hot-path DB pressure is reduced enough to support 10-worker verification, no recurring lock failures escape worker/coordinator flows under scale checks, and the overview removes duplicated noise while preserving diagnostics | use `workers.heartbeat_at`, throttled runtime exports, and the higher-signal dashboard overview as the baseline for future scale and operator-UX work |
-
+| `FW-030` | Architecture overhaul | `done` | `FW-008`, `FW-026`, `FW-029` | Postgres is selected as the next runtime control-plane backend, the runtime can target it through one shared DB seam, SQLite remains the safe default until migration is designed explicitly, and the staged-overhaul plan is recorded | use `runtime_db.py`, explicit runtime DB targeting, and the staged Postgres rollout plan as the baseline before deeper service extraction or observability work |
 ## Ordering Notes
 
 1. `FW-002` should land before `FW-003` because paper-trading rehearsal needs a clearer operator handoff surface.
@@ -53,6 +53,4 @@
 17. `FW-027` is a dashboard presentation pass; future UI polish on overview/detail pages should prefer CSS and formatting-helper cleanup over read-model or runtime-logic edits.
 18. `FW-028` remains presentation-first even if it adds a small asset pipeline; it should not become a hidden frontend rewrite or a reason to move dashboard truth out of the current Python-rendered application.
 
-
-
-
+19. `FW-030` chooses Postgres as the next control-plane backend but intentionally keeps SQLite as the live default until a dedicated migration workflow exists; future architecture work should stage backend cutover, service extraction, and observability hardening in that order.

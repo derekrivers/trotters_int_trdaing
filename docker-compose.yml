@@ -1,12 +1,15 @@
+﻿x-runtime-environment: &runtime-environment
+  TROTTERS_RUNTIME_DATABASE_URL: ${TROTTERS_RUNTIME_DATABASE_URL:-}
+  TROTTERS_OPS_BRIDGE_BASE: http://ops-bridge:8891
+  TROTTERS_OPS_BRIDGE_TOKEN: ${TROTTERS_OPS_BRIDGE_TOKEN}
+
 x-runtime-service: &runtime-service
   build:
     context: .
     dockerfile: Dockerfile
   working_dir: /app
   restart: unless-stopped
-  environment:
-    TROTTERS_OPS_BRIDGE_BASE: http://ops-bridge:8891
-    TROTTERS_OPS_BRIDGE_TOKEN: ${TROTTERS_OPS_BRIDGE_TOKEN}
+  environment: *runtime-environment
   volumes:
     - ./configs:/app/configs:ro
     - ./data:/app/data:ro
@@ -15,6 +18,23 @@ x-runtime-service: &runtime-service
     - research_runtime:/runtime/research_runtime
 
 services:
+  runtime-db:
+    image: postgres:16-alpine
+    profiles:
+      - postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: trotters_runtime
+      POSTGRES_USER: trotters
+      POSTGRES_PASSWORD: ${TROTTERS_RUNTIME_DB_PASSWORD:-trotters-runtime-local}
+    volumes:
+      - runtime_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trotters -d trotters_runtime"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE}
     restart: unless-stopped
@@ -56,6 +76,7 @@ services:
   research-api:
     <<: *runtime-service
     environment:
+      <<: *runtime-environment
       TROTTERS_API_TOKEN: ${TROTTERS_API_TOKEN}
     command:
       - research-api
@@ -80,6 +101,7 @@ services:
   ops-bridge:
     <<: *runtime-service
     environment:
+      <<: *runtime-environment
       TROTTERS_OPS_BRIDGE_TOKEN: ${TROTTERS_OPS_BRIDGE_TOKEN}
     command:
       - research-ops-bridge
@@ -113,6 +135,7 @@ services:
   dashboard:
     <<: *runtime-service
     environment:
+      <<: *runtime-environment
       TROTTERS_DASHBOARD_USERNAME: ${TROTTERS_DASHBOARD_USERNAME:-operator}
       TROTTERS_DASHBOARD_PASSWORD: ${TROTTERS_DASHBOARD_PASSWORD:-change-me-local-only}
     command:
@@ -209,4 +232,4 @@ services:
 
 volumes:
   research_runtime:
-
+  runtime_db_data:

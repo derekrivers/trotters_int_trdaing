@@ -111,6 +111,55 @@ class ResearchRuntimeTests(IsolatedWorkspaceTestCase):
         self.assertIn("jobs", tables)
         self.assertIn("campaigns", tables)
 
+    def test_initialize_runtime_only_backfills_worker_heartbeat_on_column_migration(self) -> None:
+        paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+
+        with _db_connection(paths.database_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE workers (
+                    worker_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    current_job_id TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO workers (worker_id, status, current_job_id, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("worker-1", "idle", None, "2026-03-25T07:30:00+00:00"),
+            )
+
+        initialize_runtime(paths)
+
+        with _db_connection(paths.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            migrated = connection.execute(
+                "SELECT heartbeat_at, updated_at FROM workers WHERE worker_id = ?",
+                ("worker-1",),
+            ).fetchone()
+            self.assertIsNotNone(migrated)
+            self.assertEqual(migrated["heartbeat_at"], migrated["updated_at"])
+
+            connection.execute(
+                "UPDATE workers SET heartbeat_at = NULL WHERE worker_id = ?",
+                ("worker-1",),
+            )
+
+        initialize_runtime(paths)
+
+        with _db_connection(paths.database_path) as connection:
+            heartbeat = connection.execute(
+                "SELECT heartbeat_at FROM workers WHERE worker_id = ?",
+                ("worker-1",),
+            ).fetchone()[0]
+
+        self.assertIsNone(heartbeat)
+
     def test_heartbeat_worker_retries_transient_database_lock(self) -> None:
         paths = runtime_paths(self.temp_root / "runtime", catalog_output_dir=self.temp_root / "catalog")
         begin_attempts = 0

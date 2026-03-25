@@ -14,6 +14,11 @@ It is written as a handoff brief for a deep research tool or external reviewer t
 
 This is a current-state document, not a future-state wishlist.
 
+March 25, 2026 update:
+
+- Postgres has been selected and implemented as the next runtime control-plane backend through an explicit runtime DB seam
+- SQLite remains the safe live default until a dedicated migration workflow exists, so the stack is currently in a staged-rollout state rather than a forced cutover
+
 ## Executive Summary
 
 Trotters is currently a Python 3.11 research platform for UK equity strategy development, backtesting, campaign orchestration, operator review, and paper-trading preparation.
@@ -21,13 +26,13 @@ Trotters is currently a Python 3.11 research platform for UK equity strategy dev
 The core product is not live trading. It is an offline and semi-autonomous research runtime with these major layers:
 
 - a deterministic research and backtesting engine in Python
-- a SQLite-backed runtime orchestration layer for campaigns, directors, workers, notifications, and artifacts
+- a runtime orchestration layer for campaigns, directors, workers, notifications, and artifacts that currently defaults to SQLite and now supports explicit Postgres targeting
 - a local operator surface made of a dashboard, a token-protected runtime API, and a narrow internal ops bridge
 - an OpenClaw gateway that acts as an AI control plane over the runtime through a custom repo-managed plugin
 
 The runtime is containerized with Docker Compose. Compose is not just a packaging choice here; it is the operating model. The research services, OpenClaw gateway, shared runtime volume, and Docker-socket-backed ops bridge are all coupled through the Compose topology.
 
-As of March 23, 2026, live container state could not be verified from this workspace because `docker compose ps` could not connect to the local Docker engine. The container inventory below therefore reflects configured Compose services rather than confirmed running containers.
+As of March 25, 2026, the live SQLite-backed stack was verified from this workspace with `docker compose ps`. The inventory below reflects the configured services and the now-verified local operating model, with Postgres available behind an explicit opt-in profile rather than as the live default.
 
 ## Scope And Current Boundaries
 
@@ -51,10 +56,10 @@ Explicit non-goals right now:
 | Layer | Current technology | How it is being used |
 | --- | --- | --- |
 | Core language | Python 3.11 | Main application, CLI, runtime services, backtesting engine, API, dashboard, ops bridge, orchestration logic |
-| Packaging | `setuptools`, editable install from `pyproject.toml` | Very light Python packaging; the project currently declares no third-party Python dependencies in `pyproject.toml` |
+| Packaging | `setuptools`, editable install from `pyproject.toml` | Light Python packaging; the runtime now carries one explicit third-party DB dependency, `psycopg[binary]`, for optional Postgres support |
 | Secondary language | JavaScript / Node.js | Custom OpenClaw plugin under `extensions/openclaw/trotters-runtime` |
 | Runtime orchestration | Docker Compose | Runs the research runtime, dashboard, API, ops bridge, OpenClaw gateway, and scaled worker pool |
-| State store | SQLite | Runtime database at `runtime/research_runtime/state/research_runtime.sqlite3` using WAL mode |
+| State store | SQLite by default, Postgres supported explicitly | Live/local default remains `runtime/research_runtime/state/research_runtime.sqlite3` using WAL mode; the runtime can also target Postgres through `TROTTERS_RUNTIME_DATABASE_URL` and the Compose `postgres` profile |
 | APIs / servers | stdlib WSGI via `wsgiref.simple_server` | `research-api`, `research-dashboard`, and `research-ops-bridge` are simple in-process HTTP services, not FastAPI/Flask services |
 | Data storage | CSV, JSON, JSONL, Markdown | Raw/staging/canonical market data, runtime exports, campaign notifications, reports, promotion artifacts, operator summaries |
 | Research inputs | EODHD, Alpha Vantage, bulk CSV, sample CSV | EODHD is the main serious research path; Alpha Vantage and sample data remain supporting paths |
@@ -212,7 +217,7 @@ Major responsibilities:
 Important runtime characteristics:
 
 - runtime state is persisted under `runtime/research_runtime`
-- orchestration state is stored in SQLite
+- orchestration state defaults to SQLite today but can target Postgres explicitly through the shared runtime DB seam
 - workers run bounded research commands, not arbitrary shell access
 - campaigns progress through defined phases rather than free-form agent planning
 - directors can chain approved campaigns until a candidate is frozen or the queue is exhausted
@@ -236,6 +241,7 @@ The main Compose file defines these service names:
 - `openclaw-gateway`
 - `research-director`
 - `worker`
+- `runtime-db` via the optional `postgres` profile
 
 ### Container Inventory
 
@@ -249,6 +255,7 @@ The main Compose file defines these service names:
 | `research-director` | built from local `Dockerfile` | Runs one level above campaign manager; chooses next approved campaign and can chain branches | none | Depends on coordinator and campaign-manager |
 | `ops-bridge` | built from local `Dockerfile` | Narrow internal control plane for allowlisted service restarts and agent dispatches | none; internal only | Mounts `/var/run/docker.sock`; protected by bearer token and actor header |
 | `openclaw-gateway` | image from `OPENCLAW_IMAGE` | OpenClaw gateway plus repo-managed plugin and cron-seeded runtime supervisor | `18789` published to loopback | Mounts OpenClaw config, extension, bootstrap scripts, runtime state, research runtime volume, catalog |
+| `runtime-db` | `postgres:16-alpine` | Optional local Postgres service for explicit runtime DB targeting and verification | none by default | Started through the Compose `postgres` profile; not required for the default SQLite-backed live stack |
 
 ### Shared Runtime Storage
 
@@ -400,7 +407,8 @@ Operational consequence:
 ### Research Runtime
 
 - runtime root: `runtime/research_runtime`
-- SQLite database: `runtime/research_runtime/state/research_runtime.sqlite3`
+- default SQLite database: `runtime/research_runtime/state/research_runtime.sqlite3`
+- optional Postgres target: configured through `TROTTERS_RUNTIME_DATABASE_URL`
 - job outputs: `runtime/research_runtime/job_outputs`
 - runtime logs: `runtime/research_runtime/logs`
 - director specs: `runtime/research_runtime/director_specs`
@@ -455,7 +463,7 @@ The dashboard and OpenClaw both depend on the underlying runtime state and APIs.
 ## Strengths Of The Current Stack
 
 - Clear separation between research engine, orchestration layer, operator UI, and AI control plane
-- Runtime state is durable and inspectable through SQLite plus exported JSON and Markdown artifacts
+- Runtime state is durable and inspectable through the runtime DB plus exported JSON and Markdown artifacts
 - OpenClaw integration is narrow and disciplined rather than over-privileged
 - Docker Compose gives a reproducible local operating model
 - The stack already supports multiple degrees of autonomy without crossing into live trading
@@ -465,7 +473,7 @@ The dashboard and OpenClaw both depend on the underlying runtime state and APIs.
 ## Current Constraints And Likely Bottlenecks
 
 - The stack is still local-first and Compose-centric; it is not yet shaped for cloud-native scaling or multi-user operation
-- SQLite is a pragmatic local control-plane store, but it will eventually become a coordination and observability ceiling if concurrency or retention grows materially
+- SQLite remains a pragmatic local default control-plane store, but Postgres is now the chosen next backend because SQLite becomes a coordination and observability ceiling as concurrency grows materially
 - Services use stdlib WSGI servers; this is fine for local operations but weak for stronger production-grade concurrency, middleware, and observability
 - `ops-bridge` depends on Docker socket access, which is powerful and should remain tightly constrained
 - OpenClaw capability is currently optimized for runtime supervision, not for broader research synthesis or model-routing sophistication
@@ -479,7 +487,7 @@ The most useful external research is probably not "how do we add more AI?" but "
 Suggested research questions:
 
 1. Should this stack stay local-first and Compose-based through paper-trading rehearsal, or is there already a strong case to move runtime services to a managed environment?
-2. When does SQLite become the wrong runtime control-plane store for campaigns, workers, notifications, and summaries?
+2. When should the repo move from the current SQLite default to a full Postgres cutover with explicit state migration and rollback?
 3. Should the next major investment be in stronger research methodology, stronger ops/observability, or broader data coverage?
 4. Is OpenClaw best kept as a narrow supervisor layer, or is there a justified next step toward richer research-assistant roles?
 5. What is the most credible path from this EOD research platform to a paper-trading platform without overbuilding premature live-trading infrastructure?

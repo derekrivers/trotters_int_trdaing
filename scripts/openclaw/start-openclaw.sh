@@ -67,6 +67,9 @@ mkdir -p "${STATE_ROOT}/extensions"
 chmod 755 "${STATE_ROOT}/extensions"
 rm -rf "${INSTALLED_PLUGIN_DIR}"
 openclaw plugins install "${PLUGIN_STAGE_DIR}" >/dev/null
+if [ ! -d "${INSTALLED_PLUGIN_DIR}" ]; then
+  cp -R "${PLUGIN_STAGE_DIR}" "${INSTALLED_PLUGIN_DIR}"
+fi
 chmod -R u=rwX,go=rX "${INSTALLED_PLUGIN_DIR}"
 find "${INSTALLED_PLUGIN_DIR}" -type d -exec chmod 755 {} \;
 find "${INSTALLED_PLUGIN_DIR}" -type f -exec chmod 644 {} \;

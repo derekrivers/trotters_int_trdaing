@@ -536,7 +536,11 @@ def _validate_runtime_target(args: argparse.Namespace) -> str | None:
 
 def _handle_runtime_command(args: argparse.Namespace) -> dict[str, object]:
     warning = _validate_runtime_target(args)
-    paths = runtime_paths(args.runtime_root, catalog_output_dir=args.catalog_output_dir)
+    paths = runtime_paths(
+        args.runtime_root,
+        catalog_output_dir=args.catalog_output_dir,
+        runtime_database_url=args.runtime_database_url,
+    )
     if args.command == "research-submit":
         if not args.spec:
             raise ValueError("research-submit requires --spec")
@@ -985,6 +989,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--to-date")
     parser.add_argument("--reference-date", type=_parse_iso_date)
     parser.add_argument("--runtime-root", default="runtime/research_runtime")
+    parser.add_argument("--runtime-database-url", default=os.environ.get("TROTTERS_RUNTIME_DATABASE_URL"))
     parser.add_argument("--catalog-output-dir", default="runs")
     parser.add_argument("--output-dir-override")
     parser.add_argument("--allow-host-runtime", action="store_true")

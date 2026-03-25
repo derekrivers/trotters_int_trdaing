@@ -39,6 +39,13 @@ from trotters_trader.experiments import (
 )
 from trotters_trader.features import materialize_feature_set
 from trotters_trader.reports import write_operability_program_report, write_promotion_artifacts, write_tranche_report
+from trotters_trader.runtime_db import (
+    RUNTIME_DB_OPERATIONAL_ERRORS,
+    RuntimeConnectionAdapter,
+    RuntimeDatabaseConfig,
+    connect_runtime_database,
+    is_retryable_runtime_db_error,
+)
 from trotters_trader.service_heartbeats import load_service_heartbeats, write_service_heartbeat
 
 SUPPORTED_RESEARCH_COMMANDS = {
@@ -111,6 +118,7 @@ class ResearchRuntimePaths:
     runtime_root: Path
     state_dir: Path
     database_path: Path
+    runtime_database_url: str | None
     job_outputs_dir: Path
     logs_dir: Path
     director_specs_dir: Path
@@ -194,17 +202,147 @@ class ResearchDirector:
         return payload if isinstance(payload, dict) else {}
 
 
-def runtime_paths(runtime_root: Path | str, catalog_output_dir: Path | str = "runs") -> ResearchRuntimePaths:
+def runtime_paths(
+    runtime_root: Path | str,
+    catalog_output_dir: Path | str = "runs",
+    runtime_database_url: str | None = None,
+) -> ResearchRuntimePaths:
     root = Path(runtime_root)
+    database_url = str(runtime_database_url or os.environ.get("TROTTERS_RUNTIME_DATABASE_URL", "")).strip() or None
     return ResearchRuntimePaths(
         runtime_root=root,
         state_dir=root / "state",
         database_path=root / "state" / "research_runtime.sqlite3",
+        runtime_database_url=database_url,
         job_outputs_dir=root / "job_outputs",
         logs_dir=root / "logs",
         director_specs_dir=root / "director_specs",
         catalog_output_dir=Path(catalog_output_dir),
     )
+
+
+def _runtime_database_target(paths: ResearchRuntimePaths) -> str:
+    config = RuntimeDatabaseConfig(
+        sqlite_path=paths.database_path,
+        database_url=paths.runtime_database_url,
+    )
+    return config.target
+
+
+def _runtime_schema_script(backend: str) -> str:
+    script = """
+    CREATE TABLE IF NOT EXISTS jobs (
+        job_id TEXT PRIMARY KEY,
+        campaign_id TEXT,
+        command TEXT NOT NULL,
+        config_path TEXT NOT NULL,
+        spec_json TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        lease_expires_at TEXT,
+        leased_by TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        exit_code INTEGER,
+        output_root TEXT NOT NULL,
+        stdout_path TEXT,
+        stderr_path TEXT,
+        error_message TEXT,
+        input_dataset_ref TEXT,
+        feature_set_ref TEXT,
+        control_profile TEXT,
+        quality_gate TEXT NOT NULL DEFAULT 'all',
+        evaluation_profile TEXT,
+        result_json TEXT
+    );
+    CREATE TABLE IF NOT EXISTS job_attempts (
+        attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
+        worker_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        exit_code INTEGER,
+        stdout_path TEXT,
+        stderr_path TEXT,
+        error_message TEXT
+    );
+    CREATE TABLE IF NOT EXISTS workers (
+        worker_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        current_job_id TEXT,
+        heartbeat_at TEXT,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+        worker_id TEXT PRIMARY KEY,
+        heartbeat_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS artifacts (
+        artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        recorded_at_utc TEXT NOT NULL,
+        artifact_key TEXT NOT NULL,
+        artifact_type TEXT NOT NULL,
+        artifact_name TEXT NOT NULL,
+        primary_path TEXT NOT NULL,
+        metadata_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS campaigns (
+        campaign_id TEXT PRIMARY KEY,
+        director_id TEXT,
+        campaign_name TEXT NOT NULL,
+        config_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        spec_json TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        latest_report_path TEXT,
+        last_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS campaign_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id TEXT NOT NULL,
+        recorded_at_utc TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        message TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS directors (
+        director_id TEXT PRIMARY KEY,
+        director_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        spec_json TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        current_campaign_id TEXT,
+        successful_campaign_id TEXT,
+        last_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS director_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        director_id TEXT NOT NULL,
+        recorded_at_utc TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        message TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+    );
+    """
+    if backend == "postgres":
+        return script.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    return script
 
 
 def initialize_runtime(paths: ResearchRuntimePaths) -> None:
@@ -213,132 +351,23 @@ def initialize_runtime(paths: ResearchRuntimePaths) -> None:
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
     paths.director_specs_dir.mkdir(parents=True, exist_ok=True)
     paths.catalog_output_dir.mkdir(parents=True, exist_ok=True)
-    last_error: sqlite3.OperationalError | None = None
+    last_error: Exception | None = None
     for attempt in range(SQLITE_INIT_MAX_ATTEMPTS):
         try:
             with _connect(paths) as connection:
-                connection.execute("PRAGMA journal_mode = WAL")
-                connection.execute("PRAGMA synchronous = NORMAL")
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS jobs (
-                        job_id TEXT PRIMARY KEY,
-                        campaign_id TEXT,
-                        command TEXT NOT NULL,
-                        config_path TEXT NOT NULL,
-                        spec_json TEXT NOT NULL,
-                        priority INTEGER NOT NULL DEFAULT 100,
-                        status TEXT NOT NULL,
-                        attempt_count INTEGER NOT NULL DEFAULT 0,
-                        max_attempts INTEGER NOT NULL DEFAULT 3,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        lease_expires_at TEXT,
-                        leased_by TEXT,
-                        started_at TEXT,
-                        finished_at TEXT,
-                        exit_code INTEGER,
-                        output_root TEXT NOT NULL,
-                        stdout_path TEXT,
-                        stderr_path TEXT,
-                        error_message TEXT,
-                        input_dataset_ref TEXT,
-                        feature_set_ref TEXT,
-                        control_profile TEXT,
-                        quality_gate TEXT NOT NULL DEFAULT 'all',
-                        evaluation_profile TEXT,
-                        result_json TEXT
-                    );
-                    CREATE TABLE IF NOT EXISTS job_attempts (
-                        attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        job_id TEXT NOT NULL,
-                        attempt_number INTEGER NOT NULL,
-                        worker_id TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        started_at TEXT NOT NULL,
-                        finished_at TEXT,
-                        exit_code INTEGER,
-                        stdout_path TEXT,
-                        stderr_path TEXT,
-                        error_message TEXT
-                    );
-                    CREATE TABLE IF NOT EXISTS workers (
-                        worker_id TEXT PRIMARY KEY,
-                        status TEXT NOT NULL,
-                        current_job_id TEXT,
-                        heartbeat_at TEXT,
-                        updated_at TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS worker_heartbeats (
-                        worker_id TEXT PRIMARY KEY,
-                        heartbeat_at TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS artifacts (
-                        artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        job_id TEXT NOT NULL,
-                        recorded_at_utc TEXT NOT NULL,
-                        artifact_key TEXT NOT NULL,
-                        artifact_type TEXT NOT NULL,
-                        artifact_name TEXT NOT NULL,
-                        primary_path TEXT NOT NULL,
-                        metadata_json TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS campaigns (
-                        campaign_id TEXT PRIMARY KEY,
-                        director_id TEXT,
-                        campaign_name TEXT NOT NULL,
-                        config_path TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        phase TEXT NOT NULL,
-                        spec_json TEXT NOT NULL,
-                        state_json TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        started_at TEXT,
-                        finished_at TEXT,
-                        latest_report_path TEXT,
-                        last_error TEXT
-                    );
-                    CREATE TABLE IF NOT EXISTS campaign_events (
-                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        campaign_id TEXT NOT NULL,
-                        recorded_at_utc TEXT NOT NULL,
-                        event_type TEXT NOT NULL,
-                        message TEXT NOT NULL,
-                        payload_json TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS directors (
-                        director_id TEXT PRIMARY KEY,
-                        director_name TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        spec_json TEXT NOT NULL,
-                        state_json TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        started_at TEXT,
-                        finished_at TEXT,
-                        current_campaign_id TEXT,
-                        successful_campaign_id TEXT,
-                        last_error TEXT
-                    );
-                    CREATE TABLE IF NOT EXISTS director_events (
-                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        director_id TEXT NOT NULL,
-                        recorded_at_utc TEXT NOT NULL,
-                        event_type TEXT NOT NULL,
-                        message TEXT NOT NULL,
-                        payload_json TEXT NOT NULL
-                    );
-                    """
-                )
-                _ensure_column(connection, "jobs", "campaign_id", "TEXT")
-                _ensure_column(connection, "campaigns", "director_id", "TEXT")
-                _ensure_column(connection, "workers", "heartbeat_at", "TEXT")
-                connection.execute("UPDATE workers SET heartbeat_at = COALESCE(heartbeat_at, updated_at)")
+                if connection.backend == "sqlite":
+                    connection.execute("PRAGMA journal_mode = WAL")
+                    connection.execute("PRAGMA synchronous = NORMAL")
+                connection.executescript(_runtime_schema_script(connection.backend))
+                _ensure_column(paths, connection, "jobs", "campaign_id", "TEXT")
+                _ensure_column(paths, connection, "campaigns", "director_id", "TEXT")
+                workers_heartbeat_added = _ensure_column(paths, connection, "workers", "heartbeat_at", "TEXT")
+                if workers_heartbeat_added:
+                    connection.execute("UPDATE workers SET heartbeat_at = COALESCE(heartbeat_at, updated_at)")
                 _ensure_runtime_indexes(connection)
             return
-        except sqlite3.OperationalError as exc:
-            if not _is_sqlite_locked_error(exc) or attempt == SQLITE_INIT_MAX_ATTEMPTS - 1:
+        except RUNTIME_DB_OPERATIONAL_ERRORS as exc:
+            if not is_retryable_runtime_db_error(exc) or attempt == SQLITE_INIT_MAX_ATTEMPTS - 1:
                 raise
             last_error = exc
             time.sleep(SQLITE_INIT_RETRY_SECONDS * (attempt + 1))
@@ -392,7 +421,7 @@ def submit_jobs(paths: ResearchRuntimePaths, payload: object) -> dict[str, objec
                 ),
             )
             job_ids.append(job_id)
-    return {"submitted": len(job_ids), "job_ids": job_ids, "database_path": str(paths.database_path)}
+    return {"submitted": len(job_ids), "job_ids": job_ids, "database_path": _runtime_database_target(paths)}
 
 
 def coordinator_cycle(paths: ResearchRuntimePaths, lease_timeout_seconds: int = 900) -> dict[str, object]:
@@ -433,7 +462,7 @@ def coordinator_cycle(paths: ResearchRuntimePaths, lease_timeout_seconds: int = 
         requeued += recovered["requeued"]
         failed += recovered["failed"]
         _prune_stale_workers(connection, worker_cutoff)
-        snapshot = _build_status_snapshot(connection)
+        snapshot = _build_status_snapshot(connection, database_target=_runtime_database_target(paths))
     exports = export_runtime_catalog(paths, status_snapshot=snapshot)
     return {**snapshot, "requeued_jobs": requeued, "failed_expired_jobs": failed, "catalog_exports": exports}
 
@@ -968,7 +997,7 @@ def fail_job(
 def runtime_status(paths: ResearchRuntimePaths) -> dict[str, object]:
     initialize_runtime(paths)
     with _connect(paths) as connection:
-        snapshot = _build_status_snapshot(connection)
+        snapshot = _build_status_snapshot(connection, database_target=_runtime_database_target(paths))
     snapshot["service_heartbeats"] = load_service_heartbeats(paths.runtime_root)
     return snapshot
 
@@ -3630,7 +3659,7 @@ def _notification_severity(event_type: str, payload: dict[str, object]) -> str:
 
 
 def _is_retryable_runtime_error(exc: Exception) -> bool:
-    if isinstance(exc, sqlite3.OperationalError):
+    if isinstance(exc, RUNTIME_DB_OPERATIONAL_ERRORS):
         return True
     text = f"{type(exc).__name__}: {exc}".lower()
     return any(marker in text for marker in RETRYABLE_RUNTIME_ERROR_MARKERS)
@@ -3998,7 +4027,7 @@ def _write_profile_history_snapshot(paths: ResearchRuntimePaths) -> None:
         (history_dir / f"{profile_name}.jsonl").write_text(content, encoding="utf-8")
 
 
-def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
+def _build_status_snapshot(connection: RuntimeConnectionAdapter, *, database_target: str) -> dict[str, object]:
     counts = {
         row["status"]: row["count"]
         for row in connection.execute("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status").fetchall()
@@ -4046,7 +4075,7 @@ def _build_status_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
         ).fetchall()
     ]
     return {
-        "database_path": str(connection.execute("PRAGMA database_list").fetchone()["file"]),
+        "database_path": database_target,
         "counts": counts,
         "workers": workers,
         "jobs": jobs,
@@ -4123,11 +4152,15 @@ def _safe_filename_component(value: str) -> str:
 
 @contextmanager
 def _connect(paths: ResearchRuntimePaths):
-    connection = sqlite3.connect(paths.database_path, timeout=SQLITE_CONNECT_TIMEOUT_SECONDS)
-    connection.row_factory = sqlite3.Row
+    config = RuntimeDatabaseConfig(
+        sqlite_path=paths.database_path,
+        database_url=paths.runtime_database_url,
+    )
+    connection = connect_runtime_database(config, timeout_seconds=SQLITE_CONNECT_TIMEOUT_SECONDS)
     try:
-        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
-        connection.execute("PRAGMA foreign_keys = ON")
+        if connection.backend == "sqlite":
+            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA foreign_keys = ON")
         yield connection
         connection.commit()
     except Exception:
@@ -4138,24 +4171,20 @@ def _connect(paths: ResearchRuntimePaths):
 
 
 def _run_write_transaction(paths: ResearchRuntimePaths, operation: Callable[[sqlite3.Connection], _T]) -> _T:
-    last_error: sqlite3.OperationalError | None = None
+    last_error: Exception | None = None
     for attempt in range(SQLITE_WRITE_MAX_ATTEMPTS):
         try:
             with _connect(paths) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 return operation(connection)
-        except sqlite3.OperationalError as exc:
-            if not _is_sqlite_locked_error(exc) or attempt == SQLITE_WRITE_MAX_ATTEMPTS - 1:
+        except RUNTIME_DB_OPERATIONAL_ERRORS as exc:
+            if not is_retryable_runtime_db_error(exc) or attempt == SQLITE_WRITE_MAX_ATTEMPTS - 1:
                 raise
             last_error = exc
             time.sleep(SQLITE_WRITE_RETRY_SECONDS * (attempt + 1))
     if last_error is not None:
         raise last_error
     raise RuntimeError("SQLite write transaction retry loop exited without a result")
-
-
-def _is_sqlite_locked_error(exc: sqlite3.OperationalError) -> bool:
-    return "locked" in str(exc).lower()
 
 
 def _optional_text(value: object) -> str | None:
@@ -4243,11 +4272,31 @@ def _ensure_runtime_indexes(connection: sqlite3.Connection) -> None:
     )
 
 
-def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    columns = {
-        row["name"]
-        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
-    }
+def _ensure_column(
+    paths: ResearchRuntimePaths,
+    connection: RuntimeConnectionAdapter,
+    table: str,
+    column: str,
+    definition: str,
+) -> bool:
+    if connection.backend == "postgres":
+        columns = {
+            str(row["column_name"])
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
+                """,
+                (table, column),
+            ).fetchall()
+        }
+    else:
+        columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
     if column in columns:
-        return
+        return False
     connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    return True

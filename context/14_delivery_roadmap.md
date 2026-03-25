@@ -357,6 +357,13 @@ Updated next implication:
 - the strongest current research branch is no longer the plain broad momentum seed; it is now the `risk + sector` family centered on the `gross65_deploy20_n8_w09_cb12` seed with a `max_positions_per_sector = 3` follow-up
 - the next credible work should stay in that family and target restoring walk-forward robustness while preserving the holdout improvement, rather than returning to universe slicing, ranking tweaks, or benchmark-regime overlays
 
+Architecture-overhaul checkpoint on March 25, 2026:
+
+- Postgres was selected as the next runtime control-plane backend after SQLite lock contention became the clearest scale and operability ceiling
+- the repo now supports explicit Postgres targeting through `TROTTERS_RUNTIME_DATABASE_URL`, a `runtime-db` Compose profile, and the updated runtime startup helper
+- SQLite remains the safe live default until a dedicated state-migration workflow and rollback plan are defined
+- the immediate follow-on architecture work should extract more runtime responsibilities out of `research_runtime.py`, then harden server and observability concerns before revisiting filesystem-heavy artifacts
+
 Risk-sector retirement checkpoint on March 22, 2026:
 
 - the `sec3` follow-up was rerun directly into `runtime/catalog` under the current promotion policy
